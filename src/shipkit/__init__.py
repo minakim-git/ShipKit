@@ -5,7 +5,7 @@
 
 __app_name__ = "ShipKit"
 __tagline__ = "Safe Deployment & Rollback Tool"
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 
 CLI_NAME = "shipkit"                   # 명령어, 키링 서비스, 사용자 설정 폴더 이름
 SCRIPT_NAME = f"{CLI_NAME}.sh"         # 패키지에 들어가는 서버 스크립트 (리눅스 서버)

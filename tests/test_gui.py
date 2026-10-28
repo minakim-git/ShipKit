@@ -1,0 +1,236 @@
+"""GUI(PySide6): 화면 없이(offscreen) 창을 띄워 실제 위젯 조작으로 흐름을 확인한다."""
+import os
+
+import pytest
+import yaml
+
+pytest.importorskip("PySide6")
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from PySide6.QtCore import QCoreApplication, QSettings, Qt  # noqa: E402
+from PySide6.QtWidgets import QApplication  # noqa: E402
+
+from shipkit import PROJECT_FILE, config_store  # noqa: E402
+from shipkit.config import ConfigError  # noqa: E402
+from shipkit.gui.app import PAGE_DEPLOY, PAGE_SETTINGS, MainWindow  # noqa: E402
+from shipkit.gui.deploy_page import TAB_BUILD, TAB_FILES, TAB_REQUESTS  # noqa: E402
+from shipkit.gui.tasks import SyncRunner  # noqa: E402
+from shipkit.sources import providers  # noqa: E402
+
+from conftest import write  # noqa: E402
+from test_github import REPO, _client, _pr  # noqa: E402
+from conftest import FakeResponse  # noqa: E402
+
+API = "https://api.github.com"
+
+
+@pytest.fixture(scope="session")
+def qapp(tmp_path_factory):
+    QCoreApplication.setOrganizationName("ShipKitTest")
+    QCoreApplication.setApplicationName("ShipKitTest")
+    QSettings.setDefaultFormat(QSettings.Format.IniFormat)  # 레지스트리 대신 임시 폴더에 저장
+    QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(tmp_path_factory.mktemp("qsettings")))
+    return QApplication.instance() or QApplication([])
+
+
+class FakeDialogs:
+    def __init__(self, answer=True, password="tok"):
+        self.messages = []
+        self.answer = answer
+        self.secret = password
+
+    def info(self, title, text):
+        self.messages.append(("info", title, text))
+
+    def error(self, title, text):
+        self.messages.append(("error", title, text))
+
+    def ask(self, title, text):
+        self.messages.append(("ask", title, text))
+        return self.answer
+
+    def password(self, title, text):
+        return self.secret
+
+
+def make_window(config_path, dialogs=None):
+    return MainWindow(config_path=config_path, runner=SyncRunner(), dialogs=dialogs or FakeDialogs())
+
+
+def _config(tmp_path, maven_project, **project):
+    path = tmp_path / "shipkit.yaml"
+    data = {"defaults": {"output_dir": (tmp_path / "out" / "{project}").as_posix()},
+            "projects": {"erp": dict({"root": maven_project.as_posix(), "server_path": "/app/ROOT"}, **project)}}
+    path.write_text(yaml.safe_dump(data), encoding="utf-8")
+    return path
+
+
+# ---------------------------------------------------------------------- config_store
+def test_config_store_save_validates_and_backs_up(tmp_path):
+    path = tmp_path / "c.yaml"
+    data = {"projects": {"a": {"root": "x", "output_dir": "y", "server_path": "/s", "hooks": {"post_apply": ["r"]}}}}
+    config_store.save_raw(path, data)
+    config_store.set_project(data, "a2", {"root": "z", "server_path": "/t", "output_dir": "o"}, old_name="a")
+    assert data["projects"]["a2"]["hooks"] == {"post_apply": ["r"]}  # 화면에 없는 값은 보존
+    config_store.save_raw(path, data)
+    assert (tmp_path / "c.yaml.bak").is_file()
+    with pytest.raises(ConfigError):
+        config_store.save_raw(path, {"projects": {"bad": {"root": "x", "output_dir": "y", "server_path": "nope"}}})
+    assert "a2" in config_store.load_raw(path)["projects"]            # 실패한 저장은 파일을 건드리지 않음
+    with pytest.raises(ConfigError, match="이미 있습니다"):
+        config_store.set_project(data, "a2", {"root": "q"})
+
+
+def test_config_store_merge_legacy(tmp_path):
+    from test_workflow import _legacy_db
+    db = tmp_path / "database.db"
+    _legacy_db(db)
+    data = {"projects": {"acme_erp": {"root": "keep", "output_dir": "o", "server_path": "/k"}}}
+    added, skipped = config_store.merge_legacy(data, db)
+    assert added == [] and skipped == ["acme_erp"]
+    assert data["projects"]["acme_erp"]["root"] == "keep" and data["gitlab"]["url"] == "https://gitlab.acme.local"
+
+
+# ---------------------------------------------------------------------- 메인 창 / 설정
+def test_first_run_goes_to_settings_and_saves(qapp, tmp_path, monkeypatch):
+    monkeypatch.setattr("shipkit.legacy.legacy_db_path", lambda: tmp_path / "none.db")
+    dialogs = FakeDialogs()
+    path = tmp_path / "new" / "shipkit.yaml"
+    w = make_window(path, dialogs)
+    w.first_run()
+    assert w.nav.currentRow() == PAGE_SETTINGS and dialogs.messages[-1][1] == "처음 실행"
+    s = w.settings_page
+    s.gitlab.enabled.setChecked(True)
+    s.gitlab.url.setText("https://gitlab.acme.local/")
+    s.output_field.setText("D:/deploy/{project}")
+    s.save()
+    saved = config_store.load_raw(path)
+    assert saved["gitlab"]["url"] == "https://gitlab.acme.local/" and saved["defaults"]["output_dir"] == "D:/deploy/{project}"
+    assert "github" not in saved and w.ctx.cfg is not None
+
+
+# ---------------------------------------------------------------------- 프로젝트 화면
+class FakeProjectDialog:
+    def __init__(self, parent, name, entry, defaults, *, plan):
+        self._plan = list(plan)
+        self.entry = entry
+
+    def exec(self):
+        return bool(self._plan)
+
+    def name(self):
+        return self._plan[0][0]
+
+    def values(self):
+        name, values = self._plan.pop(0)
+        return values
+
+
+def test_projects_add_edit_delete(qapp, tmp_path, maven_project):
+    path = _config(tmp_path, maven_project, hooks={"post_apply": ["restart"]})
+    dialogs = FakeDialogs()
+    w = make_window(path, dialogs)
+    page = w.projects_page
+    assert page.table.rowCount() == 1
+
+    root = tmp_path / "web"
+    write(root / PROJECT_FILE, yaml.safe_dump({"preset": "vite", "server_path": "/var/www/web"}))
+    page.dialog_factory = lambda *a: FakeProjectDialog(*a, plan=[
+        ("web", {"root": "", "server_path": "/x"}),                    # 로컬 경로 없음 -> 오류 후 다시
+        ("web", {"root": root.as_posix()}),                            # 나머지는 .shipkit.yml 을 따름
+    ])
+    page.add_project()
+    assert any(m[0] == "error" and "root" in m[2] for m in dialogs.messages)
+    assert w.ctx.cfg.projects["web"].preset == "vite" and page.table.rowCount() == 2
+
+    page.table.selectRow(0)  # erp
+    page.dialog_factory = lambda *a: FakeProjectDialog(*a, plan=[("erp", {"root": maven_project.as_posix(),
+                                                                          "server_path": "/app/NEW"})])
+    page.edit_project()
+    raw = config_store.load_raw(path)["projects"]["erp"]
+    assert raw["server_path"] == "/app/NEW" and raw["hooks"] == {"post_apply": ["restart"]}
+
+    page.table.selectRow(1)
+    page.delete_project()
+    assert "web" not in w.ctx.cfg.projects
+
+
+# ---------------------------------------------------------------------- 배포 화면
+def test_deploy_files_preview_and_make(qapp, tmp_path, maven_project):
+    dialogs = FakeDialogs()
+    w = make_window(_config(tmp_path, maven_project), dialogs)
+    d = w.deploy_page
+    assert w.nav.currentRow() == PAGE_DEPLOY and d.project.name == "erp"
+    assert not d.tabs.isTabVisible(TAB_REQUESTS) and not d.tabs.isTabVisible(TAB_BUILD)
+    assert d.tabs.currentIndex() == TAB_FILES
+
+    d.files_edit.setPlainText("src/main/java/com/acme/User.java\nsrc/main/webapp/WEB-INF/views/user/list.jsp\n")
+    d.preview()
+    assert d.make_btn.isEnabled() and d.result_table.rowCount() == 2
+    assert "서버 반영 4개" in d.summary_label.text()
+    d.files_edit.appendPlainText("pom.xml")          # 입력이 바뀌면 다시 미리보기 해야 함
+    assert not d.make_btn.isEnabled()
+    d.preview()
+    assert any("pom.xml" in d.messages.item(i).text() for i in range(d.messages.count()))  # 알림
+
+    d.make_package()
+    pkg = d.last_result.out_dir
+    assert (pkg / "files/WEB-INF/classes/com/acme/User.class").is_file()
+    assert d.done_label.isVisibleTo(w) and "./shipkit.sh check" in d.done_label.text()
+
+
+def test_deploy_failure_asks_before_making(qapp, tmp_path, maven_project):
+    dialogs = FakeDialogs(answer=False)
+    w = make_window(_config(tmp_path, maven_project), dialogs)
+    d = w.deploy_page
+    d.files_edit.setPlainText("src/main/webapp/WEB-INF/views/user/list.jsp\nsrc/main/webapp/nope.jsp")
+    d.preview()
+    assert "실패 1" in d.summary_label.text()
+    d.make_package()
+    assert dialogs.messages[-1][0] == "ask" and d.last_result is None
+    dialogs.answer = True
+    d.make_package()
+    assert (d.last_result.out_dir / "manifest.txt").read_text(encoding="utf-8") == "WEB-INF/views/user/list.jsp\n"
+
+
+def test_deploy_github_pr_flow(qapp, tmp_path, maven_project, monkeypatch):
+    routes = {
+        f"{API}/repos/{REPO}/pulls": FakeResponse(200, [_pr(12, merged_at="2026-10-05T00:00:00Z", title="JSP")]),
+        f"{API}/repos/{REPO}/pulls/12": FakeResponse(200, _pr(12, merged_at="2026-10-05T00:00:00Z")),
+        f"{API}/repos/{REPO}/pulls/12/files": [FakeResponse(200, [
+            {"filename": "src/main/webapp/WEB-INF/views/user/list.jsp", "status": "modified"}])],
+    }
+    monkeypatch.setattr(providers, "github_client", lambda cfg: _client(routes)[0])
+    path = _config(tmp_path, maven_project, github_repo=REPO)
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    data["github"] = {}
+    path.write_text(yaml.safe_dump(data), encoding="utf-8")
+    w = make_window(path)
+    d = w.deploy_page
+    assert d.tabs.isTabVisible(TAB_REQUESTS) and d.tabs.currentIndex() == TAB_REQUESTS
+    d.load_requests()
+    assert d.req_table.rowCount() == 1 and d.req_table.item(0, 1).text() == "#12"
+    d.preview()                                      # 아무것도 안 고르면 안내
+    assert w.ctx.dialogs.messages[-1][2].startswith("배포할 MR/PR")
+    d.req_table.item(0, 0).setCheckState(Qt.CheckState.Checked)
+    d.preview()
+    assert "GitHub PR #12" in d.summary_label.text()
+    d.make_package()
+    report = (d.last_result.out_dir / "report.md").read_text(encoding="utf-8")
+    assert "## Pull Request" in report
+
+
+def test_deploy_sync_project_defaults_to_build_tab(qapp, tmp_path):
+    root = tmp_path / "web"
+    write(root / "dist/index.html", "<html/>")
+    write(root / PROJECT_FILE, yaml.safe_dump({"preset": "vite", "server_path": "/var/www/web"}))
+    path = tmp_path / "c.yaml"
+    path.write_text(yaml.safe_dump({"defaults": {"output_dir": (tmp_path / "out").as_posix()},
+                                    "projects": {"web": {"root": root.as_posix()}}}), encoding="utf-8")
+    w = make_window(path)
+    d = w.deploy_page
+    assert d.tabs.currentIndex() == TAB_BUILD and "빌드 결과 동기화" in d.mode_label.text()
+    d.archive_check.setChecked(True)
+    d.preview()
+    d.make_package()
+    assert d.last_result.archive.name.endswith(".tar.gz")

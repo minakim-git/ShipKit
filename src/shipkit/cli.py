@@ -27,16 +27,16 @@ from typing import List, Optional, Sequence, Tuple
 
 from shipkit import (
     CLI_NAME, PROJECT_FILE, __app_name__, __tagline__, __version__, legacy, mapper, packager,
-    projectfile, sync,
+    projectfile, sync, workflow,
 )
 from shipkit.config import (
     _GITHUB_REPO_RE, DEFAULT_CONFIG_NAME, PRESET_ALIASES, PRESETS, Config, ConfigError, ProjectConfig,
     _parse_server_path,
     load_config, resolve_preset, user_config_path,
 )
-from shipkit.models import Entry, FileChange, SourceInfo, Status, merge_changes
+from shipkit.models import Entry, FileChange, SourceInfo, Status
 from shipkit.secrets import SecretError, delete_token, set_token, token_source
-from shipkit.sources import git_local, manual
+from shipkit.sources import git_local
 from shipkit.sources import providers
 from shipkit.sources.github import GitHubError
 from shipkit.sources.gitlab import GitLabError
@@ -243,26 +243,16 @@ def cmd_requests(args: argparse.Namespace) -> int:
 def _collect(args: argparse.Namespace, cfg: Config, project: ProjectConfig) -> Tuple[List[FileChange], SourceInfo]:
     modes = sum(bool(x) for x in (args.mr, getattr(args, "pr", None), args.git, args.files, args.paths))
     if modes == 0 and project.mode == "sync":
-        return [], SourceInfo(kind="build", description=f"빌드 결과 전체 ({project.build_dir}, 변경 목록 없음)")
+        return workflow.collect_build(project)
     if modes != 1:
         raise UsageError("변경 파일 출처를 하나만 지정하세요: --mr, --pr, --git, --files, 또는 경로 직접 나열")
 
     if args.mr or getattr(args, "pr", None):
         provider = _provider(cfg, project, "gitlab" if args.mr else "github")
-        return collect_requests(provider, project, args.mr or args.pr)
+        return workflow.collect_requests(provider, project, args.mr or args.pr)
 
     if args.git:
-        changes, desc = git_local.collect_from_git(project.root, args.git)
-        source = SourceInfo(kind="git-diff", description=desc)
-        _, head = git_local.parse_range(args.git)
-        head_sha = git_local.resolve_commit(project.root, head)
-        local_sha = git_local.resolve_commit(project.root, "HEAD")
-        if head_sha and local_sha and head_sha != local_sha:
-            source.warnings.append(
-                f"로컬 HEAD({local_sha[:9]})가 범위 끝 {head}({head_sha[:9]})와 다릅니다. "
-                "복사되는 파일은 지금 작업 폴더(현재 브랜치)의 파일과 빌드 결과입니다."
-            )
-        return changes, source
+        return workflow.collect_git(project, args.git)
 
     if args.files:
         if args.files == "-":
@@ -276,84 +266,25 @@ def _collect(args: argparse.Namespace, cfg: Config, project: ProjectConfig) -> T
             desc = f"직접 입력 ({path.name})"
     else:
         lines, desc = args.paths, "직접 입력 (명령줄)"
-    changes, errors = manual.parse_lines(lines)
-    if errors:
-        raise UsageError("파일 목록 오류:\n  " + "\n  ".join(errors))
-    return merge_changes([changes]), SourceInfo(kind="manual", description=desc)
-
-
-def collect_requests(provider: providers.Provider, project: ProjectConfig,
-                     numbers: List[int]) -> Tuple[List[FileChange], SourceInfo]:
-    changes, source = provider.collect(numbers)
-    _check_local_has_requests(project, source, provider.label)
-    return changes, source
-
-
-def _check_local_has_requests(project: ProjectConfig, source: SourceInfo, label: str = "MR") -> None:
-    """로컬 저장소(빌드 대상)에 MR/PR 머지 커밋이 들어 있는지 확인한다."""
-    if not git_local.is_git_repo(project.root):
-        source.warnings.append(f"로컬 경로가 git 저장소가 아니어서 {label} 반영 여부를 확인하지 못했습니다.")
-        return
-    for mr in source.merge_requests:
-        sha = mr.get("commit_sha")
-        if not sha:
-            continue
-        ref = mr.get("ref") or f"!{mr['iid']}"
-        has = git_local.contains_commit(project.root, sha)
-        if has is False:
-            source.warnings.append(
-                f"로컬 HEAD 에 {label} {ref} 의 커밋({sha[:8]})이 없습니다. "
-                "git pull 후 다시 빌드했는지 확인하세요."
-            )
-        elif has is None:
-            source.warnings.append(
-                f"로컬 저장소에 {label} {ref} 의 커밋({sha[:8]})이 없습니다. git fetch/pull 이 필요합니다."
-            )
-
-
-def _mark_uncommitted(project: ProjectConfig, entries: List[Entry], changes: List[FileChange],
-                      source: SourceInfo) -> None:
-    """커밋되지 않은 로컬 수정이 있는 파일을 경고한다 (테스트용 설정 등이 운영에 섞이는 것 방지)."""
-    if not git_local.is_git_repo(project.root):
-        return
     try:
-        dirty = git_local.dirty_paths(project.root)
-    except git_local.GitError as e:
-        log.warning("git status 실패: %s", e)
-        return
-    if project.mode == "sync":
-        # 빌드 결과는 보통 git 에 없으므로, 빌드에 들어갔을 수 있는 소스의 미커밋 수정을 본다.
-        prefix = f"{project.build_dir}/"
-        targets = {c.path for c in changes} if changes else dirty
-        hits = sorted(d for d in dirty & targets if not d.startswith(prefix))
-        if hits:
-            shown = ", ".join(hits[:5]) + (f" 외 {len(hits) - 5}개" if len(hits) > 5 else "")
-            source.warnings.append(f"커밋되지 않은 로컬 수정이 빌드에 들어갔을 수 있습니다: {shown}")
-        return
-    for e in entries:
-        if e.change.path in dirty and e.artifacts:
-            e.warn("커밋되지 않은 로컬 수정이 있습니다 - 저장소와 다른 내용이 배포될 수 있습니다")
+        return workflow.collect_lines(lines, desc)
+    except workflow.InputError as e:
+        raise UsageError(str(e)) from e
+
+
+# 대화형 모드가 쓰는 이름 (실제 구현은 workflow)
+collect_requests = workflow.collect_requests
+is_blocked = workflow.is_blocked
 
 
 def prepare_entries(project: ProjectConfig, changes: List[FileChange], source: SourceInfo) -> Optional[List[Entry]]:
     """배포 계획을 만든다. sync 모드에서 빌드 결과가 없으면 안내를 출력하고 None."""
-    source.notes.extend(n for n in mapper.collect_notices(project, changes) if n not in source.notes)
-    if project.mode == "sync":
-        entries = sync.plan_sync(project, changes, source)
-        if not any(e.artifacts for e in entries):
-            _print_result(packager.build_package(project, entries, source, dry_run=True))
-            print("\n빌드 결과가 없어 패키지를 만들지 않았습니다.")
-            return None
-    else:
-        entries = mapper.plan(project, changes)
-    _mark_uncommitted(project, entries, changes, source)
+    entries = workflow.plan(project, changes, source)
+    if project.mode == "sync" and not workflow.has_artifacts(entries):
+        _print_result(packager.build_package(project, entries, source, dry_run=True))
+        print("\n빌드 결과가 없어 패키지를 만들지 않았습니다.")
+        return None
     return entries
-
-
-def is_blocked(entries: List[Entry], source: SourceInfo, strict: bool) -> bool:
-    return any(e.status == Status.ERROR for e in entries) or (
-        strict and bool(source.warnings or any(e.status == Status.WARN for e in entries))
-    )
 
 
 def cmd_package(args: argparse.Namespace) -> int:

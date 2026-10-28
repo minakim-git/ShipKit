@@ -15,16 +15,20 @@ dependencies = [
 [project.optional-dependencies]
 keyring = ["keyring>=23"]
 dev = ["pytest>=7"]
+gui = ["PySide6>=6.6"]
 build = ["pyinstaller>=6"]
 
 [project.scripts]
 shipkit = "shipkit.cli:main"
 
+[project.gui-scripts]
+shipkit-gui = "shipkit.gui.app:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-shipkit = ["templates/*"]
+shipkit = ["templates/*", "gui/assets/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

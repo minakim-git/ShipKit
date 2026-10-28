@@ -24,7 +24,8 @@ Java, Vue/React, Python, PHP, 정적 사이트 등 언어와 상관없이 쓸 �
 - **서버 안전장치**: 체크섬으로 업로드 중 손상 검증, 같은 대상에 대한 동시 배포 잠금, 서버별 배포 이력, 새로 만든 파일·폴더의 소유자·권한 지정
 - **팀 공유 설정 `.shipkit.yml`**: 프로젝트 저장소에 커밋해 두면 팀원은 clone 만 해도 프리셋·서버 경로·hooks 가 맞춰집니다. 개인 설정에는 로컬 경로와 토큰만 남습니다.
 - **프로젝트 자동 인식**: 프로젝트 폴더 안에서 실행하면 `-p` 없이 그 프로젝트를 고릅니다.
-- **대화형 모드**: 인자 없이 `shipkit` 만 실행하면 프로젝트 → 변경 출처 → 미리보기 → 생성 순서로 안내합니다.
+- **화면(GUI) 프로그램 `ShipKit.exe`**: 프로젝트를 고르고, MR/PR을 체크하고, 미리보기를 확인한 뒤 버튼 하나로 패키지를 만듭니다. 프로젝트 등록과 GitLab·GitHub 설정, 토큰 저장도 화면에서 합니다.
+- **명령어(CLI)·대화형 모드**: Jenkins 같은 자동화나 명령어에 익숙한 사람을 위해 같은 기능을 명령어로도 제공합니다.
 - **보고서 `report.md`**: MR 정보, 파일별 처리 결과, 알림, 서버 반영 절차
 - **보안**: 토큰은 환경변수나 OS 키링(Windows 자격 증명 관리자)에만 둡니다. 설정 파일에 넣으면 거부합니다. SSL 검증은 기본으로 켜져 있고, 모든 요청에 타임아웃이 있습니다.
 
@@ -45,16 +46,14 @@ Java, Vue/React, Python, PHP, 정적 사이트 등 언어와 상관없이 쓸 �
 
 ## 설치
 
-### 방법 1: `ShipKit.exe` (Python 없이)
+### 방법 1: exe (Python 없이) - 팀원에게 권장
 
-`ShipKit.exe` 파일 하나만 있으면 됩니다. 원하는 폴더(예: `C:\Tools\ShipKit`)에 두고, 그 폴더를 PATH에 추가하면 어디서든 실행할 수 있습니다.
+| 파일 | 용도 |
+|---|---|
+| **`ShipKit.exe`** (약 55MB) | 화면 프로그램. 더블클릭해서 씁니다. |
+| `shipkit-cli.exe` (약 16MB) | 명령어 버전. 아래 [사용법](#사용법)의 `shipkit` 명령을 `shipkit-cli`로 바꿔 쓰면 됩니다. |
 
-```bat
-ShipKit.exe --version
-ShipKit.exe init
-```
-
-exe 를 만드는 방법은 아래 [exe 만들기](#exe-만들기)를 참고하세요.
+원하는 폴더(예: `C:\Tools\ShipKit`)에 두고 실행하면 됩니다. exe 만드는 방법은 [exe 만들기](#exe-만들기)를 참고하세요.
 
 ### 방법 2: Python 으로 설치
 
@@ -62,14 +61,25 @@ Python 3.9 이상이 필요합니다.
 
 ```bash
 python -m venv .venv
-.venv\Scripts\pip install -e ".[keyring]"
+.venv\Scripts\pip install -e ".[keyring,gui]"
 ```
 
-설치하면 `.venv\Scripts\shipkit.exe`가 생깁니다. 이 폴더를 PATH에 추가하면 어디서든 `shipkit`으로 실행할 수 있습니다.
+설치하면 `.venv\Scripts\shipkit.exe`(명령어)와 `.venv\Scripts\shipkit-gui.exe`(화면)가 생깁니다.
 
 ## 사용법
 
-### 대화형 모드 (처음 쓰는 사람에게 권장)
+### 화면 프로그램 (`ShipKit.exe`)
+
+1. **처음 실행**: 기존 배포 툴(compiled-java-deployer) 설정이 있으면 가져올지 묻습니다. 없으면 **설정** 화면에서 GitLab/GitHub 주소와 패키지 생성 경로를 입력하고 저장한 뒤, **토큰 저장**과 **연결 테스트**를 합니다.
+2. **프로젝트** 화면에서 프로젝트를 추가합니다. 저장소에 `.shipkit.yml`이 있으면 로컬 경로만 입력해도 됩니다. 비워 둔 칸은 `.shipkit.yml`이나 기본값을 따릅니다.
+3. **배포** 화면
+   - 프로젝트를 고르고, 탭에서 무엇을 배포할지 고릅니다. **MR/PR**(목록 불러오기 → 체크), **git 범위**, **파일 목록**(붙여넣기), **빌드 결과 전체**(sync 방식) 중 하나입니다.
+   - **미리보기**를 누르면 서버에 반영·삭제될 파일, 실패·경고, 알림, 서버에서 실행할 명령이 나옵니다. 실패와 경고가 표 맨 위에 옵니다.
+   - **패키지 만들기**를 누릅니다. 실패 항목이 있으면 빼고 만들지 먼저 묻습니다. 다 만들면 **폴더 열기**, **보고서 열기** 버튼이 나타납니다.
+
+GitLab 조회나 패키지 생성 중에도 창이 멈추지 않습니다. 화면과 명령어는 같은 설정 파일을 씁니다. 화면에서 저장하면 설정 파일의 주석은 사라지며, 저장 직전 내용은 `.bak` 파일로 남습니다.
+
+### 대화형 모드 (명령어)
 
 ```bash
 shipkit
@@ -324,11 +334,18 @@ Jenkins 등에서 그대로 쓸 수 있습니다.
 ### exe 만들기
 
 ```bash
-.venv\Scripts\pip install -e ".[keyring,build]"
-.venv\Scripts\python scripts\build_exe.py
+.venv\Scripts\pip install -e ".[keyring,gui,build]"
+.venv\Scripts\python scripts\build_exe.py          # 둘 다 (gui / cli 로 하나만도 가능)
 ```
 
-`dist\ShipKit.exe` 하나가 만들어집니다(약 16MB). 서버 스크립트 템플릿과 키링(Windows 자격 증명 관리자) 연동이 들어 있고, 파일 속성에 버전 정보가 표시됩니다. 팀원에게는 이 exe 파일만 전달하면 됩니다.
+`dist\ShipKit.exe`(화면, 약 55MB)와 `dist\shipkit-cli.exe`(명령어, 약 16MB)가 만들어집니다. 서버 스크립트 템플릿과 키링(Windows 자격 증명 관리자) 연동이 들어 있고, 파일 속성에 버전 정보가 표시됩니다. 팀원에게는 `ShipKit.exe`만 전달하면 됩니다.
+
+GUI 테스트는 화면 없이(`QT_QPA_PLATFORM=offscreen`) 실제 위젯을 조작해 확인합니다. PySide6가 설치되어 있지 않으면 건너뜁니다.
+
+## 향후 계획
+
+- **SFTP 업로드**: WinSCP 없이 패키지를 서버에 올리고 서버 스크립트(check → backup → apply)까지 원격으로 실행
+- 화면에서 hooks·제외 규칙 같은 고급 설정 편집 (지금은 `.shipkit.yml`이나 설정 파일에서 편집)
 
 ## 알려진 제한
 
