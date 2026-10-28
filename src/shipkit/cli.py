@@ -1,6 +1,8 @@
 """ShipKit 명령줄 인터페이스.
 
-  shipkit init                      설정 파일(shipkit.yaml) 생성
+  shipkit                           대화형 모드 (프로젝트 -> 변경 출처 -> 미리보기 -> 생성)
+  shipkit init                      개인 설정 파일(shipkit.yaml) 생성
+  shipkit init-project              프로젝트 저장소에 팀 공유 설정(.shipkit.yml) 생성
   shipkit import-legacy             기존 배포 툴(compiled-java-deployer) 프로젝트 설정 가져오기
   shipkit check   [-p 프로젝트]      설정·경로·GitLab 연결 점검
   shipkit mr      [-p 프로젝트]      GitLab MR 목록
@@ -23,11 +25,12 @@ from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
 
 from shipkit import (
-    CLI_NAME, SCRIPT_NAME, __app_name__, __tagline__, __version__, legacy, mapper, packager, sync,
+    CLI_NAME, PROJECT_FILE, SCRIPT_NAME, __app_name__, __tagline__, __version__, legacy, mapper, packager,
+    projectfile, sync,
 )
 from shipkit.config import (
-    DEFAULT_CONFIG_NAME, PRESET_ALIASES, PRESETS, Config, ConfigError, ProjectConfig, load_config,
-    user_config_path,
+    DEFAULT_CONFIG_NAME, PRESET_ALIASES, PRESETS, Config, ConfigError, ProjectConfig, _parse_server_path,
+    load_config, resolve_preset, user_config_path,
 )
 from shipkit.models import Entry, FileChange, SourceInfo, Status, merge_changes
 from shipkit.secrets import SecretError, delete_token, get_token, set_token, token_source
@@ -76,6 +79,30 @@ def cmd_init(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def cmd_init_project(args: argparse.Namespace) -> int:
+    root = projectfile.find_repo_root(Path(args.path or Path.cwd()).resolve())
+    target = root / PROJECT_FILE
+    if args.preset:
+        resolve_preset(args.preset, "--preset")
+        preset, reason = PRESET_ALIASES.get(args.preset, args.preset), "직접 지정"
+    else:
+        preset, reason = projectfile.detect_preset(root)
+    server_path = args.server_path
+    if not server_path and sys.stdin.isatty():
+        server_path = input("서버 배포 경로 (예: /app/tomcat/webapps/ROOT, 비워 두면 나중에 직접 입력): ").strip()
+    if server_path:
+        server_path = _parse_server_path(server_path, "--server-path")
+    text = projectfile.render(args.name or root.name, preset, server_path or None, args.gitlab_project)
+    _write_new_file(target, text, args.force)
+    print(f"프로젝트 설정 파일을 만들었습니다: {target}")
+    print(f"  프리셋: {preset} ({reason})")
+    if not server_path:
+        print("  [필수] server_path 를 적어야 합니다. 파일을 열어 주석(#)을 풀고 서버 경로를 넣으세요.")
+    print(f"저장소에 커밋하면 팀원도 같은 설정을 씁니다. 이 폴더 안에서 '{CLI_NAME}' 을 실행하면 프로젝트를 자동으로 찾습니다.")
+    print(f"  (개인 설정에 등록하지 않았다면 개인 설정의 defaults.output_dir 가 필요합니다. 예: D:/deploy/{{project}})")
+    return EXIT_OK
+
+
 def cmd_import_legacy(args: argparse.Namespace) -> int:
     db = Path(args.db) if args.db else legacy.legacy_db_path()
     try:
@@ -99,7 +126,15 @@ def cmd_import_legacy(args: argparse.Namespace) -> int:
 def cmd_check(args: argparse.Namespace) -> int:
     cfg = load_config(args.config)
     print(f"설정 파일: {cfg.path}")
-    names = [args.project] if args.project else sorted(cfg.projects)
+    if args.project:
+        targets = [cfg.project(args.project)]
+    else:
+        targets = [cfg.projects[n] for n in sorted(cfg.projects)]
+        found = cfg.discover(Path.cwd().resolve())
+        if found is not None and all(found.root != t.root for t in targets):
+            targets.insert(0, found)
+    if not targets:
+        print("등록된 프로젝트가 없습니다.")
     ok = True
 
     def item(good: bool, msg: str) -> None:
@@ -107,10 +142,12 @@ def cmd_check(args: argparse.Namespace) -> int:
         ok &= good
         print(f"  {'[정상]' if good else '[문제]'} {msg}")
 
-    for name in names:
-        p = cfg.project(name)
+    for p in targets:
         print(f"\n프로젝트 {p.name}")
         item(p.root.is_dir(), f"로컬 경로: {p.root}")
+        if p.project_file:
+            note = " (개인 설정에 없는 프로젝트 - 이 파일로 인식)" if p.discovered else ""
+            print(f"  [정보] 프로젝트 설정 파일: {p.project_file}{note}")
         if p.root.is_dir():
             item(git_local.is_git_repo(p.root), "git 저장소 여부 (--git 모드와 MR 반영 확인에 필요)")
             if p.mode == "sync":
@@ -148,8 +185,7 @@ def cmd_check(args: argparse.Namespace) -> int:
                 client = _client(cfg)
                 user = client.current_user()
                 item(True, f"연결/인증: {user.get('username')} ({user.get('name')})")
-                for name in names:
-                    p = cfg.project(name)
+                for p in targets:
                     if p.gitlab_project:
                         try:
                             info = client.get_project(p.gitlab_project)
@@ -269,6 +305,27 @@ def _mark_uncommitted(project: ProjectConfig, entries: List[Entry], changes: Lis
             e.warn("커밋되지 않은 로컬 수정이 있습니다 - 저장소와 다른 내용이 배포될 수 있습니다")
 
 
+def prepare_entries(project: ProjectConfig, changes: List[FileChange], source: SourceInfo) -> Optional[List[Entry]]:
+    """배포 계획을 만든다. sync 모드에서 빌드 결과가 없으면 안내를 출력하고 None."""
+    source.notes.extend(n for n in mapper.collect_notices(project, changes) if n not in source.notes)
+    if project.mode == "sync":
+        entries = sync.plan_sync(project, changes, source)
+        if not any(e.artifacts for e in entries):
+            _print_result(packager.build_package(project, entries, source, dry_run=True))
+            print("\n빌드 결과가 없어 패키지를 만들지 않았습니다.")
+            return None
+    else:
+        entries = mapper.plan(project, changes)
+    _mark_uncommitted(project, entries, changes, source)
+    return entries
+
+
+def is_blocked(entries: List[Entry], source: SourceInfo, strict: bool) -> bool:
+    return any(e.status == Status.ERROR for e in entries) or (
+        strict and bool(source.warnings or any(e.status == Status.WARN for e in entries))
+    )
+
+
 def cmd_package(args: argparse.Namespace) -> int:
     cfg = load_config(args.config)
     project = cfg.project(args.project)
@@ -279,33 +336,30 @@ def cmd_package(args: argparse.Namespace) -> int:
     if not changes and project.mode == "changes":
         print("변경 파일이 없습니다.")
         return EXIT_OK
+    entries = prepare_entries(project, changes, source)
+    if entries is None:
+        return EXIT_FAIL
+    return run_package(project, entries, source, changes, archive=args.archive, dry_run=args.dry_run,
+                       strict=args.strict, force=args.force)
 
-    source.notes.extend(mapper.collect_notices(project, changes))
-    if project.mode == "sync":
-        entries = sync.plan_sync(project, changes, source)
-        if not any(e.artifacts for e in entries):
-            _print_result(packager.build_package(project, entries, source, dry_run=True))
-            print("\n빌드 결과가 없어 패키지를 만들지 않았습니다.")
-            return EXIT_FAIL
-    else:
-        entries = mapper.plan(project, changes)
-    _mark_uncommitted(project, entries, changes, source)
-    blocked = any(e.status == Status.ERROR for e in entries) or (
-        args.strict and (source.warnings or any(e.status == Status.WARN for e in entries))
-    )
-    dry_run = args.dry_run or (blocked and not args.force)
-    result = packager.build_package(project, entries, source, archive=args.archive, dry_run=dry_run,
+
+def run_package(project: ProjectConfig, entries: List[Entry], source: SourceInfo, changes: List[FileChange],
+                archive: Optional[str] = None, dry_run: bool = False, strict: bool = False, force: bool = False,
+                show: bool = True) -> int:
+    blocked = is_blocked(entries, source, strict)
+    preview_only = dry_run or (blocked and not force)
+    result = packager.build_package(project, entries, source, archive=archive, dry_run=preview_only,
                                     source_changes=changes)
-
-    _print_result(result)
+    if show:
+        _print_result(result)
 
     if not result.manifest and not result.deletes:
         print("\n서버에 반영할 파일이 없습니다.")
         return EXIT_FAIL if result.has_errors else EXIT_OK
-    if args.dry_run:
+    if dry_run:
         print("\n(--dry-run: 패키지를 만들지 않았습니다)")
         return EXIT_FAIL if blocked else EXIT_OK
-    if dry_run:
+    if preview_only:
         reason = "실패 항목" if result.has_errors else "경고(--strict)"
         print(f"\n{reason}이 있어 패키지를 만들지 않았습니다. 원인을 해결하거나, "
               "문제 항목을 제외하고 만들려면 --force 를 붙이세요.")
@@ -360,6 +414,13 @@ def _print_result(result: packager.PackageResult) -> None:
     )
 
 
+# ---------------------------------------------------------------------- start (대화형)
+def cmd_start(args: argparse.Namespace) -> int:
+    from shipkit.interactive import Wizard
+    cfg = load_config(args.config)
+    return Wizard(cfg).run(project_name=args.project)
+
+
 # ---------------------------------------------------------------------- presets
 def cmd_presets(args: argparse.Namespace) -> int:
     print(f"{'프리셋':<10} {'방식':<8} 설명")
@@ -406,12 +467,26 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--version", action="version", version=f"{__app_name__} {__version__} - {__tagline__}")
-    sub = parser.add_subparsers(dest="command", required=True)
+    parser.add_argument("-c", "--config", dest="top_config", metavar="CONFIG", help="설정 파일 경로 (대화형 모드용)")
+    sub = parser.add_subparsers(dest="command")
 
-    p = sub.add_parser("init", parents=[common], help="설정 파일 생성")
+    p = sub.add_parser("init", parents=[common], help="개인 설정 파일 생성")
     p.add_argument("path", nargs="?", help=f"만들 파일 경로 (기본: {user_config_path()})")
     p.add_argument("--force", action="store_true", help="이미 있으면 덮어쓰기")
     p.set_defaults(func=cmd_init)
+
+    p = sub.add_parser("init-project", parents=[common], help=f"프로젝트 저장소에 팀 공유 설정({PROJECT_FILE}) 생성")
+    p.add_argument("path", nargs="?", help="프로젝트 폴더 (기본: 현재 폴더가 속한 git 저장소)")
+    p.add_argument("--preset", help="프리셋 (생략하면 저장소를 보고 추정)")
+    p.add_argument("--server-path", help="서버 배포 경로")
+    p.add_argument("--gitlab-project", help="GitLab 프로젝트 ID 또는 그룹/프로젝트")
+    p.add_argument("--name", help="프로젝트 이름 (기본: 폴더 이름)")
+    p.add_argument("--force", action="store_true", help="이미 있으면 덮어쓰기")
+    p.set_defaults(func=cmd_init_project)
+
+    p = sub.add_parser("start", parents=[common], help="대화형 모드 (인자 없이 실행한 것과 같음)")
+    p.add_argument("-p", "--project", help="프로젝트 이름")
+    p.set_defaults(func=cmd_start)
 
     p = sub.add_parser("import-legacy", parents=[common], help="기존 배포 툴(compiled-java-deployer) 프로젝트 설정 가져오기")
     p.add_argument("--db", help=f"기존 툴 DB 경로 (기본: {legacy.legacy_db_path()})")
@@ -457,7 +532,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             stream.reconfigure(errors="replace")  # cp949 콘솔에서도 출력이 죽지 않도록
         except (AttributeError, ValueError):
             pass
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.command is None:
+        if not sys.stdin.isatty():
+            parser.print_help()
+            return EXIT_USAGE
+        args = parser.parse_args(["start"] + (["-c", args.top_config] if args.top_config else []))
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.WARNING,
         format="%(levelname)s %(name)s: %(message)s",

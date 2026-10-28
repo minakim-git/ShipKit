@@ -22,6 +22,9 @@ Java, Vue/React, Python, PHP, 정적 사이트 등 언어와 상관없이 쓸 �
 - **서버 스크립트 `shipkit.sh`**: `check` → `backup` → `apply` → `rollback`, `history`. 줄바꿈은 항상 LF이고, 한 번 만든 백업은 덮어쓰지 않으며, 서버와 같은 파일은 건드리지 않습니다.
 - **반영 전·후 명령(hooks)**: WAS 재시작, `pip install` 같은 명령을 설정해 두면 apply·rollback 때 확인을 받고 실행합니다. 특정 파일이 바뀐 경우에만 넣을 수도 있습니다(`when`).
 - **서버 안전장치**: 체크섬으로 업로드 중 손상 검증, 같은 대상에 대한 동시 배포 잠금, 서버별 배포 이력, 새로 만든 파일·폴더의 소유자·권한 지정
+- **팀 공유 설정 `.shipkit.yml`**: 프로젝트 저장소에 커밋해 두면 팀원은 clone 만 해도 프리셋·서버 경로·hooks 가 맞춰집니다. 개인 설정에는 로컬 경로와 토큰만 남습니다.
+- **프로젝트 자동 인식**: 프로젝트 폴더 안에서 실행하면 `-p` 없이 그 프로젝트를 고릅니다.
+- **대화형 모드**: 인자 없이 `shipkit` 만 실행하면 프로젝트 → 변경 출처 → 미리보기 → 생성 순서로 안내합니다.
 - **보고서 `report.md`**: MR 정보, 파일별 처리 결과, 알림, 서버 반영 절차
 - **보안**: 토큰은 환경변수나 OS 키링(Windows 자격 증명 관리자)에만 둡니다. 설정 파일에 넣으면 거부합니다. SSL 검증은 기본으로 켜져 있고, 모든 요청에 타임아웃이 있습니다.
 
@@ -53,12 +56,26 @@ python -m venv .venv
 
 ## 사용법
 
+### 대화형 모드 (처음 쓰는 사람에게 권장)
+
 ```bash
-shipkit init                      # 빈 설정 파일을 만들어 직접 작성
+shipkit
+```
+
+순서대로 물어봅니다. 언제든 `q`를 입력하면 그만둡니다.
+1. **프로젝트**: 현재 폴더의 프로젝트가 기본값입니다.
+2. **무엇을 배포할지**: GitLab MR 고르기, git 범위(최근 태그..HEAD가 기본값), 파일 목록 붙여넣기, (sync 방식) 빌드 결과 전체
+3. **미리보기 확인 후 생성**: 실패 항목이 있으면 빼고 만들지 묻고, `.tar.gz` 압축 여부도 묻습니다.
+
+### 명령어
+
+```bash
+shipkit init                      # 개인 설정 파일을 만들어 직접 작성
 #   또는 shipkit import-legacy    # 기존 배포 툴(compiled-java-deployer)의 프로젝트 설정 가져오기 (토큰·비밀번호 제외)
 shipkit token set                 # GitLab 토큰을 OS 키링에 저장 (입력 내용은 화면에 표시되지 않음)
 shipkit check                     # 설정·경로·빌드 폴더·GitLab 연결 점검
 shipkit presets                   # 사용 가능한 프리셋 목록
+shipkit init-project              # 프로젝트 저장소에 팀 공유 설정(.shipkit.yml) 만들기 (프리셋 자동 추정)
 
 shipkit mr -p erp                       # 최근 머지된 MR 목록 (--state opened|closed|all, --search)
 shipkit package -p erp --mr 128 131     # MR 기준 패키지
@@ -88,7 +105,41 @@ shipkit package -p web --mr 42          # MR 을 같이 주면 보고서에 소�
 
 ## 설정 파일
 
-다음 순서로 찾습니다.
+설정은 두 군데에 나뉩니다.
+
+| 파일 | 위치 | 담는 값 |
+|---|---|---|
+| **개인 설정** `shipkit.yaml` | 내 PC (`%APPDATA%\shipkit\`) | 로컬 경로(`root`), 패키지 생성 경로(`output_dir`), GitLab 주소. 토큰은 키링에 둡니다. |
+| **프로젝트 설정** `.shipkit.yml` | 프로젝트 저장소 루트 (커밋) | 프리셋, 서버 경로, hooks, 제외 규칙 등 팀이 같이 쓰는 값 |
+
+값의 우선순위는 **개인 `defaults` < `.shipkit.yml` < 개인 설정의 프로젝트 항목**입니다. 예를 들어 서버 경로는 `.shipkit.yml`에 두고, 개발 서버로 보낼 때만 개인 설정에서 덮어쓸 수 있습니다. 목록형 값(`exclude`, `notices`, `allow`, `deny`)은 세 곳의 값을 합칩니다.
+
+`.shipkit.yml`에는 개인 값(`root`, `output_dir`, `token`)을 넣을 수 없습니다. `shipkit init-project`로 만들면 저장소를 보고 프리셋을 추정해 줍니다(pom.xml → maven, vite → vite, requirements.txt → python 등).
+
+```yaml
+# .shipkit.yml (프로젝트 저장소에 커밋)
+name: web
+preset: vite
+server_path: /var/www/web
+gitlab_project: 42
+hooks:
+  post_apply: ["sudo systemctl reload nginx"]
+```
+
+```yaml
+# 개인 설정 (내 PC)
+gitlab:
+  url: https://gitlab.example.com
+defaults:
+  output_dir: D:/deploy/{project}     # {project} = 프로젝트 이름
+projects:
+  web:
+    root: C:/workspace/web            # 나머지 값은 .shipkit.yml 에서 가져옴
+```
+
+개인 설정에 등록하지 않은 저장소라도 `.shipkit.yml`이 있으면, 그 폴더 안에서 실행할 때 바로 인식합니다. 이때 `defaults.output_dir`가 필요합니다.
+
+개인 설정 파일은 다음 순서로 찾습니다.
 
 1. `--config` 인자
 2. 환경변수 `SHIPKIT_CONFIG`

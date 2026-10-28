@@ -2,6 +2,11 @@
 
 설정 파일 탐색 순서: --config 인자 > 환경변수(CONFIG_ENV) > 현재 폴더의 CONFIG_NAME > 사용자 공용 설정
 
+설정은 두 군데에 나뉜다.
+- 개인 설정(CONFIG_NAME): 로컬 경로(root), 패키지 생성 경로(output_dir), GitLab 주소 등 PC 마다 다른 값
+- 프로젝트 설정(PROJECT_FILE): 프로젝트 저장소 루트에 커밋해서 팀이 공유하는 값 (프리셋, 서버 경로, hooks 등)
+값의 우선순위는 개인 defaults < 프로젝트 설정 < 개인 설정의 프로젝트 항목. 목록형 값(exclude 등)은 합친다.
+
 배포 방식(mode)
 - changes: 변경 파일을 규칙(rules)에 따라 서버 경로로 매핑한다. (Java, Python, PHP, 정적 파일 등)
 - sync   : 빌드 결과 폴더(build_dir) 전체를 패키지에 담고, 서버에서 다른 파일만 반영한다.
@@ -20,7 +25,7 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
-from shipkit import CLI_NAME, CONFIG_ENV, CONFIG_NAME
+from shipkit import CLI_NAME, CONFIG_ENV, CONFIG_NAME, PROJECT_FILE
 
 DEFAULT_CONFIG_NAME = CONFIG_NAME
 # 패키지 폴더 이름 (strftime 형식, {project} = 프로젝트 이름). 기존 툴과 같은 2026-10-26-1133 형태.
@@ -191,6 +196,8 @@ class ProjectConfig:
     package_name: str = DEFAULT_PACKAGE_NAME
     hooks: Dict[str, List[Hook]] = field(default_factory=dict)
     server: ServerOptions = field(default_factory=ServerOptions)
+    project_file: Optional[Path] = None   # 읽어 들인 프로젝트 설정 파일 (없으면 None)
+    discovered: bool = False              # 개인 설정에 없고 프로젝트 설정 파일만으로 찾은 프로젝트
 
     def is_excluded(self, path: str) -> bool:
         return any(glob_match(path, pat) for pat in self.exclude)
@@ -219,19 +226,78 @@ class Config:
     path: Optional[Path]
     gitlab: Optional[GitLabConfig]
     projects: Dict[str, ProjectConfig]
+    defaults: Dict[str, Any] = field(default_factory=dict)
+    base_dir: Path = field(default_factory=Path.cwd)
 
-    def project(self, name: Optional[str]) -> ProjectConfig:
-        if name is None:
-            if len(self.projects) == 1:
-                return next(iter(self.projects.values()))
-            raise ConfigError(
-                "프로젝트를 지정해주세요 (-p). 등록된 프로젝트: " + ", ".join(sorted(self.projects))
-            )
-        if name not in self.projects:
-            raise ConfigError(
-                f"설정에 없는 프로젝트입니다: {name}. 등록된 프로젝트: " + ", ".join(sorted(self.projects))
-            )
-        return self.projects[name]
+    def project(self, name: Optional[str], cwd: Optional[Path] = None) -> ProjectConfig:
+        """이름으로 찾고, 이름이 없으면 현재 폴더로 추정한다.
+
+        현재 폴더가 등록된 프로젝트 안이면 그 프로젝트, 아니면 상위 폴더의 프로젝트 설정 파일로 찾은 프로젝트,
+        그것도 없고 등록된 프로젝트가 하나뿐이면 그 프로젝트.
+        """
+        if name is not None:
+            if name not in self.projects:
+                raise ConfigError(
+                    f"설정에 없는 프로젝트입니다: {name}. 등록된 프로젝트: " + (", ".join(sorted(self.projects)) or "없음")
+                )
+            return self.projects[name]
+        cwd = (cwd or Path.cwd()).resolve()
+        inside = [p for p in self.projects.values() if _is_within(cwd, p.root)]
+        if inside:
+            return max(inside, key=lambda p: len(p.root.parts))
+        found = self.discover(cwd)
+        if found is not None:
+            return found
+        if len(self.projects) == 1:
+            return next(iter(self.projects.values()))
+        raise ConfigError(
+            "프로젝트를 지정해주세요 (-p), 또는 프로젝트 폴더 안에서 실행하세요. 등록된 프로젝트: "
+            + (", ".join(sorted(self.projects)) or "없음")
+        )
+
+    def discover(self, cwd: Path) -> Optional[ProjectConfig]:
+        """개인 설정에 없는 저장소라도 프로젝트 설정 파일이 있으면 프로젝트로 쓴다."""
+        for d in [cwd] + list(cwd.parents):
+            if (d / PROJECT_FILE).is_file():
+                shared = load_project_file(d / PROJECT_FILE)
+                name = str(shared.get("name") or d.name)
+                if "output_dir" not in self.defaults:
+                    raise ConfigError(
+                        f"{d / PROJECT_FILE} 를 찾았지만 개인 설정에 defaults.output_dir 가 없습니다. "
+                        "예: output_dir: D:/deploy/{project}"
+                    )
+                project = _parse_project(name, {"root": str(d)}, self.defaults, self.base_dir)
+                project.discovered = True
+                return project
+        return None
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+# 프로젝트 설정 파일에 넣으면 안 되는 개인 값
+_PERSONAL_KEYS = ("root", "output_dir", "token")
+
+
+def load_project_file(path: Path) -> Dict[str, Any]:
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    except yaml.YAMLError as e:
+        raise ConfigError(f"프로젝트 설정 파일 YAML 문법 오류 ({path}): {e}") from e
+    data = _require_dict(data, str(path))
+    personal = [k for k in _PERSONAL_KEYS if k in data]
+    if personal:
+        raise ConfigError(
+            f"{path} 에는 개인 설정({', '.join(personal)})을 넣을 수 없습니다. "
+            f"PC 마다 다른 값은 개인 설정({CONFIG_NAME})에 적으세요."
+        )
+    return data
 
 
 def glob_match(path: str, pattern: str) -> bool:
@@ -306,13 +372,11 @@ def parse_config(data: Dict[str, Any], path: Optional[Path] = None) -> Config:
 
     defaults = _require_dict(data.get("defaults") or {}, "defaults")
     raw_projects = _require_dict(data.get("projects") or {}, "projects")
-    if not raw_projects:
-        raise ConfigError("projects 에 프로젝트가 하나 이상 있어야 합니다.")
 
     projects = {}
     for name, raw in raw_projects.items():
         projects[str(name)] = _parse_project(str(name), _require_dict(raw, f"projects.{name}"), defaults, base_dir)
-    return Config(path=path, gitlab=gitlab, projects=projects)
+    return Config(path=path, gitlab=gitlab, projects=projects, defaults=defaults, base_dir=base_dir)
 
 
 def resolve_preset(name: str, where: str) -> Dict[str, Any]:
@@ -325,21 +389,35 @@ def resolve_preset(name: str, where: str) -> Dict[str, Any]:
 
 def _parse_project(name: str, raw: Dict[str, Any], defaults: Dict[str, Any], base_dir: Path) -> ProjectConfig:
     where = f"projects.{name}"
+    root_value = raw.get("root") or defaults.get("root")
+    if not root_value:
+        raise ConfigError(f"{where}.root (프로젝트 로컬 경로)가 필요합니다.")
+    root = _resolve(root_value, base_dir)
+    project_file = root / PROJECT_FILE
+    shared = load_project_file(project_file) if project_file.is_file() else {}
+    layers = [defaults, shared, raw]  # 뒤가 우선
 
     def get(key: str, default: Any = None) -> Any:
-        return raw.get(key, defaults.get(key, default))
+        for layer in reversed(layers):
+            if key in layer:
+                return layer[key]
+        return default
 
-    root = get("root")
-    if not root:
-        raise ConfigError(f"{where}.root (프로젝트 로컬 경로)가 필요합니다.")
-    output_dir = get("output_dir")
+    def get_list(key: str) -> List[Any]:
+        merged: List[Any] = []
+        for layer in layers:
+            merged.extend(layer.get(key) or [])
+        return merged
+
+    output_dir = raw.get("output_dir") or defaults.get("output_dir")
     if not output_dir:
         raise ConfigError(f"{where}.output_dir (패키지 생성 경로)가 필요합니다.")
+    output_dir = str(output_dir).replace("{project}", name)
     server_path = _parse_server_path(get("server_path"), where)
 
     # 직접 규칙(rules)만 주고 preset 을 안 주면 프리셋 없이 changes 모드로 동작한다.
     preset_name = get("preset")
-    if preset_name is None and not raw.get("rules") and not get("build_dir"):
+    if preset_name is None and not get("rules") and not get("build_dir"):
         preset_name = "maven"  # 0.1 설정 호환
     preset = resolve_preset(str(preset_name), where) if preset_name else {}
     canonical = PRESET_ALIASES.get(str(preset_name), str(preset_name)) if preset_name else None
@@ -352,7 +430,7 @@ def _parse_project(name: str, raw: Dict[str, Any], defaults: Dict[str, Any], bas
     build_dir = dest = None
     prune: List[str] = []
     if mode == "changes":
-        rules_raw = raw.get("rules") or preset.get("rules")
+        rules_raw = get("rules") or preset.get("rules")
         if not rules_raw:
             raise ConfigError(f"{where}: changes 모드에는 preset 또는 rules 가 필요합니다.")
         for i, r in enumerate(rules_raw):
@@ -391,18 +469,18 @@ def _parse_project(name: str, raw: Dict[str, Any], defaults: Dict[str, Any], bas
         encodings = [encodings]
 
     notices = [Notice(**n) for n in preset.get("notices", [])]
-    for i, n in enumerate(get("notices") or []):
+    for i, n in enumerate(get_list("notices")):
         n = _require_dict(n, f"{where}.notices[{i}]")
         if not n.get("pattern") or not n.get("message"):
             raise ConfigError(f"{where}.notices[{i}] 에 pattern, message 가 필요합니다.")
         notices.append(Notice(str(n["pattern"]), str(n["message"])))
 
-    exclude = list(_COMMON_EXCLUDE) + list(preset.get("exclude", [])) + [str(x) for x in (get("exclude") or [])]
+    exclude = list(_COMMON_EXCLUDE) + list(preset.get("exclude", [])) + [str(x) for x in get_list("exclude")]
 
     gp = get("gitlab_project")
     return ProjectConfig(
         name=name,
-        root=_resolve(root, base_dir),
+        root=root,
         output_dir=_resolve(output_dir, base_dir),
         server_path=server_path,
         gitlab_project=str(gp) if gp not in (None, "") else None,
@@ -415,12 +493,13 @@ def _parse_project(name: str, raw: Dict[str, Any], defaults: Dict[str, Any], bas
         prune=prune,
         exclude=list(dict.fromkeys(exclude)),
         notices=notices,
-        deny=list(DEFAULT_DENY) + [str(x) for x in (get("deny") or [])],
-        allow=list(DEFAULT_ALLOW) + [str(x) for x in (get("allow") or [])],
+        deny=list(dict.fromkeys(list(DEFAULT_DENY) + [str(x) for x in get_list("deny")])),
+        allow=list(dict.fromkeys(list(DEFAULT_ALLOW) + [str(x) for x in get_list("allow")])),
         source_encodings=[str(e) for e in encodings],
         package_name=_parse_package_name(str(get("package_name", DEFAULT_PACKAGE_NAME)), name, where),
         hooks=_parse_hooks(get("hooks"), where),
         server=_parse_server_options(get("server"), where),
+        project_file=project_file if project_file.is_file() else None,
     )
 
 

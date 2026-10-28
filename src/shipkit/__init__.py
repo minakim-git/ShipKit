@@ -5,9 +5,10 @@
 
 __app_name__ = "ShipKit"
 __tagline__ = "Safe Deployment & Rollback Tool"
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 CLI_NAME = "shipkit"                   # 명령어, 키링 서비스, 사용자 설정 폴더 이름
 SCRIPT_NAME = f"{CLI_NAME}.sh"         # 패키지에 들어가는 서버 스크립트
 CONFIG_NAME = f"{CLI_NAME}.yaml"       # 설정 파일
 CONFIG_ENV = f"{CLI_NAME.upper()}_CONFIG"  # 설정 파일 경로 환경변수
+PROJECT_FILE = f".{CLI_NAME}.yml"      # 프로젝트 저장소에 커밋하는 팀 공유 설정

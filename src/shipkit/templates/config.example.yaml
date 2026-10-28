@@ -2,6 +2,8 @@
 # 경로는 슬래시(/)로 적는 것을 권장합니다. 예: D:/workspace/erp
 # 토큰은 이 파일에 적지 않습니다 -> 환경변수 또는 'shipkit token set' 사용
 # 사용 가능한 프리셋: 'shipkit presets'
+# 팀이 같이 쓰는 값(프리셋, 서버 경로, hooks 등)은 프로젝트 저장소의 .shipkit.yml 에 두면 됩니다 ('shipkit init-project').
+# 우선순위: 이 파일의 defaults < .shipkit.yml < 이 파일의 프로젝트 항목
 
 gitlab:
   url: https://gitlab.example.com     # GitLab 주소 (/api/v4 는 자동으로 붙음)
@@ -12,7 +14,7 @@ gitlab:
 
 # 모든 프로젝트 공통 기본값 (프로젝트에서 같은 키로 덮어쓸 수 있음)
 defaults:
-  output_dir: D:/deploy               # 패키지 생성 위치 (이 아래에 날짜 폴더가 생김)
+  output_dir: D:/deploy/{project}     # 패키지 생성 위치 ({project} = 프로젝트 이름, 이 아래에 날짜 폴더가 생김)
   package_name: "%Y-%m-%d-%H%M"       # 날짜 폴더 이름 -> 2026-10-26-1133 ({project} 사용 가능)
   source_encoding: [utf-8, cp949]     # Java 소스 인코딩 (앞에서부터 시도)
   exclude:                            # 배포에서 뺄 파일 (glob, 프리셋 기본 제외 목록에 추가됨)
