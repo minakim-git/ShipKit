@@ -114,8 +114,9 @@ class Entry:
 @dataclass
 class SourceInfo:
     """변경 목록을 어디서 가져왔는지 (보고서용)."""
-    kind: str  # "gitlab-mr" | "git-diff" | "manual"
+    kind: str  # "gitlab-mr" | "github-pr" | "git-diff" | "manual" | "build"
     description: str
-    merge_requests: List[dict] = field(default_factory=list)
+    merge_requests: List[dict] = field(default_factory=list)  # GitLab MR / GitHub PR 정보 (같은 모양)
+    request_label: str = "Merge Request"                       # 보고서 제목용
     warnings: List[str] = field(default_factory=list)  # 확인이 필요한 문제 (--strict 대상)
     notes: List[str] = field(default_factory=list)     # 참고 알림 (의존성·DB 변경 등, --strict 대상 아님)

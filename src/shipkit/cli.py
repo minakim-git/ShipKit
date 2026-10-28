@@ -6,10 +6,11 @@
   shipkit import-legacy             기존 배포 툴(compiled-java-deployer) 프로젝트 설정 가져오기
   shipkit check   [-p 프로젝트]      설정·경로·GitLab 연결 점검
   shipkit mr      [-p 프로젝트]      GitLab MR 목록
-  shipkit package [-p 프로젝트] --mr 12 15 | --git A..B | --files 목록.txt | 경로...
+  shipkit pr      [-p 프로젝트]      GitHub PR 목록
+  shipkit package [-p 프로젝트] --mr 12 15 | --pr 7 | --git A..B | --files 목록.txt | 경로...
                                     (sync 모드 프로젝트는 변경 출처 없이도 실행 가능)
   shipkit presets                   사용 가능한 프리셋 목록
-  shipkit token   set | delete | status
+  shipkit token   set | delete | status  [gitlab | github]
 
 종료 코드: 0 성공, 1 처리 실패(또는 --strict 경고), 2 설정·사용법 오류
 """
@@ -29,13 +30,16 @@ from shipkit import (
     projectfile, sync,
 )
 from shipkit.config import (
-    DEFAULT_CONFIG_NAME, PRESET_ALIASES, PRESETS, Config, ConfigError, ProjectConfig, _parse_server_path,
+    _GITHUB_REPO_RE, DEFAULT_CONFIG_NAME, PRESET_ALIASES, PRESETS, Config, ConfigError, ProjectConfig,
+    _parse_server_path,
     load_config, resolve_preset, user_config_path,
 )
 from shipkit.models import Entry, FileChange, SourceInfo, Status, merge_changes
-from shipkit.secrets import SecretError, delete_token, get_token, set_token, token_source
+from shipkit.secrets import SecretError, delete_token, set_token, token_source
 from shipkit.sources import git_local, manual
-from shipkit.sources.gitlab import GitLabClient, GitLabError, collect_from_mrs
+from shipkit.sources import providers
+from shipkit.sources.github import GitHubError
+from shipkit.sources.gitlab import GitLabError
 
 log = logging.getLogger(CLI_NAME)
 
@@ -49,16 +53,11 @@ class UsageError(Exception):
 
 
 # ---------------------------------------------------------------------- 공통
-def _client(cfg: Config) -> GitLabClient:
-    if cfg.gitlab is None:
-        raise UsageError("설정 파일에 gitlab 섹션이 없습니다.")
-    return GitLabClient(cfg.gitlab, get_token(cfg.gitlab))
-
-
-def _gitlab_project(project: ProjectConfig) -> str:
-    if not project.gitlab_project:
-        raise UsageError(f"projects.{project.name}.gitlab_project 가 설정되지 않았습니다.")
-    return project.gitlab_project
+def _provider(cfg: Config, project: ProjectConfig, kind: str) -> providers.Provider:
+    try:
+        return providers.make_provider(cfg, project, kind)
+    except providers.ProviderError as e:
+        raise UsageError(str(e)) from e
 
 
 # ---------------------------------------------------------------------- init
@@ -92,7 +91,10 @@ def cmd_init_project(args: argparse.Namespace) -> int:
         server_path = input("서버 배포 경로 (예: /app/tomcat/webapps/ROOT, 비워 두면 나중에 직접 입력): ").strip()
     if server_path:
         server_path = _parse_server_path(server_path, "--server-path")
-    text = projectfile.render(args.name or root.name, preset, server_path or None, args.gitlab_project)
+    if args.github_repo and not _GITHUB_REPO_RE.match(args.github_repo):
+        raise UsageError(f"--github-repo 는 'owner/name' 형식이어야 합니다: {args.github_repo}")
+    text = projectfile.render(args.name or root.name, preset, server_path or None, args.gitlab_project,
+                              args.github_repo)
     _write_new_file(target, text, args.force)
     print(f"프로젝트 설정 파일을 만들었습니다: {target}")
     print(f"  프리셋: {preset} ({reason})")
@@ -182,7 +184,7 @@ def cmd_check(args: argparse.Namespace) -> int:
         item(src is not None, f"토큰: {src or '없음'}")
         if src:
             try:
-                client = _client(cfg)
+                client = providers.gitlab_client(cfg)
                 user = client.current_user()
                 item(True, f"연결/인증: {user.get('username')} ({user.get('name')})")
                 for p in targets:
@@ -194,40 +196,59 @@ def cmd_check(args: argparse.Namespace) -> int:
                             item(False, f"{p.name} -> GitLab 프로젝트 {p.gitlab_project}: {e}")
             except (GitLabError, SecretError) as e:
                 item(False, f"연결: {e}")
+
+    if cfg.github:
+        print(f"\nGitHub {cfg.github.url}")
+        src = token_source(cfg.github)
+        print(f"  [정보] 토큰: {src or '없음 (공개 저장소만 조회 가능, 조회 한도 작음)'}")
+        try:
+            client = providers.github_client(cfg)
+            if src:
+                user = client.current_user()
+                item(True, f"연결/인증: {user.get('login')}")
+            for p in targets:
+                if p.github_repo:
+                    try:
+                        info = client.get_repo(p.github_repo)
+                        item(True, f"{p.name} -> GitHub 저장소 {info.get('full_name')}")
+                    except GitHubError as e:
+                        item(False, f"{p.name} -> GitHub 저장소 {p.github_repo}: {e}")
+        except (GitHubError, SecretError) as e:
+            item(False, f"연결: {e}")
     print("\n점검 결과: " + ("이상 없음" if ok else "문제 있음"))
     return EXIT_OK if ok else EXIT_FAIL
 
 
-# ---------------------------------------------------------------------- mr
-def cmd_mr(args: argparse.Namespace) -> int:
+# ---------------------------------------------------------------------- mr / pr
+def cmd_requests(args: argparse.Namespace) -> int:
+    """GitLab MR(shipkit mr) / GitHub PR(shipkit pr) 목록."""
     cfg = load_config(args.config)
     project = cfg.project(args.project)
-    client = _client(cfg)
-    mrs = client.list_merge_requests(_gitlab_project(project), state=args.state,
-                                     limit=args.limit, search=args.search)
-    if not mrs:
-        print("조회된 MR 이 없습니다.")
+    provider = _provider(cfg, project, args.kind)
+    items = provider.list(state=args.state, limit=args.limit, search=args.search)
+    if not items:
+        print(f"조회된 {provider.label} 이 없습니다.")
         return EXIT_OK
-    print(f"{'MR':>6}  {'상태':<7} {'머지/수정 시각':<16}  {'작성자':<10}  제목")
-    for mr in mrs:
-        when = (mr.get("merged_at") or mr.get("updated_at") or "")[:16].replace("T", " ")
-        author = (mr.get("author") or {}).get("name", "")
-        print(f"{'!' + str(mr['iid']):>6}  {mr.get('state', ''):<7} {when:<16}  {author:<10}  {mr.get('title', '')}")
+    print(f"{provider.label:>6}  {'상태':<7} {'머지/수정 시각':<16}  {'작성자':<10}  제목")
+    for it in items:
+        when = (it.get("merged_at") or it.get("updated_at") or "")[:16].replace("T", " ")
+        author = (it.get("author") or {}).get("name", "")
+        ref = f"{provider.prefix}{it['iid']}"
+        print(f"{ref:>6}  {it.get('state', ''):<7} {when:<16}  {author:<10}  {it.get('title', '')}")
     return EXIT_OK
 
 
 # ---------------------------------------------------------------------- package
 def _collect(args: argparse.Namespace, cfg: Config, project: ProjectConfig) -> Tuple[List[FileChange], SourceInfo]:
-    modes = sum(bool(x) for x in (args.mr, args.git, args.files, args.paths))
+    modes = sum(bool(x) for x in (args.mr, getattr(args, "pr", None), args.git, args.files, args.paths))
     if modes == 0 and project.mode == "sync":
         return [], SourceInfo(kind="build", description=f"빌드 결과 전체 ({project.build_dir}, 변경 목록 없음)")
     if modes != 1:
-        raise UsageError("변경 파일 출처를 하나만 지정하세요: --mr, --git, --files, 또는 경로 직접 나열")
+        raise UsageError("변경 파일 출처를 하나만 지정하세요: --mr, --pr, --git, --files, 또는 경로 직접 나열")
 
-    if args.mr:
-        changes, source = collect_from_mrs(_client(cfg), _gitlab_project(project), args.mr)
-        _check_local_has_mrs(project, source)
-        return changes, source
+    if args.mr or getattr(args, "pr", None):
+        provider = _provider(cfg, project, "gitlab" if args.mr else "github")
+        return collect_requests(provider, project, args.mr or args.pr)
 
     if args.git:
         changes, desc = git_local.collect_from_git(project.root, args.git)
@@ -260,24 +281,32 @@ def _collect(args: argparse.Namespace, cfg: Config, project: ProjectConfig) -> T
     return merge_changes([changes]), SourceInfo(kind="manual", description=desc)
 
 
-def _check_local_has_mrs(project: ProjectConfig, source: SourceInfo) -> None:
-    """로컬 저장소(빌드 대상)에 MR 머지 커밋이 들어 있는지 확인한다."""
+def collect_requests(provider: providers.Provider, project: ProjectConfig,
+                     numbers: List[int]) -> Tuple[List[FileChange], SourceInfo]:
+    changes, source = provider.collect(numbers)
+    _check_local_has_requests(project, source, provider.label)
+    return changes, source
+
+
+def _check_local_has_requests(project: ProjectConfig, source: SourceInfo, label: str = "MR") -> None:
+    """로컬 저장소(빌드 대상)에 MR/PR 머지 커밋이 들어 있는지 확인한다."""
     if not git_local.is_git_repo(project.root):
-        source.warnings.append("로컬 경로가 git 저장소가 아니어서 MR 반영 여부를 확인하지 못했습니다.")
+        source.warnings.append(f"로컬 경로가 git 저장소가 아니어서 {label} 반영 여부를 확인하지 못했습니다.")
         return
     for mr in source.merge_requests:
         sha = mr.get("commit_sha")
         if not sha:
             continue
+        ref = mr.get("ref") or f"!{mr['iid']}"
         has = git_local.contains_commit(project.root, sha)
         if has is False:
             source.warnings.append(
-                f"로컬 HEAD 에 MR !{mr['iid']} 의 커밋({sha[:8]})이 없습니다. "
+                f"로컬 HEAD 에 {label} {ref} 의 커밋({sha[:8]})이 없습니다. "
                 "git pull 후 다시 빌드했는지 확인하세요."
             )
         elif has is None:
             source.warnings.append(
-                f"로컬 저장소에 MR !{mr['iid']} 의 커밋({sha[:8]})이 없습니다. git fetch/pull 이 필요합니다."
+                f"로컬 저장소에 {label} {ref} 의 커밋({sha[:8]})이 없습니다. git fetch/pull 이 필요합니다."
             )
 
 
@@ -435,20 +464,34 @@ def cmd_presets(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------- token
 def cmd_token(args: argparse.Namespace) -> int:
     cfg = load_config(args.config)
-    if cfg.gitlab is None:
-        raise UsageError("설정 파일에 gitlab 섹션이 없습니다.")
+    services = {"gitlab": cfg.gitlab, "github": cfg.github}
+    if args.service:
+        target = services[args.service]
+        if target is None:
+            raise UsageError(f"개인 설정에 {args.service} 섹션이 없습니다.")
+        targets = [target]
+    else:
+        targets = [s for s in services.values() if s is not None]
+        if not targets:
+            raise UsageError("개인 설정에 gitlab 또는 github 섹션이 없습니다.")
+        if args.action != "status" and len(targets) > 1:
+            raise UsageError(f"대상을 지정하세요: '{CLI_NAME} token {args.action} gitlab' 또는 '... github'")
     if args.action == "status":
-        src = token_source(cfg.gitlab)
-        print(f"{cfg.gitlab.url}: {src or '토큰 없음'}")
-        return EXIT_OK if src else EXIT_FAIL
+        found = True
+        for svc in targets:
+            src = token_source(svc)
+            found &= src is not None
+            print(f"{svc.label} {svc.url}: {src or '토큰 없음'}")
+        return EXIT_OK if found else EXIT_FAIL
+    svc = targets[0]
     if args.action == "set":
-        token = getpass.getpass(f"{cfg.gitlab.url} 의 GitLab 토큰 (입력 내용은 표시되지 않음): ").strip()
+        token = getpass.getpass(f"{svc.url} 의 {svc.label} 토큰 (입력 내용은 표시되지 않음): ").strip()
         if not token:
             raise UsageError("토큰이 비어 있습니다.")
-        set_token(cfg.gitlab, token)
-        print("OS 키링(Windows 자격 증명 관리자)에 저장했습니다.")
+        set_token(svc, token)
+        print(f"{svc.label} 토큰을 OS 키링(Windows 자격 증명 관리자)에 저장했습니다.")
         return EXIT_OK
-    removed = delete_token(cfg.gitlab)
+    removed = delete_token(svc)
     print("삭제했습니다." if removed else "저장된 토큰이 없습니다.")
     return EXIT_OK
 
@@ -480,6 +523,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--preset", help="프리셋 (생략하면 저장소를 보고 추정)")
     p.add_argument("--server-path", help="서버 배포 경로")
     p.add_argument("--gitlab-project", help="GitLab 프로젝트 ID 또는 그룹/프로젝트")
+    p.add_argument("--github-repo", help="GitHub 저장소 (owner/name)")
     p.add_argument("--name", help="프로젝트 이름 (기본: 폴더 이름)")
     p.add_argument("--force", action="store_true", help="이미 있으면 덮어쓰기")
     p.set_defaults(func=cmd_init_project)
@@ -494,20 +538,22 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--force", action="store_true", help="이미 있으면 덮어쓰기")
     p.set_defaults(func=cmd_import_legacy)
 
-    p = sub.add_parser("check", parents=[common], help="설정·경로·GitLab 연결 점검")
+    p = sub.add_parser("check", parents=[common], help="설정·경로·GitLab/GitHub 연결 점검")
     p.add_argument("-p", "--project", help="프로젝트 이름 (생략 시 전체)")
     p.set_defaults(func=cmd_check)
 
-    p = sub.add_parser("mr", parents=[common], help="GitLab MR 목록")
-    p.add_argument("-p", "--project", help="프로젝트 이름")
-    p.add_argument("--state", default="merged", choices=["merged", "opened", "closed", "all"])
-    p.add_argument("--limit", type=int, default=20)
-    p.add_argument("--search", help="제목/설명 검색어")
-    p.set_defaults(func=cmd_mr)
+    for name, kind, label in (("mr", "gitlab", "GitLab MR"), ("pr", "github", "GitHub PR")):
+        p = sub.add_parser(name, parents=[common], help=f"{label} 목록")
+        p.add_argument("-p", "--project", help="프로젝트 이름")
+        p.add_argument("--state", default="merged", choices=["merged", "opened", "closed", "all"])
+        p.add_argument("--limit", type=int, default=20)
+        p.add_argument("--search", help="제목 검색어")
+        p.set_defaults(func=cmd_requests, kind=kind)
 
     p = sub.add_parser("package", parents=[common], help="배포 패키지 생성")
     p.add_argument("-p", "--project", help="프로젝트 이름")
     p.add_argument("--mr", type=int, nargs="+", metavar="IID", help="GitLab MR 번호 (여러 개 가능)")
+    p.add_argument("--pr", type=int, nargs="+", metavar="NUM", help="GitHub PR 번호 (여러 개 가능)")
     p.add_argument("--git", metavar="A..B", help="로컬 git 리비전 범위 (A 만 주면 A..HEAD)")
     p.add_argument("--files", metavar="FILE", help="파일 목록 텍스트 ('-' 이면 표준입력)")
     p.add_argument("paths", nargs="*", help="변경 파일 경로 직접 나열")
@@ -520,8 +566,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("presets", parents=[common], help="사용 가능한 프리셋 목록")
     p.set_defaults(func=cmd_presets)
 
-    p = sub.add_parser("token", parents=[common], help="GitLab 토큰 관리 (OS 키링)")
+    p = sub.add_parser("token", parents=[common], help="GitLab/GitHub 토큰 관리 (OS 키링)")
     p.add_argument("action", choices=["set", "delete", "status"])
+    p.add_argument("service", nargs="?", choices=["gitlab", "github"], help="대상 (설정이 하나뿐이면 생략)")
     p.set_defaults(func=cmd_token)
     return parser
 
@@ -548,7 +595,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     except (ConfigError, UsageError, SecretError) as e:
         print(f"[오류] {e}", file=sys.stderr)
         return EXIT_USAGE
-    except (GitLabError, git_local.GitError) as e:
+    except (GitLabError, GitHubError, git_local.GitError) as e:
         print(f"[오류] {e}", file=sys.stderr)
         return EXIT_FAIL
     except KeyboardInterrupt:

@@ -33,7 +33,8 @@ def detect_preset(root: Path) -> Tuple[str, str]:
     return "static", "빌드 도구를 찾지 못함"
 
 
-def render(name: str, preset: str, server_path: Optional[str], gitlab_project: Optional[str]) -> str:
+def render(name: str, preset: str, server_path: Optional[str], gitlab_project: Optional[str],
+           github_repo: Optional[str] = None) -> str:
     lines = [
         f"# {__app_name__} 프로젝트 설정 - 팀이 공유하도록 저장소에 커밋하세요.",
         f"# PC 마다 다른 값(root, output_dir, 토큰)은 넣지 않습니다 -> 개인 설정({CONFIG_NAME})",
@@ -48,8 +49,11 @@ def render(name: str, preset: str, server_path: Optional[str], gitlab_project: O
         lines.append("# server_path: /app/tomcat/webapps/ROOT   # 필수: 서버 배포 경로를 적으세요")
     if gitlab_project:
         lines.append(f"gitlab_project: {gitlab_project}")
-    else:
+    if github_repo:
+        lines.append(f"github_repo: {github_repo}")
+    if not gitlab_project and not github_repo:
         lines.append('# gitlab_project: 123                     # GitLab 프로젝트 ID 또는 "그룹/프로젝트"')
+        lines.append("# github_repo: owner/name                 # GitHub 저장소")
     lines += [
         "",
         "# exclude: [\"docs/**\"]                     # 배포에서 뺄 파일 (프리셋 기본값에 추가)",

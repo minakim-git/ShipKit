@@ -96,12 +96,15 @@ def render(result: "PackageResult") -> str:
             w("")
 
     if result.source.merge_requests:
-        w("## Merge Request")
+        label = result.source.request_label
+        short = "PR" if label == "Pull Request" else "MR"
+        w(f"## {label}")
         w("")
-        w("| MR | 제목 | 작성자 | 상태 | 머지 시각 | 브랜치 | 파일 |")
+        w(f"| {short} | 제목 | 작성자 | 상태 | 머지 시각 | 브랜치 | 파일 |")
         w("|:---|:---|:---|:---:|:---|:---|---:|")
         for mr in result.source.merge_requests:
-            link = f"[!{mr['iid']}]({mr['web_url']})" if mr.get("web_url") else f"!{mr['iid']}"
+            ref = mr.get("ref") or f"!{mr['iid']}"
+            link = f"[{ref}]({mr['web_url']})" if mr.get("web_url") else ref
             merged = (mr.get("merged_at") or "")[:16].replace("T", " ")
             branch = f"{mr.get('source_branch', '')} → {mr.get('target_branch', '')}"
             w(f"| {link} | {_cell(mr['title'])} | {_cell(mr['author'])} | {mr['state']} | {merged} "

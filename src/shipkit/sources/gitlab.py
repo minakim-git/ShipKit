@@ -169,6 +169,7 @@ def collect_from_mrs(client: GitLabClient, project: Union[str, int],
             "source_branch": mr.get("source_branch", ""),
             "target_branch": mr.get("target_branch", ""),
             "web_url": mr.get("web_url", ""),
+            "ref": f"!{mr['iid']}",
             "commit_sha": mr.get("merge_commit_sha") or mr.get("squash_commit_sha") or mr.get("sha") or "",
             "file_count": len(changes),
         })

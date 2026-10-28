@@ -12,6 +12,11 @@ gitlab:
   # ca_bundle: D:/certs/company-ca.pem  # 사내 CA 인증서
   timeout: 15                         # 요청 타임아웃(초)
 
+# GitHub 를 쓰면 (github.com 은 'github: {}' 만으로 충분, 토큰: 'shipkit token set github')
+# github:
+#   url: https://ghe.acme.local/api/v3   # GitHub Enterprise 일 때만
+#   token_env: GITHUB_TOKEN
+
 # 모든 프로젝트 공통 기본값 (프로젝트에서 같은 키로 덮어쓸 수 있음)
 defaults:
   output_dir: D:/deploy/{project}     # 패키지 생성 위치 ({project} = 프로젝트 이름, 이 아래에 날짜 폴더가 생김)
@@ -27,6 +32,7 @@ projects:
     root: D:/workspace/erp            # 로컬 git 저장소 최상위 폴더 (빌드가 끝난 상태여야 함)
     server_path: /app/tomcat/webapps/ROOT   # 서버의 WEB-INF 바로 위 폴더
     gitlab_project: 123               # GitLab 프로젝트 ID 또는 "그룹/프로젝트"
+    # github_repo: owner/name         # GitHub 저장소 (PR 로 패키지를 만들 때)
     # output_dir: D:/deploy/erp       # 기본값 덮어쓰기
     # modules: [".", "erp-web"]       # 멀티모듈이면 모듈 폴더 나열 ("." = 루트)
     # rules:                          # 프리셋 대신 직접 규칙 지정 (위에서부터 먼저 매칭)

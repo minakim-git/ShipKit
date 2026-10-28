@@ -3,7 +3,7 @@
 설정 파일 탐색 순서: --config 인자 > 환경변수(CONFIG_ENV) > 현재 폴더의 CONFIG_NAME > 사용자 공용 설정
 
 설정은 두 군데에 나뉜다.
-- 개인 설정(CONFIG_NAME): 로컬 경로(root), 패키지 생성 경로(output_dir), GitLab 주소 등 PC 마다 다른 값
+- 개인 설정(CONFIG_NAME): 로컬 경로(root), 패키지 생성 경로(output_dir), GitLab·GitHub 주소 등 PC 마다 다른 값
 - 프로젝트 설정(PROJECT_FILE): 프로젝트 저장소 루트에 커밋해서 팀이 공유하는 값 (프리셋, 서버 경로, hooks 등)
 값의 우선순위는 개인 defaults < 프로젝트 설정 < 개인 설정의 프로젝트 항목. 목록형 값(exclude 등)은 합친다.
 
@@ -172,6 +172,22 @@ class GitLabConfig:
     verify_ssl: bool = True
     ca_bundle: Optional[str] = None
     timeout: float = 15.0
+    label = "GitLab"
+
+
+GITHUB_API_URL = "https://api.github.com"
+_GITHUB_REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+
+
+@dataclass
+class GitHubConfig:
+    """GitHub(또는 GitHub Enterprise: url 에 https://<호스트>/api/v3) API 설정."""
+    url: str = GITHUB_API_URL
+    token_env: str = "GITHUB_TOKEN"
+    verify_ssl: bool = True
+    ca_bundle: Optional[str] = None
+    timeout: float = 15.0
+    label = "GitHub"
 
 
 @dataclass
@@ -181,6 +197,7 @@ class ProjectConfig:
     output_dir: Path
     server_path: str
     gitlab_project: Optional[str] = None
+    github_repo: Optional[str] = None     # "owner/name"
     preset: Optional[str] = None
     mode: str = "changes"
     modules: List[str] = field(default_factory=lambda: [""])
@@ -227,6 +244,7 @@ class Config:
     gitlab: Optional[GitLabConfig]
     projects: Dict[str, ProjectConfig]
     defaults: Dict[str, Any] = field(default_factory=dict)
+    github: Optional[GitHubConfig] = None
     base_dir: Path = field(default_factory=Path.cwd)
 
     def project(self, name: Optional[str], cwd: Optional[Path] = None) -> ProjectConfig:
@@ -351,24 +369,8 @@ def parse_config(data: Dict[str, Any], path: Optional[Path] = None) -> Config:
         raise ConfigError("설정 파일 최상위는 매핑(key: value)이어야 합니다.")
     base_dir = path.parent if path else Path.cwd()
 
-    gitlab = None
-    if data.get("gitlab"):
-        g = _require_dict(data["gitlab"], "gitlab")
-        url = str(g.get("url") or "").strip()
-        if not url:
-            raise ConfigError("gitlab.url 이 비어 있습니다.")
-        if "token" in g:
-            raise ConfigError(
-                "gitlab.token 은 지원하지 않습니다(평문 저장 금지). "
-                f"환경변수(gitlab.token_env) 또는 '{CLI_NAME} token set' 을 사용하세요."
-            )
-        gitlab = GitLabConfig(
-            url=url.rstrip("/"),
-            token_env=str(g.get("token_env") or "GITLAB_TOKEN"),
-            verify_ssl=bool(g.get("verify_ssl", True)),
-            ca_bundle=_opt_str(g.get("ca_bundle")),
-            timeout=float(g.get("timeout", 15)),
-        )
+    gitlab = _parse_service(data, "gitlab", GitLabConfig, default_url=None)
+    github = _parse_service(data, "github", GitHubConfig, default_url=GITHUB_API_URL)
 
     defaults = _require_dict(data.get("defaults") or {}, "defaults")
     raw_projects = _require_dict(data.get("projects") or {}, "projects")
@@ -376,7 +378,27 @@ def parse_config(data: Dict[str, Any], path: Optional[Path] = None) -> Config:
     projects = {}
     for name, raw in raw_projects.items():
         projects[str(name)] = _parse_project(str(name), _require_dict(raw, f"projects.{name}"), defaults, base_dir)
-    return Config(path=path, gitlab=gitlab, projects=projects, defaults=defaults, base_dir=base_dir)
+    return Config(path=path, gitlab=gitlab, projects=projects, defaults=defaults, base_dir=base_dir, github=github)
+
+
+def _parse_service(data: Dict[str, Any], key: str, cls: Any, default_url: Optional[str]) -> Any:
+    """gitlab / github 섹션. 키만 있고 값이 비어 있으면(github: {}) 기본값으로 만든다."""
+    if key not in data:
+        return None
+    g = _require_dict(data[key] or {}, key)
+    url = str(g.get("url") or default_url or "").strip()
+    if not url:
+        raise ConfigError(f"{key}.url 이 비어 있습니다.")
+    if "token" in g:
+        raise ConfigError(
+            f"{key}.token 은 지원하지 않습니다(평문 저장 금지). "
+            f"환경변수({key}.token_env) 또는 '{CLI_NAME} token set {key}' 을 사용하세요."
+        )
+    kwargs = {"url": url.rstrip("/"), "verify_ssl": bool(g.get("verify_ssl", True)),
+              "ca_bundle": _opt_str(g.get("ca_bundle")), "timeout": float(g.get("timeout", 15))}
+    if g.get("token_env"):
+        kwargs["token_env"] = str(g["token_env"])
+    return cls(**kwargs)
 
 
 def resolve_preset(name: str, where: str) -> Dict[str, Any]:
@@ -478,12 +500,16 @@ def _parse_project(name: str, raw: Dict[str, Any], defaults: Dict[str, Any], bas
     exclude = list(_COMMON_EXCLUDE) + list(preset.get("exclude", [])) + [str(x) for x in get_list("exclude")]
 
     gp = get("gitlab_project")
+    repo = _opt_str(get("github_repo"))
+    if repo and not _GITHUB_REPO_RE.match(repo):
+        raise ConfigError(f"{where}.github_repo 는 'owner/name' 형식이어야 합니다: {repo}")
     return ProjectConfig(
         name=name,
         root=root,
         output_dir=_resolve(output_dir, base_dir),
         server_path=server_path,
         gitlab_project=str(gp) if gp not in (None, "") else None,
+        github_repo=repo,
         preset=canonical,
         mode=mode,
         modules=modules,

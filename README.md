@@ -2,15 +2,15 @@
 
 **Safe Deployment & Rollback Tool**
 
-ShipKit is a lightweight deployment tool that collects changed files from a GitLab MR, git diff, or file list, maps them to server paths, and applies them safely with automatic backup and one-command rollback.
+ShipKit is a lightweight deployment tool that collects changed files from a GitLab MR, GitHub PR, git diff, or file list, maps them to server paths, and applies them safely with automatic backup and one-command rollback.
 
-ShipKit은 GitLab MR·git diff·파일 목록에서 바뀐 파일만 모아 서버 경로에 맞게 정리하고, 자동 백업 후 반영하며, 문제가 생기면 명령 한 줄로 되돌리는 가벼운 배포 도구입니다.
+ShipKit은 GitLab MR·GitHub PR·git diff·파일 목록에서 바뀐 파일만 모아 서버 경로에 맞게 정리하고, 자동 백업 후 반영하며, 문제가 생기면 명령 한 줄로 되돌리는 가벼운 배포 도구입니다.
 
 Java, Vue/React, Python, PHP, 정적 사이트 등 언어와 상관없이 쓸 수 있습니다. 빌드(컴파일)는 하지 않으니, 빌드가 필요한 프로젝트는 빌드를 끝낸 뒤 실행하세요.
 
 ## 주요 기능
 
-- **변경 파일 수집**: GitLab MR(여러 개 합치기 가능), 로컬 `git diff` 범위, 파일 목록, 경로 직접 입력
+- **변경 파일 수집**: GitLab MR, GitHub PR(여러 개 합치기 가능, GitHub Enterprise 포함), 로컬 `git diff` 범위, 파일 목록, 경로 직접 입력
 - **두 가지 배포 방식**
   - `changes` (변경 파일 매핑): 바뀐 파일만 서버 경로로 매핑합니다. Java는 `X.java` → `X.class` + 내부 클래스(`X$*.class`)로 바꿉니다.
   - `sync` (빌드 결과 동기화): Vue/React처럼 결과 파일 이름이 빌드마다 바뀌는 프로젝트용입니다. 빌드 결과 폴더 전체를 담고, 서버에서 **내용이 다른 파일만** 반영하며, 지정한 폴더의 **옛 빌드 파일을 정리**합니다.
@@ -64,7 +64,7 @@ shipkit
 
 순서대로 물어봅니다. 언제든 `q`를 입력하면 그만둡니다.
 1. **프로젝트**: 현재 폴더의 프로젝트가 기본값입니다.
-2. **무엇을 배포할지**: GitLab MR 고르기, git 범위(최근 태그..HEAD가 기본값), 파일 목록 붙여넣기, (sync 방식) 빌드 결과 전체
+2. **무엇을 배포할지**: GitLab MR·GitHub PR 고르기, git 범위(최근 태그..HEAD가 기본값), 파일 목록 붙여넣기, (sync 방식) 빌드 결과 전체
 3. **미리보기 확인 후 생성**: 실패 항목이 있으면 빼고 만들지 묻고, `.tar.gz` 압축 여부도 묻습니다.
 
 ### 명령어
@@ -72,13 +72,15 @@ shipkit
 ```bash
 shipkit init                      # 개인 설정 파일을 만들어 직접 작성
 #   또는 shipkit import-legacy    # 기존 배포 툴(compiled-java-deployer)의 프로젝트 설정 가져오기 (토큰·비밀번호 제외)
-shipkit token set                 # GitLab 토큰을 OS 키링에 저장 (입력 내용은 화면에 표시되지 않음)
-shipkit check                     # 설정·경로·빌드 폴더·GitLab 연결 점검
+shipkit token set gitlab          # 토큰을 OS 키링에 저장 (gitlab / github, 하나만 설정했으면 생략 가능)
+shipkit check                     # 설정·경로·빌드 폴더·GitLab/GitHub 연결 점검
 shipkit presets                   # 사용 가능한 프리셋 목록
 shipkit init-project              # 프로젝트 저장소에 팀 공유 설정(.shipkit.yml) 만들기 (프리셋 자동 추정)
 
-shipkit mr -p erp                       # 최근 머지된 MR 목록 (--state opened|closed|all, --search)
-shipkit package -p erp --mr 128 131     # MR 기준 패키지
+shipkit mr -p erp                       # GitLab: 최근 머지된 MR 목록 (--state opened|closed|all, --search)
+shipkit pr -p web                       # GitHub: 최근 머지된 PR 목록
+shipkit package -p erp --mr 128 131     # GitLab MR 기준 패키지
+shipkit package -p web --pr 12          # GitHub PR 기준 패키지
 shipkit package -p erp --git v1.2..HEAD # 로컬 git 범위 기준 (토큰 불필요)
 shipkit package -p erp --files 목록.txt # 파일 목록 기준
 shipkit package -p erp src/main/webapp/a.jsp  # 경로 직접 나열
@@ -101,7 +103,7 @@ shipkit package -p web --mr 42          # MR 을 같이 주면 보고서에 소�
 - 소스가 클래스 파일(또는 빌드 결과)보다 최신일 때: 빌드 누락이 의심됩니다.
 - 배포 파일에 커밋되지 않은 로컬 수정이 있을 때: 테스트용 설정 등이 운영에 섞일 수 있습니다.
 - `--git`의 범위 끝과 지금 브랜치(HEAD)가 다를 때: 복사되는 파일은 지금 작업 폴더의 파일입니다.
-- `--mr`인데 로컬 저장소에 그 MR 커밋이 없을 때: git pull이 필요합니다.
+- `--mr`/`--pr`인데 로컬 저장소에 그 MR/PR 커밋이 없을 때: git pull이 필요합니다.
 
 ## 설정 파일
 
@@ -109,7 +111,7 @@ shipkit package -p web --mr 42          # MR 을 같이 주면 보고서에 소�
 
 | 파일 | 위치 | 담는 값 |
 |---|---|---|
-| **개인 설정** `shipkit.yaml` | 내 PC (`%APPDATA%\shipkit\`) | 로컬 경로(`root`), 패키지 생성 경로(`output_dir`), GitLab 주소. 토큰은 키링에 둡니다. |
+| **개인 설정** `shipkit.yaml` | 내 PC (`%APPDATA%\shipkit\`) | 로컬 경로(`root`), 패키지 생성 경로(`output_dir`), GitLab·GitHub 주소. 토큰은 키링에 둡니다. |
 | **프로젝트 설정** `.shipkit.yml` | 프로젝트 저장소 루트 (커밋) | 프리셋, 서버 경로, hooks, 제외 규칙 등 팀이 같이 쓰는 값 |
 
 값의 우선순위는 **개인 `defaults` < `.shipkit.yml` < 개인 설정의 프로젝트 항목**입니다. 예를 들어 서버 경로는 `.shipkit.yml`에 두고, 개발 서버로 보낼 때만 개인 설정에서 덮어쓸 수 있습니다. 목록형 값(`exclude`, `notices`, `allow`, `deny`)은 세 곳의 값을 합칩니다.
@@ -136,6 +138,20 @@ projects:
   web:
     root: C:/workspace/web            # 나머지 값은 .shipkit.yml 에서 가져옴
 ```
+
+### GitHub 저장소
+
+```yaml
+# 개인 설정
+github: {}                            # github.com 이면 이것만으로 충분
+#   url: https://ghe.acme.local/api/v3   # GitHub Enterprise
+#   token_env: GITHUB_TOKEN
+
+# .shipkit.yml 또는 개인 설정의 프로젝트 항목
+github_repo: owner/name
+```
+
+토큰은 `shipkit token set github`로 저장합니다(저장소 읽기 권한이면 충분, fine-grained 토큰은 Contents·Pull requests 읽기). 공개 저장소는 토큰 없이도 되지만 GitHub 조회 한도가 작습니다. GitLab과 GitHub 토큰은 API 주소별로 따로 저장되어 섞이지 않습니다.
 
 개인 설정에 등록하지 않은 저장소라도 `.shipkit.yml`이 있으면, 그 폴더 안에서 실행할 때 바로 인식합니다. 이때 `defaults.output_dir`가 필요합니다.
 
@@ -253,7 +269,7 @@ chmod +x shipkit.sh       # 실행 권한 부여 (tar.gz로 올렸다면 필요 
 | 코드 | 의미 |
 |---|---|
 | 0 | 성공 |
-| 1 | 처리 실패, `--strict` 경고, GitLab/git 오류 |
+| 1 | 처리 실패, `--strict` 경고, GitLab/GitHub/git 오류 |
 | 2 | 설정·사용법 오류 |
 
 Jenkins 등에서 그대로 쓸 수 있습니다.

@@ -12,7 +12,7 @@ from shipkit import __app_name__, __tagline__, __version__, cli, packager
 from shipkit.config import Config, ConfigError, ProjectConfig
 from shipkit.models import FileChange, SourceInfo, merge_changes
 from shipkit.sources import git_local, manual
-from shipkit.sources.gitlab import collect_from_mrs
+from shipkit.sources import providers
 
 YES = ("y", "yes", "ㅛ")
 NO = ("n", "no", "ㅜ")
@@ -126,48 +126,47 @@ class Wizard:
         options: List[Tuple[str, str]] = []
         if project.mode == "sync":
             options.append(("build", f"빌드 결과 전체 ({project.build_dir}) - 변경 목록 없이"))
-        if self.cfg.gitlab and project.gitlab_project:
-            options.append(("mr", "GitLab MR 고르기"))
+        for kind in providers.available(self.cfg, project):
+            label = "GitLab MR" if kind == "gitlab" else "GitHub PR"
+            options.append((kind, f"{label} 고르기"))
         if git_local.is_git_repo(project.root):
             options.append(("git", "git 범위 (태그·커밋 사이에 바뀐 파일)"))
         options.append(("files", "파일 목록 붙여넣기"))
         self.out("\n[2/3] 무엇을 배포할까요?")
         key = options[self.choose("번호", [label for _, label in options], default=0)][0]
-        empty = argparse.Namespace(mr=None, git=None, files=None, paths=[])
+        empty = argparse.Namespace(mr=None, pr=None, git=None, files=None, paths=[])
         if key == "build":
             return cli._collect(empty, self.cfg, project)
-        if key == "mr":
-            return self.pick_mrs(project)
+        if key in providers.KINDS:
+            return self.pick_requests(project, key)
         if key == "git":
             return self.pick_git_range(project)
         return self.paste_files()
 
-    def pick_mrs(self, project: ProjectConfig) -> Tuple[List[FileChange], SourceInfo]:
-        client = cli._client(self.cfg)
-        gp = cli._gitlab_project(project)
+    def pick_requests(self, project: ProjectConfig, kind: str) -> Tuple[List[FileChange], SourceInfo]:
+        provider = cli._provider(self.cfg, project, kind)
+        label, mark = provider.label, provider.prefix
         state = "merged"
         while True:
-            mrs = client.list_merge_requests(gp, state=state, limit=MR_LIST_SIZE)
-            label = "머지된" if state == "merged" else "열린"
-            self.out(f"\n최근 {label} MR")
-            if not mrs:
+            items = provider.list(state=state, limit=MR_LIST_SIZE)
+            self.out(f"\n최근 {'머지된' if state == 'merged' else '열린'} {label}")
+            if not items:
                 self.out("  (없음)")
-            for i, mr in enumerate(mrs, 1):
-                when = (mr.get("merged_at") or mr.get("updated_at") or "")[:16].replace("T", " ")
-                author = (mr.get("author") or {}).get("name", "")
-                self.out(f"  {i:>2}) !{mr['iid']:<6} {when}  {author:<8}  {mr.get('title', '')}")
-            other = "o = 열린 MR 보기" if state == "merged" else "m = 머지된 MR 보기"
-            answer = self._input(f"MR 을 고르세요 (목록 번호, 여러 개는 띄어서 / 목록에 없으면 !MR번호 / {other}): ")
+            for i, it in enumerate(items, 1):
+                when = (it.get("merged_at") or it.get("updated_at") or "")[:16].replace("T", " ")
+                author = (it.get("author") or {}).get("name", "")
+                ref = f"{mark}{it['iid']}"
+                self.out(f"  {i:>2}) {ref:<7} {when}  {author:<8}  {it.get('title', '')}")
+            other = f"o = 열린 {label} 보기" if state == "merged" else f"m = 머지된 {label} 보기"
+            answer = self._input(f"{label} 을 고르세요 (목록 번호, 여러 개는 띄어서 / 목록에 없으면 {mark}번호 / {other}): ")
             if answer.lower() in ("o", "m"):
                 state = "opened" if answer.lower() == "o" else "merged"
                 continue
-            iids = parse_mr_selection(answer, [mr["iid"] for mr in mrs])
-            if iids:
+            numbers = parse_mr_selection(answer, [it["iid"] for it in items])
+            if numbers:
                 break
-            self.out("  선택한 MR 이 없습니다. 예: 1 3  또는  !612")
-        changes, source = collect_from_mrs(client, gp, iids)
-        cli._check_local_has_mrs(project, source)
-        return changes, source
+            self.out(f"  선택한 {label} 이 없습니다. 예: 1 3  또는  {mark}612")
+        return cli.collect_requests(provider, project, numbers)
 
     def pick_git_range(self, project: ProjectConfig) -> Tuple[List[FileChange], SourceInfo]:
         default = None
@@ -206,10 +205,10 @@ class Wizard:
 
 
 def parse_mr_selection(answer: str, listed: List[int]) -> List[int]:
-    """'1 3' -> 목록의 1·3번째 MR, '!612' -> MR 612. 잘못된 항목은 무시한다."""
+    """'1 3' -> 목록의 1·3번째 항목, '!612' / '#612' -> 번호 612. 잘못된 항목은 무시한다."""
     iids: List[int] = []
     for token in answer.replace(",", " ").split():
-        if token.startswith("!") and token[1:].isdigit():
+        if token[:1] in ("!", "#") and token[1:].isdigit():
             iids.append(int(token[1:]))
         elif token.isdigit() and 1 <= int(token) <= len(listed):
             iids.append(listed[int(token) - 1])
