@@ -128,6 +128,14 @@ def cmd_check(args: argparse.Namespace) -> int:
         item(out_parent.exists(), f"패키지 생성 경로: {p.output_dir}")
         print(f"  [정보] 서버 배포 경로: {p.server_path}")
         print(f"  [정보] 배포 방식: {p.describe_mode}")
+        for stage, hooks in p.hooks.items():
+            for h in hooks:
+                cond = f" (조건: {h.when} 변경 시)" if h.when else ""
+                print(f"  [정보] {stage} 명령: {h.run}{cond}")
+        s = p.server
+        if s.owner or s.file_mode or s.dir_mode:
+            print(f"  [정보] 새 파일·폴더: 소유자 {s.owner or '그대로'} / 파일 {s.file_mode or '그대로'}"
+                  f" / 폴더 {s.dir_mode or '그대로'}")
         if p.mode == "changes":
             print("  [정보] 매핑 규칙: " + ", ".join(f"{r.src or '(전체)'} -> {r.dest or '/'}" for r in p.rules))
 
@@ -311,6 +319,8 @@ def cmd_package(args: argparse.Namespace) -> int:
     print(f"서버 반영: '{name}' 폴더를 통째로 서버 배포 경로 밖(예: ~/deploy/{name})에 올린 뒤, 그 폴더에서")
     print(f"          ./{SCRIPT_NAME} check -> ./{SCRIPT_NAME} backup -> ./{SCRIPT_NAME} apply  (원복: rollback)")
     print(f"          (실행 권한이 없으면 chmod +x {SCRIPT_NAME}, 또는 bash {SCRIPT_NAME} check 처럼 실행)")
+    if result.hooks:
+        print(f"          반영 전·후 명령은 실행 전에 확인을 받습니다 (묻지 않고 실행: ./{SCRIPT_NAME} apply -y)")
     return EXIT_FAIL if result.has_errors else EXIT_OK
 
 
@@ -322,6 +332,9 @@ def _print_result(result: packager.PackageResult) -> None:
         print(f"[경고] {w}")
     for n in result.source.notes:
         print(f"[알림] {n}")
+    for stage, commands in result.hooks.items():
+        for cmd in commands:
+            print(f"[명령] {stage}: {cmd}")
     print()
     entries = result.entries
     if project.mode == "sync":

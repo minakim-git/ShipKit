@@ -78,6 +78,23 @@ def render(result: "PackageResult") -> str:
             w(f"- 📌 {msg}")
         w("")
 
+    if result.hooks:
+        w("## 서버에서 실행할 명령")
+        w("")
+        w("apply·rollback 때 실행 전에 확인을 받습니다(`-y` 로 생략, `--no-hooks` 로 실행 안 함). "
+          "서버 배포 경로에서 실행되고, 명령 하나라도 실패하면 거기서 멈춥니다.")
+        w("")
+        labels = {"pre_apply": "반영 전 (실패하면 apply 중단)", "post_apply": "반영 후",
+                  "post_rollback": "원복 후"}
+        for stage, commands in result.hooks.items():
+            w(f"**{stage}** - {labels.get(stage, stage)}")
+            w("")
+            w("```bash")
+            for cmd in commands:
+                w(cmd)
+            w("```")
+            w("")
+
     if result.source.merge_requests:
         w("## Merge Request")
         w("")
@@ -148,6 +165,9 @@ def _write_deploy_steps(w, result: "PackageResult") -> None:
     w("├─ delete.txt      서버에서 삭제할 파일 목록")
     if p.mode == "sync":
         w("├─ prune.txt       옛 빌드 파일을 정리할 서버 폴더 목록")
+    if result.hooks:
+        w("├─ hooks/          반영 전·후에 서버에서 실행할 명령")
+    w("├─ checksums.sha256  패키지 파일 검증용")
     w("└─ report.md       이 보고서")
     w("```")
     w("")
@@ -168,8 +188,17 @@ def _write_deploy_steps(w, result: "PackageResult") -> None:
     w(f"./{sh} backup        # 2. 바뀌거나 지워질 기존 파일을 {name}/backup/ 에 보관")
     w(f"./{sh} apply         # 3. files/ 내용을 {p.server_path} 에 반영")
     w(f"./{sh} rollback      # 문제 시 apply 이전으로 원복")
+    w(f"./{sh} history       # 이 서버의 배포 이력")
     w("```")
     w("")
+    w("check·backup·apply 전에 `checksums.sha256` 으로 패키지 파일이 업로드 중 손상되지 않았는지 검증합니다. "
+      "같은 대상에 다른 배포가 진행 중이면 backup·apply·rollback 이 멈춥니다.")
+    w("")
+    s = p.server
+    if s.owner or s.file_mode or s.dir_mode:
+        w(f"새로 만들어지는 파일·폴더는 소유자 `{s.owner or '그대로'}`, 파일 권한 `{s.file_mode or '그대로'}`, "
+          f"폴더 권한 `{s.dir_mode or '그대로'}` 로 맞춥니다. 기존 파일은 원래 소유자·권한이 유지됩니다.")
+        w("")
     if result.archive_kind == "tar":
         w("tar.gz 로 올리면 실행 권한이 이미 들어 있어 `chmod` 가 필요 없습니다. ")
     w(f"`chmod` 없이 `bash {sh} check` 처럼 실행해도 됩니다.")

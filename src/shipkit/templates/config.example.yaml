@@ -54,6 +54,17 @@ projects:
   #   server_path: /var/www/html
 
   # 공통 옵션
+  #   hooks:                          # 서버에서 실행할 명령 (실행 전에 확인을 받음, -y 로 생략)
+  #     pre_apply:  ["sudo systemctl stop tomcat"]          # 실패하면 apply 중단
+  #     post_apply:
+  #       - "sudo systemctl start tomcat"
+  #       - { run: "pip install -r requirements.txt", when: "requirements*.txt" }  # 이 파일이 바뀐 경우에만
+  #     post_rollback: ["sudo systemctl restart tomcat"]
+  #   server:
+  #     owner: tomcat:tomcat          # 새로 만든 파일·폴더 소유자 ("inherit" = 상위 폴더와 같게)
+  #     file_mode: "644"              # 새로 만든 파일 권한
+  #     dir_mode: "755"               # 새로 만든 폴더 권한
+  #     history_file: ~/.shipkit/history.log   # 서버의 배포 이력 파일
   #   notices:                        # 이 파일이 바뀌면 알림 (프리셋 기본 알림에 추가)
   #     - { pattern: "deploy/*.sh", message: "배포 스크립트 변경: 서버에도 반영 필요" }
   #   allow: ["src/main/resources/keystore.jks"]   # 민감 파일 차단(.env, *.pem, *.key 등)의 예외

@@ -6,11 +6,14 @@
     manifest.txt    반영할 파일 목록 (LF)
     delete.txt      서버에서 삭제할 파일 목록 (LF)
     prune.txt       (sync 모드) 이번 빌드에 없는 옛 파일을 정리할 서버 폴더 목록 (LF)
-    <SCRIPT_NAME>   check / backup / apply / rollback (LF)
+    hooks/          반영 전·후에 서버에서 실행할 명령 (pre_apply.sh 등, 설정한 경우만)
+    checksums.sha256  위 파일들의 SHA-256 (서버에서 업로드 중 손상 여부 검증)
+    <SCRIPT_NAME>   check / backup / apply / rollback / history (LF)
     report.md       배포 보고서
 """
 from __future__ import annotations
 
+import hashlib
 import shutil
 import tarfile
 from dataclasses import dataclass, field
@@ -18,7 +21,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from shipkit import SCRIPT_NAME, report, script
+from shipkit import SCRIPT_NAME, hooks, report, script
 from shipkit.config import ProjectConfig
 from shipkit.models import Entry, FileChange, SourceInfo, Status, normalize_repo_path
 
@@ -35,6 +38,7 @@ class PackageResult:
     archive: Optional[Path] = None
     archive_kind: Optional[str] = None  # "tar" | "zip" (보고서 안내용)
     source_changes: List[FileChange] = field(default_factory=list)  # 수집한 소스 변경 (sync 모드 보고서용)
+    hooks: Dict[str, List[str]] = field(default_factory=dict)        # 단계별 서버 실행 명령
 
     def count(self, status: Status) -> int:
         return sum(1 for e in self.entries if e.status == status)
@@ -77,6 +81,8 @@ def build_package(project: ProjectConfig, entries: List[Entry], source: SourceIn
     manifest, deletes = collect_lists(entries)
     result = PackageResult(project, None, entries, source, created_at, manifest, deletes,
                            archive_kind=archive, source_changes=list(source_changes or []))
+    result.hooks, hook_notes = hooks.select_hooks(project, result.source_changes)
+    source.notes.extend(n for n in hook_notes if n not in source.notes)
     if dry_run:
         return result
 
@@ -92,7 +98,12 @@ def build_package(project: ProjectConfig, entries: List[Entry], source: SourceIn
     _write_lines(out_dir / "manifest.txt", manifest)
     _write_lines(out_dir / "delete.txt", deletes)
     _write_lines(out_dir / "prune.txt", project.prune if project.mode == "sync" else [])
-    script.write_deploy_script(out_dir / SCRIPT_NAME, project.server_path, out_dir.name, created_at)
+    for stage, commands in result.hooks.items():
+        (out_dir / "hooks").mkdir(exist_ok=True)
+        _write_text(out_dir / "hooks" / f"{stage}.sh", hooks.render_hook_file(stage, commands))
+    _write_checksums(out_dir)
+    script.write_deploy_script(out_dir / SCRIPT_NAME, project.server_path, out_dir.name, created_at,
+                               project.server)
     result.out_dir = out_dir
     report.write_report(out_dir / "report.md", result)
 
@@ -108,6 +119,24 @@ def _unique_dir(parent: Path, name: str) -> Path:
         candidate = parent / f"{name}_{n}"
         n += 1
     return candidate
+
+
+def _write_text(path: Path, text: str) -> None:
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(text)
+
+
+def _write_checksums(out_dir: Path) -> None:
+    """sha256sum -c 형식. 서버 스크립트 자신과 보고서는 제외한다."""
+    lines = []
+    candidates = [p for p in out_dir.rglob("*") if p.is_file()]
+    for path in sorted(candidates, key=lambda p: p.relative_to(out_dir).as_posix()):
+        rel = path.relative_to(out_dir).as_posix()
+        if rel in (SCRIPT_NAME, "report.md", "checksums.sha256"):
+            continue
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        lines.append(f"{digest}  {rel}")
+    _write_lines(out_dir / "checksums.sha256", lines)
 
 
 def _write_lines(path: Path, lines: List[str]) -> None:

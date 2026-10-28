@@ -139,6 +139,27 @@ class Notice:
     message: str
 
 
+HOOK_STAGES = ("pre_apply", "post_apply", "post_rollback")
+_OWNER_RE = re.compile(r"^[A-Za-z0-9._-]+(:[A-Za-z0-9._-]+)?$")
+_MODE_RE = re.compile(r"^[0-7]{3,4}$")
+DEFAULT_HISTORY_FILE = f"~/.{CLI_NAME}/history.log"
+
+
+@dataclass(frozen=True)
+class Hook:
+    """서버에서 실행할 명령. when 이 있으면 그 패턴의 파일이 바뀐 경우에만 패키지에 넣는다."""
+    run: str
+    when: Optional[str] = None
+
+
+@dataclass
+class ServerOptions:
+    owner: Optional[str] = None       # 새로 만든 파일·폴더의 소유자 ("user:group" 또는 "inherit")
+    file_mode: Optional[str] = None   # 새로 만든 파일 권한 (예: 644)
+    dir_mode: Optional[str] = None    # 새로 만든 폴더 권한 (예: 755)
+    history_file: str = DEFAULT_HISTORY_FILE
+
+
 @dataclass
 class GitLabConfig:
     url: str
@@ -168,6 +189,8 @@ class ProjectConfig:
     allow: List[str] = field(default_factory=lambda: list(DEFAULT_ALLOW))
     source_encodings: List[str] = field(default_factory=lambda: ["utf-8", "cp949"])
     package_name: str = DEFAULT_PACKAGE_NAME
+    hooks: Dict[str, List[Hook]] = field(default_factory=dict)
+    server: ServerOptions = field(default_factory=ServerOptions)
 
     def is_excluded(self, path: str) -> bool:
         return any(glob_match(path, pat) for pat in self.exclude)
@@ -396,7 +419,54 @@ def _parse_project(name: str, raw: Dict[str, Any], defaults: Dict[str, Any], bas
         allow=list(DEFAULT_ALLOW) + [str(x) for x in (get("allow") or [])],
         source_encodings=[str(e) for e in encodings],
         package_name=_parse_package_name(str(get("package_name", DEFAULT_PACKAGE_NAME)), name, where),
+        hooks=_parse_hooks(get("hooks"), where),
+        server=_parse_server_options(get("server"), where),
     )
+
+
+def _parse_hooks(raw: Any, where: str) -> Dict[str, List[Hook]]:
+    if not raw:
+        return {}
+    raw = _require_dict(raw, f"{where}.hooks")
+    hooks: Dict[str, List[Hook]] = {}
+    for stage, items in raw.items():
+        if stage not in HOOK_STAGES:
+            raise ConfigError(f"{where}.hooks 의 단계는 {', '.join(HOOK_STAGES)} 중 하나여야 합니다: {stage}")
+        if isinstance(items, (str, dict)):
+            items = [items]
+        parsed = []
+        for i, item in enumerate(items or []):
+            if isinstance(item, str):
+                item = {"run": item}
+            item = _require_dict(item, f"{where}.hooks.{stage}[{i}]")
+            run = str(item.get("run") or "").strip()
+            if not run or "\0" in run:
+                raise ConfigError(f"{where}.hooks.{stage}[{i}].run 이 비어 있습니다.")
+            parsed.append(Hook(run=run, when=_opt_str(item.get("when"))))
+        if parsed:
+            hooks[stage] = parsed
+    return hooks
+
+
+def _parse_server_options(raw: Any, where: str) -> ServerOptions:
+    if not raw:
+        return ServerOptions()
+    raw = _require_dict(raw, f"{where}.server")
+    owner = _opt_str(raw.get("owner"))
+    if owner and owner != "inherit" and not _OWNER_RE.match(owner):
+        raise ConfigError(f"{where}.server.owner 는 'user', 'user:group' 또는 'inherit' 여야 합니다: {owner}")
+    modes = {}
+    for key in ("file_mode", "dir_mode"):
+        value = _opt_str(raw.get(key))
+        if value is not None:
+            value = value.zfill(3) if value.isdigit() else value
+            if not _MODE_RE.match(value):
+                raise ConfigError(f"{where}.server.{key} 는 8진수 권한이어야 합니다 (예: 644): {value}")
+        modes[key] = value
+    history = str(raw.get("history_file") or DEFAULT_HISTORY_FILE).strip()
+    if _UNSAFE_SHELL_CHARS.search(history) or not (history.startswith("/") or history.startswith("~/")):
+        raise ConfigError(f"{where}.server.history_file 은 '/' 또는 '~/' 로 시작하고 따옴표·$ 등을 쓸 수 없습니다: {history}")
+    return ServerOptions(owner=owner, file_mode=modes["file_mode"], dir_mode=modes["dir_mode"], history_file=history)
 
 
 def _parse_server_path(value: Any, where: str) -> str:
