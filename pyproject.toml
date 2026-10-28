@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "shipkit"
+version = "0.1.0"
+description = "ShipKit - Safe Deployment & Rollback Tool"
+requires-python = ">=3.9"
+dependencies = [
+    "requests>=2.25",
+    "PyYAML>=5.4",
+]
+
+[project.optional-dependencies]
+keyring = ["keyring>=23"]
+dev = ["pytest>=7"]
+
+[project.scripts]
+shipkit = "shipkit.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+shipkit = ["templates/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
