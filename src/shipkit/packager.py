@@ -5,21 +5,22 @@
     files/          서버 배포 경로 기준 상대 경로 그대로의 파일들
     manifest.txt    반영할 파일 목록 (LF)
     delete.txt      서버에서 삭제할 파일 목록 (LF)
-    shipkit.sh       backup / apply / rollback / check (LF)
+    prune.txt       (sync 모드) 이번 빌드에 없는 옛 파일을 정리할 서버 폴더 목록 (LF)
+    <SCRIPT_NAME>   check / backup / apply / rollback (LF)
     report.md       배포 보고서
 """
 from __future__ import annotations
 
 import shutil
 import tarfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from shipkit import report, script
+from shipkit import SCRIPT_NAME, report, script
 from shipkit.config import ProjectConfig
-from shipkit.models import Entry, SourceInfo, Status, normalize_repo_path
+from shipkit.models import Entry, FileChange, SourceInfo, Status, normalize_repo_path
 
 
 @dataclass
@@ -33,6 +34,7 @@ class PackageResult:
     deletes: List[str]
     archive: Optional[Path] = None
     archive_kind: Optional[str] = None  # "tar" | "zip" (보고서 안내용)
+    source_changes: List[FileChange] = field(default_factory=list)  # 수집한 소스 변경 (sync 모드 보고서용)
 
     def count(self, status: Status) -> int:
         return sum(1 for e in self.entries if e.status == status)
@@ -68,11 +70,13 @@ def collect_lists(entries: List[Entry]) -> Tuple[List[str], List[str]]:
 
 def build_package(project: ProjectConfig, entries: List[Entry], source: SourceInfo,
                   archive: Optional[str] = None, dry_run: bool = False,
-                  now: Optional[datetime] = None) -> PackageResult:
+                  now: Optional[datetime] = None,
+                  source_changes: Optional[List[FileChange]] = None) -> PackageResult:
     created_at = now or datetime.now()
     resolve_conflicts(entries)
     manifest, deletes = collect_lists(entries)
-    result = PackageResult(project, None, entries, source, created_at, manifest, deletes, archive_kind=archive)
+    result = PackageResult(project, None, entries, source, created_at, manifest, deletes,
+                           archive_kind=archive, source_changes=list(source_changes or []))
     if dry_run:
         return result
 
@@ -87,7 +91,8 @@ def build_package(project: ProjectConfig, entries: List[Entry], source: SourceIn
 
     _write_lines(out_dir / "manifest.txt", manifest)
     _write_lines(out_dir / "delete.txt", deletes)
-    script.write_deploy_script(out_dir / "shipkit.sh", project.server_path, out_dir.name, created_at)
+    _write_lines(out_dir / "prune.txt", project.prune if project.mode == "sync" else [])
+    script.write_deploy_script(out_dir / SCRIPT_NAME, project.server_path, out_dir.name, created_at)
     result.out_dir = out_dir
     report.write_report(out_dir / "report.md", result)
 
@@ -119,7 +124,7 @@ def _make_archive(out_dir: Path, kind: str) -> Path:
 
         def set_mode(info: tarfile.TarInfo) -> tarfile.TarInfo:
             # 윈도우에서 만든 tar 도 서버에서 바로 실행 가능하도록 권한을 지정한다.
-            if info.isdir() or info.name.endswith("/shipkit.sh"):
+            if info.isdir() or info.name.endswith("/" + SCRIPT_NAME):
                 info.mode = 0o755
             else:
                 info.mode = 0o644

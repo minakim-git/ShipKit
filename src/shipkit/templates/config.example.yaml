@@ -1,0 +1,60 @@
+# ShipKit 설정 파일
+# 경로는 슬래시(/)로 적는 것을 권장합니다. 예: D:/workspace/erp
+# 토큰은 이 파일에 적지 않습니다 -> 환경변수 또는 'shipkit token set' 사용
+# 사용 가능한 프리셋: 'shipkit presets'
+
+gitlab:
+  url: https://gitlab.example.com     # GitLab 주소 (/api/v4 는 자동으로 붙음)
+  token_env: GITLAB_TOKEN             # 토큰을 읽을 환경변수 이름 (없으면 OS 키링 사용)
+  verify_ssl: true                    # SSL 인증서 검증 (끄지 말고 아래 ca_bundle 사용 권장)
+  # ca_bundle: D:/certs/company-ca.pem  # 사내 CA 인증서
+  timeout: 15                         # 요청 타임아웃(초)
+
+# 모든 프로젝트 공통 기본값 (프로젝트에서 같은 키로 덮어쓸 수 있음)
+defaults:
+  output_dir: D:/deploy               # 패키지 생성 위치 (이 아래에 날짜 폴더가 생김)
+  package_name: "%Y-%m-%d-%H%M"       # 날짜 폴더 이름 -> 2026-10-26-1133 ({project} 사용 가능)
+  source_encoding: [utf-8, cp949]     # Java 소스 인코딩 (앞에서부터 시도)
+  exclude:                            # 배포에서 뺄 파일 (glob, 프리셋 기본 제외 목록에 추가됨)
+    - "src/test/**"
+
+projects:
+  # ---- Java 웹 (Maven): 바뀐 .java 는 빌드된 .class 로, JSP/리소스는 그대로
+  erp:                                # 프로젝트 이름 (-p erp 로 지정)
+    preset: maven                     # maven | gradle
+    root: D:/workspace/erp            # 로컬 git 저장소 최상위 폴더 (빌드가 끝난 상태여야 함)
+    server_path: /app/tomcat/webapps/ROOT   # 서버의 WEB-INF 바로 위 폴더
+    gitlab_project: 123               # GitLab 프로젝트 ID 또는 "그룹/프로젝트"
+    # output_dir: D:/deploy/erp       # 기본값 덮어쓰기
+    # modules: [".", "erp-web"]       # 멀티모듈이면 모듈 폴더 나열 ("." = 루트)
+    # rules:                          # 프리셋 대신 직접 규칙 지정 (위에서부터 먼저 매칭)
+    #   - { src: src/main/java,      dest: WEB-INF/classes, build_dir: target/classes }
+    #   - { src: src/main/resources, dest: WEB-INF/classes }   # build_dir 를 주면 빌드 결과(필터링된 파일)를 복사
+    #   - { src: src/main/webapp,    dest: "" }
+
+  # ---- Vue/React (Vite): dist/ 전체를 서버와 비교해 다른 파일만 반영, assets/ 의 옛 파일은 정리
+  # web:
+  #   preset: vite                    # vite | vue-cli
+  #   root: D:/workspace/web
+  #   server_path: /var/www/web       # dist/ 의 내용이 들어갈 서버 폴더
+  #   # build_dir: dist               # 빌드 결과 폴더 (프리셋 기본값: dist)
+  #   # dest: admin                   # server_path 아래 하위 폴더에 반영할 때
+  #   # prune: [assets]               # 옛 빌드 파일을 지울 서버 폴더 ('.' = server_path 전체, 주의)
+
+  # ---- Python (Django/Flask 등): 바뀐 소스를 그대로 반영
+  # api:
+  #   preset: python
+  #   root: D:/workspace/api
+  #   server_path: /srv/api
+
+  # ---- 정적 사이트·PHP 등
+  # site:
+  #   preset: static
+  #   root: D:/workspace/site
+  #   server_path: /var/www/html
+
+  # 공통 옵션
+  #   notices:                        # 이 파일이 바뀌면 알림 (프리셋 기본 알림에 추가)
+  #     - { pattern: "deploy/*.sh", message: "배포 스크립트 변경: 서버에도 반영 필요" }
+  #   allow: ["src/main/resources/keystore.jks"]   # 민감 파일 차단(.env, *.pem, *.key 등)의 예외
+  #   deny: ["**/secret*.yml"]        # 민감 파일 차단 목록에 추가

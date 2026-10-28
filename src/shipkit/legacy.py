@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+from shipkit import CLI_NAME, __app_name__
+
 
 @dataclass
 class LegacyProject:
@@ -52,9 +54,9 @@ def _path(value: str) -> str:
 
 def to_yaml(gitlab_url: Optional[str], projects: List[LegacyProject], source: Path) -> str:
     out = [
-        "# shipkit 설정 파일",
+        f"# {__app_name__} 설정 파일",
         f"# 기존 툴 DB({source})에서 가져왔습니다. 토큰/비밀번호는 가져오지 않습니다.",
-        "# 토큰은 'shipkit token set' 으로 OS 키링에 저장하세요.",
+        f"# 토큰은 '{CLI_NAME} token set' 으로 OS 키링에 저장하세요.",
         "",
     ]
     if gitlab_url:

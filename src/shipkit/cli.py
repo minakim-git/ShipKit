@@ -5,6 +5,8 @@
   shipkit check   [-p 프로젝트]      설정·경로·GitLab 연결 점검
   shipkit mr      [-p 프로젝트]      GitLab MR 목록
   shipkit package [-p 프로젝트] --mr 12 15 | --git A..B | --files 목록.txt | 경로...
+                                    (sync 모드 프로젝트는 변경 출처 없이도 실행 가능)
+  shipkit presets                   사용 가능한 프리셋 목록
   shipkit token   set | delete | status
 
 종료 코드: 0 성공, 1 처리 실패(또는 --strict 경고), 2 설정·사용법 오류
@@ -20,16 +22,19 @@ from importlib import resources
 from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
 
-from shipkit import __app_name__, __tagline__, __version__, legacy, mapper, packager
+from shipkit import (
+    CLI_NAME, SCRIPT_NAME, __app_name__, __tagline__, __version__, legacy, mapper, packager, sync,
+)
 from shipkit.config import (
-    DEFAULT_CONFIG_NAME, Config, ConfigError, ProjectConfig, load_config, user_config_path,
+    DEFAULT_CONFIG_NAME, PRESET_ALIASES, PRESETS, Config, ConfigError, ProjectConfig, load_config,
+    user_config_path,
 )
 from shipkit.models import Entry, FileChange, SourceInfo, Status, merge_changes
 from shipkit.secrets import SecretError, delete_token, get_token, set_token, token_source
 from shipkit.sources import git_local, manual
 from shipkit.sources.gitlab import GitLabClient, GitLabError, collect_from_mrs
 
-log = logging.getLogger("shipkit")
+log = logging.getLogger(CLI_NAME)
 
 EXIT_OK, EXIT_FAIL, EXIT_USAGE = 0, 1, 2
 
@@ -64,10 +69,10 @@ def _write_new_file(target: Path, text: str, force: bool) -> None:
 
 def cmd_init(args: argparse.Namespace) -> int:
     target = Path(args.path) if args.path else user_config_path()
-    text = (resources.files("shipkit") / "templates" / "shipkit.example.yaml").read_text(encoding="utf-8")
+    text = (resources.files("shipkit") / "templates" / "config.example.yaml").read_text(encoding="utf-8")
     _write_new_file(target, text, args.force)
     print(f"설정 파일을 만들었습니다: {target.resolve()}")
-    print("gitlab.url, projects 항목을 실제 값으로 고친 뒤 'shipkit check' 로 점검하세요.")
+    print(f"gitlab.url, projects 항목을 실제 값으로 고친 뒤 '{CLI_NAME} check' 로 점검하세요.")
     return EXIT_OK
 
 
@@ -86,7 +91,7 @@ def cmd_import_legacy(args: argparse.Namespace) -> int:
     print(f"기존 툴 프로젝트 {len(projects)}개를 가져왔습니다: {target.resolve()}")
     for p in projects:
         print(f"  - {p.name}  ->  서버 {p.server_path or '(없음)'}")
-    print("토큰은 가져오지 않았습니다. 'shipkit token set' 후 'shipkit check' 로 점검하세요.")
+    print(f"토큰은 가져오지 않았습니다. '{CLI_NAME} token set' 후 '{CLI_NAME} check' 로 점검하세요.")
     return EXIT_OK
 
 
@@ -108,6 +113,11 @@ def cmd_check(args: argparse.Namespace) -> int:
         item(p.root.is_dir(), f"로컬 경로: {p.root}")
         if p.root.is_dir():
             item(git_local.is_git_repo(p.root), "git 저장소 여부 (--git 모드와 MR 반영 확인에 필요)")
+            if p.mode == "sync":
+                bd = sync.build_root(p)
+                count = sum(1 for f in bd.rglob("*") if f.is_file()) if bd.is_dir() else 0
+                item(count > 0, f"빌드 결과 폴더: {bd} ({count}개 파일)" if count
+                     else f"빌드 결과 폴더가 없거나 비어 있음: {bd} (빌드 필요)")
             for module in p.modules:
                 base = p.root / module if module else p.root
                 for rule in p.rules:
@@ -117,7 +127,9 @@ def cmd_check(args: argparse.Namespace) -> int:
         out_parent = p.output_dir if p.output_dir.exists() else p.output_dir.parent
         item(out_parent.exists(), f"패키지 생성 경로: {p.output_dir}")
         print(f"  [정보] 서버 배포 경로: {p.server_path}")
-        print(f"  [정보] 매핑 규칙: " + ", ".join(f"{r.src} -> {r.dest or '/'}" for r in p.rules))
+        print(f"  [정보] 배포 방식: {p.describe_mode}")
+        if p.mode == "changes":
+            print("  [정보] 매핑 규칙: " + ", ".join(f"{r.src or '(전체)'} -> {r.dest or '/'}" for r in p.rules))
 
     if cfg.gitlab:
         print(f"\nGitLab {cfg.gitlab.url}")
@@ -163,6 +175,8 @@ def cmd_mr(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------- package
 def _collect(args: argparse.Namespace, cfg: Config, project: ProjectConfig) -> Tuple[List[FileChange], SourceInfo]:
     modes = sum(bool(x) for x in (args.mr, args.git, args.files, args.paths))
+    if modes == 0 and project.mode == "sync":
+        return [], SourceInfo(kind="build", description=f"빌드 결과 전체 ({project.build_dir}, 변경 목록 없음)")
     if modes != 1:
         raise UsageError("변경 파일 출처를 하나만 지정하세요: --mr, --git, --files, 또는 경로 직접 나열")
 
@@ -223,7 +237,8 @@ def _check_local_has_mrs(project: ProjectConfig, source: SourceInfo) -> None:
             )
 
 
-def _mark_uncommitted(project: ProjectConfig, entries: List[Entry]) -> None:
+def _mark_uncommitted(project: ProjectConfig, entries: List[Entry], changes: List[FileChange],
+                      source: SourceInfo) -> None:
     """커밋되지 않은 로컬 수정이 있는 파일을 경고한다 (테스트용 설정 등이 운영에 섞이는 것 방지)."""
     if not git_local.is_git_repo(project.root):
         return
@@ -231,6 +246,15 @@ def _mark_uncommitted(project: ProjectConfig, entries: List[Entry]) -> None:
         dirty = git_local.dirty_paths(project.root)
     except git_local.GitError as e:
         log.warning("git status 실패: %s", e)
+        return
+    if project.mode == "sync":
+        # 빌드 결과는 보통 git 에 없으므로, 빌드에 들어갔을 수 있는 소스의 미커밋 수정을 본다.
+        prefix = f"{project.build_dir}/"
+        targets = {c.path for c in changes} if changes else dirty
+        hits = sorted(d for d in dirty & targets if not d.startswith(prefix))
+        if hits:
+            shown = ", ".join(hits[:5]) + (f" 외 {len(hits) - 5}개" if len(hits) > 5 else "")
+            source.warnings.append(f"커밋되지 않은 로컬 수정이 빌드에 들어갔을 수 있습니다: {shown}")
         return
     for e in entries:
         if e.change.path in dirty and e.artifacts:
@@ -244,17 +268,26 @@ def cmd_package(args: argparse.Namespace) -> int:
         raise UsageError(f"로컬 경로가 없습니다: {project.root}")
 
     changes, source = _collect(args, cfg, project)
-    if not changes:
+    if not changes and project.mode == "changes":
         print("변경 파일이 없습니다.")
         return EXIT_OK
 
-    entries = mapper.plan(project, changes)
-    _mark_uncommitted(project, entries)
+    source.notes.extend(mapper.collect_notices(project, changes))
+    if project.mode == "sync":
+        entries = sync.plan_sync(project, changes, source)
+        if not any(e.artifacts for e in entries):
+            _print_result(packager.build_package(project, entries, source, dry_run=True))
+            print("\n빌드 결과가 없어 패키지를 만들지 않았습니다.")
+            return EXIT_FAIL
+    else:
+        entries = mapper.plan(project, changes)
+    _mark_uncommitted(project, entries, changes, source)
     blocked = any(e.status == Status.ERROR for e in entries) or (
         args.strict and (source.warnings or any(e.status == Status.WARN for e in entries))
     )
     dry_run = args.dry_run or (blocked and not args.force)
-    result = packager.build_package(project, entries, source, archive=args.archive, dry_run=dry_run)
+    result = packager.build_package(project, entries, source, archive=args.archive, dry_run=dry_run,
+                                    source_changes=changes)
 
     _print_result(result)
 
@@ -276,17 +309,30 @@ def cmd_package(args: argparse.Namespace) -> int:
     print(f"보고서: {result.out_dir / 'report.md'}")
     name = result.out_dir.name
     print(f"서버 반영: '{name}' 폴더를 통째로 서버 배포 경로 밖(예: ~/deploy/{name})에 올린 뒤, 그 폴더에서")
-    print("          ./shipkit.sh check -> ./shipkit.sh backup -> ./shipkit.sh apply  (원복: rollback)")
-    print("          (실행 권한이 없으면 chmod +x shipkit.sh, 또는 bash shipkit.sh check 처럼 실행)")
+    print(f"          ./{SCRIPT_NAME} check -> ./{SCRIPT_NAME} backup -> ./{SCRIPT_NAME} apply  (원복: rollback)")
+    print(f"          (실행 권한이 없으면 chmod +x {SCRIPT_NAME}, 또는 bash {SCRIPT_NAME} check 처럼 실행)")
     return EXIT_FAIL if result.has_errors else EXIT_OK
 
 
 def _print_result(result: packager.PackageResult) -> None:
+    project = result.project
+    print(f"배포 방식: {project.describe_mode}")
     print(f"변경 출처: {result.source.description}")
     for w in result.source.warnings:
         print(f"[경고] {w}")
+    for n in result.source.notes:
+        print(f"[알림] {n}")
     print()
-    for e in result.entries:
+    entries = result.entries
+    if project.mode == "sync":
+        # 빌드 결과는 파일이 많으므로 문제 있는 것만 보여준다.
+        entries = [e for e in entries if e.status in (Status.ERROR, Status.WARN)]
+        summary = sync.summarize(result.entries)
+        if summary:
+            print(f"{summary} -> {project.dest or '/'} (서버와 다른 파일만 반영)")
+        if project.prune:
+            print(f"정리 폴더: {', '.join(project.prune)} (이번 빌드에 없는 옛 파일은 서버에서 정리)")
+    for e in entries:
         print(f"{_TAG[e.status]} {e.change.change.value} {e.change.path}")
         for a in e.artifacts:
             print(f"        -> {a.target}")
@@ -299,6 +345,17 @@ def _print_result(result: packager.PackageResult) -> None:
         f"성공 {result.count(Status.OK)} / 경고 {result.count(Status.WARN)} / 실패 {result.count(Status.ERROR)}"
         f" / 제외 {result.count(Status.SKIPPED)}  |  서버 반영 {len(result.manifest)}개, 서버 삭제 {len(result.deletes)}개"
     )
+
+
+# ---------------------------------------------------------------------- presets
+def cmd_presets(args: argparse.Namespace) -> int:
+    print(f"{'프리셋':<10} {'방식':<8} 설명")
+    for name, preset in PRESETS.items():
+        print(f"{name:<10} {preset['mode']:<8} {preset['description']}")
+    aliases = ", ".join(f"{a} -> {t}" for a, t in PRESET_ALIASES.items())
+    print(f"\n별칭: {aliases}")
+    print("방식: changes = 바뀐 파일만 매핑, sync = 빌드 결과 폴더 전체를 서버와 비교해 다른 파일만 반영")
+    return EXIT_OK
 
 
 # ---------------------------------------------------------------------- token
@@ -330,7 +387,7 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument("-v", "--verbose", action="store_true", help="상세 로그 출력")
 
     parser = argparse.ArgumentParser(
-        prog="shipkit",
+        prog=CLI_NAME,
         description=f"{__app_name__} {__version__} - {__tagline__}\n"
                     "변경 파일을 서버 경로에 맞게 패키지로 만들고, 백업·반영·원복까지 처리합니다.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -371,6 +428,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--strict", action="store_true", help="경고도 실패로 취급")
     p.add_argument("--force", action="store_true", help="실패 항목이 있어도 나머지로 패키지 생성")
     p.set_defaults(func=cmd_package)
+
+    p = sub.add_parser("presets", parents=[common], help="사용 가능한 프리셋 목록")
+    p.set_defaults(func=cmd_presets)
 
     p = sub.add_parser("token", parents=[common], help="GitLab 토큰 관리 (OS 키링)")
     p.add_argument("action", choices=["set", "delete", "status"])

@@ -1,4 +1,4 @@
-"""서버용 shipkit.sh 생성. 줄바꿈은 항상 LF 로 고정한다."""
+"""서버 스크립트(SCRIPT_NAME) 생성. 줄바꿈은 항상 LF 로 고정한다."""
 from __future__ import annotations
 
 import os
@@ -6,9 +6,9 @@ from datetime import datetime
 from importlib import resources
 from pathlib import Path
 
-from shipkit import __version__
+from shipkit import SCRIPT_NAME, __app_name__, __tagline__, __version__
 
-TEMPLATE_NAME = "shipkit.sh"
+TEMPLATE_NAME = "server.sh"
 
 
 def render(server_path: str, package_name: str, created_at: datetime) -> str:
@@ -19,7 +19,10 @@ def render(server_path: str, package_name: str, created_at: datetime) -> str:
         text.replace("@@SERVER_PATH@@", server_path)
         .replace("@@PACKAGE_NAME@@", package_name)
         .replace("@@CREATED_AT@@", created_at.strftime("%Y-%m-%d %H:%M:%S"))
+        .replace("@@APP_NAME@@", __app_name__)
         .replace("@@APP_VERSION@@", __version__)
+        .replace("@@TAGLINE@@", __tagline__)
+        .replace("@@SCRIPT_NAME@@", SCRIPT_NAME)
     )
 
 

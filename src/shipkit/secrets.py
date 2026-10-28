@@ -7,9 +7,10 @@ from __future__ import annotations
 import os
 from typing import Optional
 
+from shipkit import CLI_NAME
 from shipkit.config import GitLabConfig
 
-KEYRING_SERVICE = "shipkit"
+KEYRING_SERVICE = CLI_NAME
 
 
 class SecretError(Exception):
@@ -36,7 +37,7 @@ def get_token(cfg: GitLabConfig) -> str:
             raise SecretError(f"키링에서 토큰을 읽지 못했습니다: {e}") from e
         if token:
             return token
-    hint = "'shipkit token set'" if kr is not None else "keyring 패키지 설치 후 'shipkit token set'"
+    hint = f"'{CLI_NAME} token set'" if kr is not None else f"keyring 패키지 설치 후 '{CLI_NAME} token set'"
     raise SecretError(f"GitLab 토큰이 없습니다. 환경변수 {cfg.token_env} 를 설정하거나 {hint} 으로 저장하세요.")
 
 

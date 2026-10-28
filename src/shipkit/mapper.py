@@ -1,4 +1,4 @@
-"""변경 파일 -> 서버 배포 파일 매핑 (파일 복사 없이 계획만 만든다).
+"""changes 모드: 변경 파일 -> 서버 배포 파일 매핑 (파일 복사 없이 계획만 만든다).
 
 규칙(Rule)은 '모듈 기준 소스 접두어 -> 서버 배포 경로 기준 대상 접두어' 이다.
 build_dir 이 있는 규칙의 .java 는 빌드 산출물(.class)로 바뀐다:
@@ -9,7 +9,7 @@ from __future__ import annotations
 import posixpath
 import re
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from shipkit.config import ProjectConfig, Rule
 from shipkit.models import Artifact, ChangeType, Entry, FileChange, Status
@@ -28,8 +28,20 @@ _STRING = re.compile(r'"(?:\\.|[^"\\\n])*"')
 STALE_TOLERANCE = 2.0
 
 
+SENSITIVE_MESSAGE = "민감 파일로 보여 차단했습니다 (꼭 배포해야 하면 설정의 allow 에 추가)"
+
+
 def plan(project: ProjectConfig, changes: List[FileChange]) -> List[Entry]:
     return [plan_one(project, ch) for ch in changes]
+
+
+def collect_notices(project: ProjectConfig, changes: List[FileChange]) -> List[str]:
+    """의존성·DB 변경처럼 패키지 외에 따로 할 일이 있는 변경을 알림으로 모은다."""
+    notes: Dict[str, List[str]] = {}
+    for ch in changes:
+        for msg in project.notices_for(ch.path):
+            notes.setdefault(msg, []).append(ch.path)
+    return [f"{msg} ({', '.join(paths)})" for msg, paths in notes.items()]
 
 
 def plan_one(project: ProjectConfig, change: FileChange) -> Entry:
@@ -37,6 +49,13 @@ def plan_one(project: ProjectConfig, change: FileChange) -> Entry:
     if project.is_excluded(change.path):
         entry.status = Status.SKIPPED
         entry.messages.append("제외 패턴에 해당")
+        return entry
+    if project.is_sensitive(change.path):
+        if change.change == ChangeType.DELETED:
+            entry.status = Status.SKIPPED
+            entry.messages.append("민감 파일은 서버에서 삭제하지 않습니다 (서버 전용 설정일 수 있음)")
+        else:
+            entry.fail(SENSITIVE_MESSAGE)
         return entry
 
     matched = _match_rule(project, change.path)

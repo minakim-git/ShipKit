@@ -117,4 +117,5 @@ class SourceInfo:
     kind: str  # "gitlab-mr" | "git-diff" | "manual"
     description: str
     merge_requests: List[dict] = field(default_factory=list)
-    warnings: List[str] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)  # 확인이 필요한 문제 (--strict 대상)
+    notes: List[str] = field(default_factory=list)     # 참고 알림 (의존성·DB 변경 등, --strict 대상 아님)
