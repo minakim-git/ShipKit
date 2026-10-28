@@ -27,6 +27,25 @@ def select_hooks(project: ProjectConfig, changes: List[FileChange]) -> Tuple[Dic
     return selected, notes
 
 
+def hook_file_name(stage: str, server_os: str) -> str:
+    return f"{stage}.ps1" if server_os == "windows" else f"{stage}.sh"
+
+
+def render_hook_file_ps(stage: str, commands: List[str]) -> str:
+    """Windows 서버용. 명령마다 실패(외부 프로그램 종료 코드 포함)를 확인해서 바로 멈춘다.
+    '#@' 로 끝나는 줄은 자동으로 붙인 줄이라 서버 스크립트가 화면에 보여주지 않는다."""
+    lines = [
+        f"# {stage}: 서버 배포 경로에서 실행됩니다. 명령 하나라도 실패하면 즉시 중단합니다.",
+        "$ErrorActionPreference = 'Stop'  #@",
+        "",
+    ]
+    for cmd in commands:
+        lines.append("$global:LASTEXITCODE = 0  #@")
+        lines.append(cmd.replace("\r\n", "\n").rstrip())
+        lines.append("if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }  #@")
+    return "\n".join(lines) + "\n"
+
+
 def render_hook_file(stage: str, commands: List[str]) -> str:
     lines = [
         "#!/usr/bin/env bash",

@@ -8,7 +8,8 @@
     prune.txt       (sync 모드) 이번 빌드에 없는 옛 파일을 정리할 서버 폴더 목록 (LF)
     hooks/          반영 전·후에 서버에서 실행할 명령 (pre_apply.sh 등, 설정한 경우만)
     checksums.sha256  위 파일들의 SHA-256 (서버에서 업로드 중 손상 여부 검증)
-    <SCRIPT_NAME>   check / backup / apply / rollback / history (LF)
+    <서버 스크립트>  check / backup / apply / rollback / history
+                    리눅스: shipkit.sh (LF), Windows(server_os: windows): shipkit.ps1 (UTF-8 BOM, CRLF)
     report.md       배포 보고서
 """
 from __future__ import annotations
@@ -21,7 +22,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from shipkit import SCRIPT_NAME, hooks, report, script
+from shipkit import hooks, report, script
 from shipkit.config import ProjectConfig
 from shipkit.models import Entry, FileChange, SourceInfo, Status, normalize_repo_path
 
@@ -100,15 +101,20 @@ def build_package(project: ProjectConfig, entries: List[Entry], source: SourceIn
     _write_lines(out_dir / "prune.txt", project.prune if project.mode == "sync" else [])
     for stage, commands in result.hooks.items():
         (out_dir / "hooks").mkdir(exist_ok=True)
-        _write_text(out_dir / "hooks" / f"{stage}.sh", hooks.render_hook_file(stage, commands))
-    _write_checksums(out_dir)
-    script.write_deploy_script(out_dir / SCRIPT_NAME, project.server_path, out_dir.name, created_at,
-                               project.server)
+        if project.server_os == "windows":
+            text, name = hooks.render_hook_file_ps(stage, commands), hooks.hook_file_name(stage, "windows")
+            with open(out_dir / "hooks" / name, "w", encoding="utf-8-sig", newline="\r\n") as f:
+                f.write(text)
+        else:
+            _write_text(out_dir / "hooks" / hooks.hook_file_name(stage, "linux"), hooks.render_hook_file(stage, commands))
+    _write_checksums(out_dir, project.script_name)
+    script.write_deploy_script(out_dir / project.script_name, project.server_path, out_dir.name, created_at,
+                               project.server, project.server_os)
     result.out_dir = out_dir
     report.write_report(out_dir / "report.md", result)
 
     if archive:
-        result.archive = _make_archive(out_dir, archive)
+        result.archive = _make_archive(out_dir, archive, project.script_name)
     return result
 
 
@@ -126,13 +132,13 @@ def _write_text(path: Path, text: str) -> None:
         f.write(text)
 
 
-def _write_checksums(out_dir: Path) -> None:
+def _write_checksums(out_dir: Path, script_name: str) -> None:
     """sha256sum -c 형식. 서버 스크립트 자신과 보고서는 제외한다."""
     lines = []
     candidates = [p for p in out_dir.rglob("*") if p.is_file()]
     for path in sorted(candidates, key=lambda p: p.relative_to(out_dir).as_posix()):
         rel = path.relative_to(out_dir).as_posix()
-        if rel in (SCRIPT_NAME, "report.md", "checksums.sha256"):
+        if rel in (script_name, "report.md", "checksums.sha256"):
             continue
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         lines.append(f"{digest}  {rel}")
@@ -145,7 +151,7 @@ def _write_lines(path: Path, lines: List[str]) -> None:
             f.write(line + "\n")
 
 
-def _make_archive(out_dir: Path, kind: str) -> Path:
+def _make_archive(out_dir: Path, kind: str, script_name: str) -> Path:
     if kind == "zip":
         return Path(shutil.make_archive(str(out_dir), "zip", out_dir.parent, out_dir.name))
     if kind == "tar":
@@ -153,7 +159,7 @@ def _make_archive(out_dir: Path, kind: str) -> Path:
 
         def set_mode(info: tarfile.TarInfo) -> tarfile.TarInfo:
             # 윈도우에서 만든 tar 도 서버에서 바로 실행 가능하도록 권한을 지정한다.
-            if info.isdir() or info.name.endswith("/" + SCRIPT_NAME):
+            if info.isdir() or info.name.endswith("/" + script_name):
                 info.mode = 0o755
             else:
                 info.mode = 0o644

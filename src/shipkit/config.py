@@ -25,7 +25,7 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
-from shipkit import CLI_NAME, CONFIG_ENV, CONFIG_NAME, PROJECT_FILE
+from shipkit import CLI_NAME, CONFIG_ENV, CONFIG_NAME, PROJECT_FILE, SCRIPT_NAME, SCRIPT_NAME_PS
 
 DEFAULT_CONFIG_NAME = CONFIG_NAME
 # 패키지 폴더 이름 (strftime 형식, {project} = 프로젝트 이름). 기존 툴과 같은 2026-10-26-1133 형태.
@@ -33,6 +33,10 @@ DEFAULT_PACKAGE_NAME = "%Y-%m-%d-%H%M"
 _UNSAFE_DIR_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 # 서버 스크립트에 그대로 들어가므로 셸이 해석할 수 있는 문자는 허용하지 않는다.
 _UNSAFE_SHELL_CHARS = re.compile(r'["\'$`\\\n\r]')
+# Windows 서버(PowerShell): 경로 구분자 \ 는 허용, 따옴표·$·백틱은 금지
+_UNSAFE_PS_CHARS = re.compile(r'["\'$`\n\r]')
+_WIN_ABS_PATH = re.compile(r"^(?:[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+)")
+SERVER_OSES = ("linux", "windows")
 
 MODES = ("changes", "sync")
 
@@ -198,6 +202,7 @@ class ProjectConfig:
     server_path: str
     gitlab_project: Optional[str] = None
     github_repo: Optional[str] = None     # "owner/name"
+    server_os: str = "linux"              # linux (shipkit.sh) | windows (shipkit.ps1)
     preset: Optional[str] = None
     mode: str = "changes"
     modules: List[str] = field(default_factory=lambda: [""])
@@ -224,6 +229,11 @@ class ProjectConfig:
 
     def notices_for(self, path: str) -> List[str]:
         return [n.message for n in self.notices if glob_match(path, n.pattern)]
+
+    @property
+    def script_name(self) -> str:
+        """패키지에 들어가는 서버 스크립트 이름 (리눅스: .sh, Windows: .ps1)."""
+        return SCRIPT_NAME_PS if self.server_os == "windows" else SCRIPT_NAME
 
     def render_package_name(self, when: datetime) -> str:
         return when.strftime(self.package_name.replace("{project}", self.name.replace("%", "%%")))
@@ -435,7 +445,10 @@ def _parse_project(name: str, raw: Dict[str, Any], defaults: Dict[str, Any], bas
     if not output_dir:
         raise ConfigError(f"{where}.output_dir (패키지 생성 경로)가 필요합니다.")
     output_dir = str(output_dir).replace("{project}", name)
-    server_path = _parse_server_path(get("server_path"), where)
+    server_os = str(get("server_os", "linux")).lower()
+    if server_os not in SERVER_OSES:
+        raise ConfigError(f"{where}.server_os 는 {', '.join(SERVER_OSES)} 중 하나여야 합니다: {server_os}")
+    server_path = _parse_server_path(get("server_path"), where, server_os)
 
     # 직접 규칙(rules)만 주고 preset 을 안 주면 프리셋 없이 changes 모드로 동작한다.
     preset_name = get("preset")
@@ -524,7 +537,8 @@ def _parse_project(name: str, raw: Dict[str, Any], defaults: Dict[str, Any], bas
         source_encodings=[str(e) for e in encodings],
         package_name=_parse_package_name(str(get("package_name", DEFAULT_PACKAGE_NAME)), name, where),
         hooks=_parse_hooks(get("hooks"), where),
-        server=_parse_server_options(get("server"), where),
+        server=_parse_server_options(get("server"), where, server_os),
+        server_os=server_os,
         project_file=project_file if project_file.is_file() else None,
     )
 
@@ -553,10 +567,18 @@ def _parse_hooks(raw: Any, where: str) -> Dict[str, List[Hook]]:
     return hooks
 
 
-def _parse_server_options(raw: Any, where: str) -> ServerOptions:
+def _parse_server_options(raw: Any, where: str, server_os: str = "linux") -> ServerOptions:
     if not raw:
         return ServerOptions()
     raw = _require_dict(raw, f"{where}.server")
+    if server_os == "windows":
+        unsupported = [k for k in ("owner", "file_mode", "dir_mode") if raw.get(k) not in (None, "")]
+        if unsupported:
+            raise ConfigError(f"{where}.server.{unsupported[0]} 은 리눅스 서버에서만 쓸 수 있습니다 (server_os: windows).")
+        history = str(raw.get("history_file") or DEFAULT_HISTORY_FILE).strip()
+        if _UNSAFE_PS_CHARS.search(history) or not (history.startswith("~/") or _WIN_ABS_PATH.match(history)):
+            raise ConfigError(f"{where}.server.history_file 은 '~/' 또는 'D:/...' 같은 절대 경로여야 합니다: {history}")
+        return ServerOptions(history_file=history)
     owner = _opt_str(raw.get("owner"))
     if owner and owner != "inherit" and not _OWNER_RE.match(owner):
         raise ConfigError(f"{where}.server.owner 는 'user', 'user:group' 또는 'inherit' 여야 합니다: {owner}")
@@ -574,10 +596,17 @@ def _parse_server_options(raw: Any, where: str) -> ServerOptions:
     return ServerOptions(owner=owner, file_mode=modes["file_mode"], dir_mode=modes["dir_mode"], history_file=history)
 
 
-def _parse_server_path(value: Any, where: str) -> str:
+def _parse_server_path(value: Any, where: str, server_os: str = "linux") -> str:
     server_path = str(value or "").strip()
     if not server_path:
         raise ConfigError(f"{where}.server_path (서버 배포 경로, 예: /app/tomcat/webapps/ROOT)가 필요합니다.")
+    if server_os == "windows":
+        if not _WIN_ABS_PATH.match(server_path):
+            raise ConfigError(f"{where}.server_path 는 'D:/...' 또는 '\\\\서버\\공유' 같은 Windows 절대 경로여야 합니다: {server_path}")
+        if _UNSAFE_PS_CHARS.search(server_path):
+            raise ConfigError(f"{where}.server_path 에 사용할 수 없는 문자(\" ' $ `)가 있습니다.")
+        normalized = server_path.replace("/", "\\")
+        return normalized if re.match(r"^[A-Za-z]:\\$", normalized) else normalized.rstrip("\\")
     if not server_path.startswith("/"):
         raise ConfigError(f"{where}.server_path 는 '/' 로 시작하는 리눅스 절대 경로여야 합니다: {server_path}")
     if _UNSAFE_SHELL_CHARS.search(server_path):

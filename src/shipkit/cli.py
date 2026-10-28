@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
 
 from shipkit import (
-    CLI_NAME, PROJECT_FILE, SCRIPT_NAME, __app_name__, __tagline__, __version__, legacy, mapper, packager,
+    CLI_NAME, PROJECT_FILE, __app_name__, __tagline__, __version__, legacy, mapper, packager,
     projectfile, sync,
 )
 from shipkit.config import (
@@ -165,7 +165,8 @@ def cmd_check(args: argparse.Namespace) -> int:
                         item(bd.is_dir(), f"빌드 결과 폴더: {bd}")
         out_parent = p.output_dir if p.output_dir.exists() else p.output_dir.parent
         item(out_parent.exists(), f"패키지 생성 경로: {p.output_dir}")
-        print(f"  [정보] 서버 배포 경로: {p.server_path}")
+        print(f"  [정보] 서버 배포 경로: {p.server_path}"
+              + (" (Windows 서버, shipkit.ps1)" if p.server_os == "windows" else ""))
         print(f"  [정보] 배포 방식: {p.describe_mode}")
         for stage, hooks in p.hooks.items():
             for h in hooks:
@@ -399,11 +400,19 @@ def run_package(project: ProjectConfig, entries: List[Entry], source: SourceInfo
         print(f"압축 파일: {result.archive}")
     print(f"보고서: {result.out_dir / 'report.md'}")
     name = result.out_dir.name
-    print(f"서버 반영: '{name}' 폴더를 통째로 서버 배포 경로 밖(예: ~/deploy/{name})에 올린 뒤, 그 폴더에서")
-    print(f"          ./{SCRIPT_NAME} check -> ./{SCRIPT_NAME} backup -> ./{SCRIPT_NAME} apply  (원복: rollback)")
-    print(f"          (실행 권한이 없으면 chmod +x {SCRIPT_NAME}, 또는 bash {SCRIPT_NAME} check 처럼 실행)")
-    if result.hooks:
-        print(f"          반영 전·후 명령은 실행 전에 확인을 받습니다 (묻지 않고 실행: ./{SCRIPT_NAME} apply -y)")
+    sh = project.script_name
+    if project.server_os == "windows":
+        run = f"powershell -ExecutionPolicy Bypass -File .\\{sh}"
+        print(f"서버 반영: '{name}' 폴더를 서버 배포 경로 밖(예: D:\\deploy\\{name})에 복사한 뒤, 그 폴더에서")
+        print(f"          {run} check -> backup -> apply  (원복: rollback)")
+        if result.hooks:
+            print("          반영 전·후 명령은 실행 전에 확인을 받습니다 (묻지 않고 실행: -Yes)")
+    else:
+        print(f"서버 반영: '{name}' 폴더를 통째로 서버 배포 경로 밖(예: ~/deploy/{name})에 올린 뒤, 그 폴더에서")
+        print(f"          ./{sh} check -> ./{sh} backup -> ./{sh} apply  (원복: rollback)")
+        print(f"          (실행 권한이 없으면 chmod +x {sh}, 또는 bash {sh} check 처럼 실행)")
+        if result.hooks:
+            print(f"          반영 전·후 명령은 실행 전에 확인을 받습니다 (묻지 않고 실행: ./{sh} apply -y)")
     return EXIT_FAIL if result.has_errors else EXIT_OK
 
 

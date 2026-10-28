@@ -45,6 +45,19 @@ Java, Vue/React, Python, PHP, 정적 사이트 등 언어와 상관없이 쓸 �
 
 ## 설치
 
+### 방법 1: `ShipKit.exe` (Python 없이)
+
+`ShipKit.exe` 파일 하나만 있으면 됩니다. 원하는 폴더(예: `C:\Tools\ShipKit`)에 두고, 그 폴더를 PATH에 추가하면 어디서든 실행할 수 있습니다.
+
+```bat
+ShipKit.exe --version
+ShipKit.exe init
+```
+
+exe 를 만드는 방법은 아래 [exe 만들기](#exe-만들기)를 참고하세요.
+
+### 방법 2: Python 으로 설치
+
 Python 3.9 이상이 필요합니다.
 
 ```bash
@@ -264,6 +277,31 @@ chmod +x shipkit.sh       # 실행 권한 부여 (tar.gz로 올렸다면 필요 
 - `apply`는 서버와 내용이 같은 파일은 건드리지 않고, 바뀐 파일만 수정 시각을 '지금'으로 두어 WAS가 변경을 감지하게 합니다. WAS 재시작은 하지 않습니다.
 - **sync 방식의 옛 파일 정리**: `prune.txt`에 적힌 서버 폴더(예: `assets/`) 안에서 이번 빌드에 없는 파일을 지웁니다. 정리 대상은 `backup` 때 확정되어 함께 백업되므로 `rollback`으로 되살릴 수 있습니다. 정리 폴더 밖(예: `uploads/`)은 건드리지 않습니다.
 
+### Windows 서버 (`server_os: windows`)
+
+IIS, Windows용 Tomcat 같은 Windows 서버에 배포할 때는 프로젝트 설정에 `server_os: windows`를 적습니다. 그러면 `shipkit.sh` 대신 PowerShell 스크립트 `shipkit.ps1`이 들어갑니다. 기능은 같습니다(check·backup·apply·rollback·history, 체크섬, 잠금, 반영 전·후 명령, 옛 파일 정리).
+
+```yaml
+server_os: windows
+server_path: D:/tomcat/webapps/ROOT     # 또는 \\서버\공유\web
+hooks:
+  post_apply: ["Restart-Service Tomcat9"]   # Windows 서버의 hooks 는 PowerShell 명령
+```
+
+서버에서는 패키지 폴더로 이동해 PowerShell로 실행합니다.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\shipkit.ps1 check
+powershell -ExecutionPolicy Bypass -File .\shipkit.ps1 backup
+powershell -ExecutionPolicy Bypass -File .\shipkit.ps1 apply      # -Yes: 확인 없이 hooks 실행, -NoHooks: hooks 실행 안 함
+powershell -ExecutionPolicy Bypass -File .\shipkit.ps1 rollback
+```
+
+- `-ExecutionPolicy Bypass`는 이번 실행에만 서명되지 않은 스크립트를 허용합니다. 서버 설정은 바뀌지 않습니다.
+- 메일이나 인터넷으로 받은 파일은 Windows가 실행을 막을 수 있습니다. 그럴 때는 패키지 폴더에서 `Get-ChildItem -Recurse | Unblock-File`을 실행하세요.
+- `shipkit.ps1`은 Windows PowerShell 5.1에서도 한글이 깨지지 않도록 UTF-8(BOM)로 만듭니다.
+- 새 파일 소유자·권한 설정(`server.owner`, `file_mode`, `dir_mode`)은 리눅스 전용이라, Windows 서버에서는 쓸 수 없습니다.
+
 ## 종료 코드
 
 | 코드 | 의미 |
@@ -281,12 +319,21 @@ Jenkins 등에서 그대로 쓸 수 있습니다.
 .venv\Scripts\python -m pytest
 ```
 
-테스트는 bash(Windows에서는 Git Bash)로 `shipkit.sh`의 check, backup, apply, rollback을 실제로 실행해 검증합니다. bash가 없으면 해당 테스트는 건너뜁니다.
+테스트는 bash(Windows에서는 Git Bash)로 `shipkit.sh`를, PowerShell로 `shipkit.ps1`을 실제로 실행해 check·backup·apply·rollback을 검증합니다. bash나 PowerShell이 없으면 해당 테스트는 건너뜁니다.
+
+### exe 만들기
+
+```bash
+.venv\Scripts\pip install -e ".[keyring,build]"
+.venv\Scripts\python scripts\build_exe.py
+```
+
+`dist\ShipKit.exe` 하나가 만들어집니다(약 16MB). 서버 스크립트 템플릿과 키링(Windows 자격 증명 관리자) 연동이 들어 있고, 파일 속성에 버전 정보가 표시됩니다. 팀원에게는 이 exe 파일만 전달하면 됩니다.
 
 ## 알려진 제한
 
 - 멀티모듈 프로젝트에서 다른 모듈의 클래스가 `WEB-INF/lib/*.jar`로 들어가는 구조는 지원하지 않습니다(jar를 다시 빌드해야 함).
-- 서버 셸은 bash를 가정합니다.
+- 리눅스 서버는 bash, Windows 서버는 PowerShell 5.1 이상을 가정합니다.
 - 로컬 경로(`root`)는 git 저장소 최상위 폴더여야 합니다.
 - sync 방식은 매번 빌드 결과 전체를 패키지에 담습니다(서버에는 바뀐 파일만 반영).
 - 의존성 설치, DB 마이그레이션, WAS 재시작은 `hooks`에 직접 적어야 실행됩니다. 적지 않으면 알림만 띄웁니다.

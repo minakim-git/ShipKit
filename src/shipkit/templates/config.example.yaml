@@ -31,6 +31,7 @@ projects:
     preset: maven                     # maven | gradle
     root: D:/workspace/erp            # 로컬 git 저장소 최상위 폴더 (빌드가 끝난 상태여야 함)
     server_path: /app/tomcat/webapps/ROOT   # 서버의 WEB-INF 바로 위 폴더
+    # server_os: windows              # Windows 서버면 (shipkit.ps1 생성, server_path 는 D:/... 형식)
     gitlab_project: 123               # GitLab 프로젝트 ID 또는 "그룹/프로젝트"
     # github_repo: owner/name         # GitHub 저장소 (PR 로 패키지를 만들 때)
     # output_dir: D:/deploy/erp       # 기본값 덮어쓰기

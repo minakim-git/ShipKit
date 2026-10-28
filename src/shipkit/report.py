@@ -5,7 +5,7 @@ from collections import Counter
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List
 
-from shipkit import SCRIPT_NAME, __app_name__, __tagline__, __version__
+from shipkit import __app_name__, __tagline__, __version__
 from shipkit.models import ChangeType, Status
 
 if TYPE_CHECKING:
@@ -152,8 +152,11 @@ def render(result: "PackageResult") -> str:
 
 
 def _write_deploy_steps(w, result: "PackageResult") -> None:
+    if result.project.server_os == "windows":
+        _write_deploy_steps_windows(w, result)
+        return
     p = result.project
-    sh = SCRIPT_NAME
+    sh = p.script_name
     name = result.out_dir.name if result.out_dir else "<패키지 폴더>"
     top_dirs = sorted({path.split("/")[0] for path in result.manifest})
     contents = ", ".join(f"`{d}`" for d in top_dirs[:10]) or "(없음)"
@@ -215,6 +218,63 @@ def _write_deploy_steps(w, result: "PackageResult") -> None:
           f"`check` 에서 `[정리예정]` 으로 미리 확인할 수 있고, 삭제된 파일도 백업되어 `rollback` 으로 되살아납니다.")
         w("")
     w(f"> 스크립트 없이 직접 옮기려면 `files/` **안의 내용**({contents})을 `{p.server_path}` 로 복사하세요. "
+      "이 경우 백업, 원복, 옛 파일 정리는 직접 해야 합니다.")
+    w("")
+
+
+def _write_deploy_steps_windows(w, result: "PackageResult") -> None:
+    p = result.project
+    ps = p.script_name
+    name = result.out_dir.name if result.out_dir else "<패키지 폴더>"
+    run = f"powershell -ExecutionPolicy Bypass -File .\\{ps}"
+    top_dirs = sorted({path.split("/")[0] for path in result.manifest})
+    contents = ", ".join(f"`{d}`" for d in top_dirs[:10]) or "(없음)"
+
+    w(f"**패키지 폴더 = `{name}`** (이 보고서가 들어 있는 폴더) - Windows 서버용")
+    w("")
+    w("```")
+    w(f"{name}\\")
+    w(f"├─ files\\          배포할 파일 ({', '.join(top_dirs[:10]) or '없음'}) - {ps} 가 서버 배포 경로로 복사")
+    w(f"├─ {ps:<15}서버에서 실행할 PowerShell 스크립트")
+    w("├─ manifest.txt    반영할 파일 목록")
+    w("├─ delete.txt      서버에서 삭제할 파일 목록")
+    if p.mode == "sync":
+        w("├─ prune.txt       옛 빌드 파일을 정리할 서버 폴더 목록")
+    if result.hooks:
+        w("├─ hooks\\          반영 전·후에 서버에서 실행할 PowerShell 명령")
+    w("├─ checksums.sha256  패키지 파일 검증용")
+    w("└─ report.md       이 보고서")
+    w("```")
+    w("")
+    w(f"1. `{name}` 폴더를 **통째로** 서버에 복사합니다 (원격 데스크톱, 공유 폴더 등).")
+    w(f"   - 서버 배포 경로(`{p.server_path}`) **밖**에 두세요. 예: `D:\\deploy\\{name}`")
+    if result.archive_kind == "zip":
+        w(f"   - 압축 파일로 옮겼다면 먼저 풀기: 탐색기에서 압축 풀기 또는 `Expand-Archive {name}.zip`")
+    w("   - 인터넷·메일로 받은 파일이면 Windows 가 실행을 막을 수 있습니다: "
+      "PowerShell 에서 `Get-ChildItem -Recurse | Unblock-File`")
+    w(f"2. 서버에서 PowerShell 을 열고 `{name}` 폴더로 이동해 순서대로 실행합니다.")
+    w("")
+    w("```powershell")
+    w(f"cd D:\\deploy\\{name}")
+    w(f"{run} check      # 1. 반영 내용 확인 (서버 변경 없음)")
+    w(f"{run} backup     # 2. 바뀌거나 지워질 기존 파일을 backup\\ 에 보관")
+    w(f"{run} apply      # 3. files\\ 내용을 {p.server_path} 에 반영")
+    w(f"{run} rollback   # 문제 시 apply 이전으로 원복")
+    w(f"{run} history    # 이 서버의 배포 이력")
+    w("```")
+    w("")
+    w("`-ExecutionPolicy Bypass` 는 이번 실행에만 서명되지 않은 스크립트를 허용합니다(서버 설정은 바뀌지 않음). "
+      "반영 전·후 명령을 묻지 않고 실행하려면 `-Yes`, 실행하지 않으려면 `-NoHooks` 를 붙입니다.")
+    w("")
+    w("check·backup·apply 전에 `checksums.sha256` 으로 패키지 파일이 손상되지 않았는지 검증하고, "
+      "같은 대상에 다른 배포가 진행 중이면 멈춥니다. 서버와 내용이 같은 파일은 건드리지 않습니다.")
+    w("")
+    if p.mode == "sync" and p.prune:
+        folders = ", ".join(f"`{d}`" for d in p.prune)
+        w(f"**옛 빌드 파일 정리**: 서버의 {folders} 폴더 안에서 이번 빌드에 없는 파일은 apply 때 삭제됩니다. "
+          f"`check` 에서 `[정리예정]` 으로 미리 확인할 수 있고, 삭제된 파일도 백업되어 `rollback` 으로 되살아납니다.")
+        w("")
+    w(f"> 스크립트 없이 직접 옮기려면 `files\\` **안의 내용**({contents})을 `{p.server_path}` 로 복사하세요. "
       "이 경우 백업, 원복, 옛 파일 정리는 직접 해야 합니다.")
     w("")
 
