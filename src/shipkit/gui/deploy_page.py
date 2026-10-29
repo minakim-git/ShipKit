@@ -7,7 +7,7 @@ from __future__ import annotations
 import re
 from typing import Callable, Dict, List, Optional, Tuple
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QCheckBox, QComboBox, QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
@@ -19,6 +19,7 @@ from shipkit import packager, preflight, report, workflow
 from shipkit.config import ProjectConfig
 from shipkit.gui import theme
 from shipkit.gui.context import AppContext
+from shipkit.gui.report_view import show_report
 from shipkit.gui.widgets import Card, Chip, CommandRow, StatusDelegate, Stepper, button, label, open_path
 from shipkit.models import FileChange, SourceInfo, Status
 from shipkit.sources import git_local, providers
@@ -124,6 +125,12 @@ class DeployPage(QWidget):
         self.check_row.setSpacing(6)
         row.addLayout(self.check_row)
         row.addStretch(1)
+        # '원격보다 N커밋 뒤처짐' 배지 바로 옆에 붙는 작은 버튼 (_show_checks 에서 자리를 잡는다)
+        self.pull_btn = button("pull 받기", "chipAction")
+        self.pull_btn.setIcon(theme.svg_icon("download.svg", theme.TONES["warning"][0], 14))
+        self.pull_btn.setToolTip("원격의 최신 커밋을 받습니다 (git pull --ff-only). 합치기(merge)는 하지 않습니다.")
+        self.pull_btn.clicked.connect(self.pull)
+        self.pull_btn.hide()
         self.recheck_btn = button("다시 점검", "ghost")
         self.recheck_btn.setIcon(theme.svg_icon("refresh.svg", theme.PRIMARY, 16))
         self.recheck_btn.clicked.connect(self.run_preflight)
@@ -256,6 +263,8 @@ class DeployPage(QWidget):
         # 알림은 읽기만 하는 목록: 고르면 글자색이 선택색으로 바뀌어 안 보이므로 선택을 막는다
         self.messages.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self.messages.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.messages.setWordWrap(True)
+        self.messages.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         card.body.addWidget(self.messages)
 
         filters = QHBoxLayout()
@@ -355,7 +364,7 @@ class DeployPage(QWidget):
         self.open_report_btn = button("보고서 열기")
         self.open_folder_btn.clicked.connect(lambda: self.last_result and open_path(self.last_result.out_dir))
         self.open_report_btn.clicked.connect(
-            lambda: self.last_result and open_path(self.last_result.out_dir / "report.md"))
+            lambda: self.last_result and show_report(self, self.last_result.out_dir / "report.md"))
         self.new_btn = button("새 배포", "primary")
         self.new_btn.setMinimumWidth(120)
         self.new_btn.clicked.connect(self.start_over)
@@ -471,6 +480,8 @@ class DeployPage(QWidget):
         self.ctx.runner.run(lambda: preflight.run(cfg, p), done, failed, quiet=True)
 
     def _show_checks(self, checks: List[preflight.Check]) -> None:
+        self.check_row.removeWidget(self.pull_btn)
+        self.pull_btn.hide()
         for chip in self.check_chips:
             self.check_row.removeWidget(chip)
             chip.hide()  # 지우기는 다음 이벤트 때 일어나므로 그 전에 가린다
@@ -481,7 +492,49 @@ class DeployPage(QWidget):
             chip.setToolTip(c.hint)
             self.check_row.addWidget(chip, 0, Qt.AlignmentFlag.AlignVCenter)
             self.check_chips.append(chip)
+            if c.action == preflight.ACTION_PULL:
+                self.check_row.addWidget(self.pull_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+                self.pull_btn.show()
         self.last_checks = checks
+
+    def pull(self) -> None:
+        """점검 띠의 [pull 받기]: 원격 최신 커밋을 fast-forward 로만 받는다."""
+        p = self.project
+        if p is None:
+            return
+        dirty = next((c for c in self.last_checks if c.text.startswith("커밋 안 된 수정")), None)
+        if dirty and not self.ctx.dialogs.ask(
+                "pull 받기", f"{dirty.text}가 있습니다.\n받을 파일과 겹치지 않으면 그대로 두고 받고, "
+                             "겹치면 아무것도 바꾸지 않고 멈춥니다.\n\n받을까요?"):
+            return
+        self.pull_btn.setEnabled(False)
+        self.pull_btn.setText("받는 중…")
+
+        def finish() -> None:
+            self.pull_btn.setEnabled(True)
+            self.pull_btn.setText("pull 받기")
+            self.run_preflight()
+
+        def done(count: int) -> None:
+            finish()
+            if not count:
+                self.ctx.dialogs.info("pull 받기", "이미 최신입니다.")
+                return
+            needs_build = p.mode == "sync" or any(r.build_dir for r in p.rules)
+            text = f"원격에서 커밋 {count}개를 받았습니다."
+            if needs_build:
+                text += "\n빌드가 필요한 프로젝트입니다. 다시 빌드(컴파일)한 뒤 미리보기를 하세요."
+            if self.prepared is not None:  # 받기 전에 만든 미리보기는 옛 내용이므로 다시 하게 한다
+                self._invalidate()
+                self.go_step(STEP_PICK)
+                text += "\n받기 전에 만든 미리보기는 지웠습니다."
+            self.ctx.dialogs.info("pull 받기", text)
+
+        def failed(msg: str) -> None:
+            finish()
+            self.ctx.dialogs.error("pull 받지 못했습니다", msg)
+
+        self.ctx.runner.run(lambda: git_local.pull_ff(p.root), done, failed)
 
     # ------------------------------------------------------------------ 상태
     def _invalidate(self, *_args) -> None:
@@ -637,7 +690,7 @@ class DeployPage(QWidget):
             for cmd in commands:
                 self._message(f"▶  서버에서 실행할 명령 ({stage}): {cmd}", "neutral")
         self.messages.setVisible(self.messages.count() > 0)
-        self.messages.setFixedHeight(min(self.messages.count(), 4) * 34 + 6)  # 내용만큼만 (넘치면 스크롤)
+        self._fit_messages()
 
         rows = entries
         if project.mode == "sync":  # 빌드 결과는 수천 개일 수 있어 확인할 항목만 보여 준다
@@ -708,6 +761,24 @@ class DeployPage(QWidget):
         for i in range(self.result_tree.topLevelItemCount()):
             item = self.result_tree.topLevelItem(i)
             item.setHidden(wanted is not None and item.data(2, Qt.ItemDataRole.UserRole) != wanted)
+
+    def _fit_messages(self) -> None:
+        """긴 안내는 줄바꿈해서 다 보이게 하고, 목록 높이는 내용만큼 (5줄 넘으면 스크롤)."""
+        width = max(self.messages.viewport().width(), 400)
+        metrics = self.messages.fontMetrics()
+        total = 4
+        for i in range(min(self.messages.count(), 5)):
+            text = self.messages.item(i).text()
+            rect = metrics.boundingRect(0, 0, width - 24, 10000, Qt.TextFlag.TextWordWrap, text)
+            height = rect.height() + 14
+            self.messages.item(i).setSizeHint(QSize(width - 4, height))
+            total += height
+        self.messages.setFixedHeight(total)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if self.messages.count():
+            self._fit_messages()
 
     def _message(self, text: str, tone: str) -> None:
         fg, bg = theme.TONES[tone]

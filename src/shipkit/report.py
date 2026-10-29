@@ -1,158 +1,382 @@
-"""배포 보고서(report.md) 생성."""
+"""배포 보고서: 패키지 결과를 한눈에 보이게 정리한다.
+
+보고서 내용은 build_data() 로 한 번 정리하고, 두 가지로 그린다.
+- render(): 패키지 폴더의 report.md (서버에서 cat 으로 봐도 읽히는 글)
+- render_html(): ShipKit 보고서 창 (색 카드·표로 결과가 먼저 보이게)
+정리한 데이터는 기록 파일(shipkit-record.json)에도 담아서, 나중에 기록 화면에서 같은 모양으로 다시 본다.
+
+순서는 '무엇이 됐나 → 확인할 것 → 할 일 → 근거(MR·파일) → 서버 반영 방법'.
+"""
 from __future__ import annotations
 
+import html
 from collections import Counter
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
-from shipkit import __app_name__, __tagline__, __version__
-from shipkit.models import ChangeType, Status
+from shipkit.models import Status
 
 if TYPE_CHECKING:
     from shipkit.packager import PackageResult
 
-_ICON = {Status.OK: "✅", Status.WARN: "⚠️", Status.ERROR: "❌", Status.SKIPPED: "➖"}
-# 트리가 이보다 길면(빌드 결과 동기화 등) 최상위 폴더별 개수로 줄여서 보여준다.
-TREE_LIMIT = 200
+STATUS_KEY = {Status.OK: "ok", Status.WARN: "warn", Status.ERROR: "error", Status.SKIPPED: "skipped"}
+STATUS_TEXT = {"ok": "성공", "warn": "경고", "error": "실패", "skipped": "제외"}
+_ICON = {"ok": "✅", "warn": "⚠️", "error": "❌", "skipped": "➖"}
+HOOK_LABELS = {"pre_apply": "반영 전", "post_apply": "반영 후", "post_rollback": "되돌린 후"}
+# sync 모드처럼 파일이 많으면 파일 목록 대신 최상위 폴더별 개수를 보여 준다
+TOP_FOLDERS = 12
 
 
+# ---------------------------------------------------------------------- 데이터
+def build_data(result: "PackageResult") -> Dict[str, Any]:
+    p, source = result.project, result.source
+    sync = p.mode == "sync"
+    entries = result.entries
+    counts = {key: result.count(status) for status, key in STATUS_KEY.items()}
+    problems = [{"status": STATUS_KEY[e.status], "path": e.change.path, "messages": list(e.messages)}
+                for e in sorted(entries, key=lambda e: (e.status != Status.ERROR, e.change.path))
+                if e.status in (Status.ERROR, Status.WARN)]
+    files, skipped = [], []
+    if not sync:
+        for e in entries:
+            if e.status == Status.SKIPPED:
+                skipped.append({"path": e.change.path, "reason": "; ".join(e.messages)})
+                continue
+            files.append({
+                "status": STATUS_KEY[e.status], "change": e.change.change.label, "path": e.change.path,
+                "targets": [a.target for a in e.artifacts], "deletes": list(e.deletes),
+                # 경고·실패 사유는 '확인 필요'에 따로 모으므로 여기에는 참고 메시지만
+                "notes": list(e.messages) if e.status == Status.OK else [],
+            })
+    name = result.out_dir.name if result.out_dir else "<패키지 폴더>"
+    upload, commands, rollback = server_steps(result)
+    tips = []
+    if p.mode == "sync" and p.prune:
+        tips.append(f"옛 빌드 파일 정리: 서버의 {', '.join(p.prune)} 폴더에서 이번 빌드에 없는 파일은 apply 때 지웁니다 "
+                    "(check 에서 미리 보이고, rollback 으로 되살아남).")
+    if p.server_os == "windows":
+        tips.append("인터넷·메일로 받은 패키지라 실행이 막히면 PowerShell 에서: Get-ChildItem -Recurse | Unblock-File")
+    data: Dict[str, Any] = {
+        "project": p.name,
+        "created_at": f"{result.created_at:%Y-%m-%d %H:%M}",
+        "package": name,
+        "server_path": p.server_path,
+        "server_os": p.server_os,
+        "mode": p.mode,
+        "mode_text": p.describe_mode,
+        "source": source.description,
+        "request_label": source.request_label,
+        "requests": [{k: mr.get(k, "") for k in ("ref", "title", "author", "web_url", "source_branch", "target_branch")}
+                     for mr in source.merge_requests],
+        "counts": counts,
+        "applied": len(result.manifest),
+        "deletes": len(result.deletes),
+        "warnings": list(source.warnings),
+        "notes": list(source.notes),
+        "hooks": dict(result.hooks),
+        "problems": problems,
+        "files": files,
+        "skipped": skipped,
+        "delete_list": list(result.deletes),
+        "steps": {"upload": upload, "commands": [list(c) for c in commands], "rollback": list(rollback)},
+        "tips": tips,
+    }
+    if sync:
+        top = Counter(path.split("/")[0] if "/" in path else "(최상위)" for path in result.manifest)
+        data["sync"] = {"build_files": len(result.manifest), "prune": list(p.prune),
+                        "top": [[k, v] for k, v in sorted(top.items(), key=lambda kv: -kv[1])[:TOP_FOLDERS]],
+                        "source_changes": [f"{c.change.label} {c.path}" for c in result.source_changes]}
+    return data
+
+
+def verdict(data: Dict[str, Any]) -> Tuple[str, str]:
+    """결과 한 줄: (tone, 글). tone = success / warning / danger"""
+    c = data["counts"]
+    attention = len(data["warnings"]) + c.get("warn", 0)
+    if c.get("error"):
+        return "danger", f"실패 {c['error']}개는 패키지에서 빠졌습니다" + (f" · 확인할 항목 {attention}개" if attention else "")
+    if attention:
+        return "warning", f"확인할 항목 {attention}개가 있습니다. 아래 '확인 필요'를 보고 배포하세요"
+    return "success", "문제 없이 만들어졌습니다"
+
+
+# ---------------------------------------------------------------------- report.md
 def _cell(text: str) -> str:
     return str(text).replace("|", "\\|").replace("\n", " ")
 
 
 def render(result: "PackageResult") -> str:
-    p = result.project
-    entries = result.entries
-    sync = p.mode == "sync"
+    return render_markdown(build_data(result))
+
+
+def render_markdown(d: Dict[str, Any]) -> str:
     lines: List[str] = []
     w = lines.append
-
-    w(f"# 배포 패키지 보고서 - {p.name}")
+    tone, text = verdict(d)
+    c = d["counts"]
+    w(f"# {d['project']} 배포 패키지")
     w("")
-    w(f"> {__app_name__} {__version__} - {__tagline__}")
+    w(f"{d['created_at']} · 패키지 `{d['package']}` · 서버 `{d['server_path']}`")
     w("")
-    w(f"- **생성 시각**: {result.created_at:%Y-%m-%d %H:%M:%S}")
-    if result.out_dir:
-        w(f"- **패키지 경로**: `{result.out_dir}`")
-    w(f"- **서버 배포 경로**: `{p.server_path}`")
-    w(f"- **배포 방식**: {p.describe_mode}")
-    w(f"- **변경 출처**: {result.source.description}")
+    mark = {"success": "✅", "warning": "⚠️", "danger": "❌"}[tone]
+    w(f"**{mark} {text}**")
     w("")
-
-    w("## 요약")
-    w("")
-    w("| 항목 | 개수 |")
-    w("|:---|---:|")
-    if sync:
-        changes = result.source_changes
-        by_change = Counter(c.change for c in changes)
-        if changes:
-            w(f"| 소스 변경 (추가/수정/삭제) | {len(changes)} "
-              f"({by_change[ChangeType.ADDED]}/{by_change[ChangeType.MODIFIED]}/{by_change[ChangeType.DELETED]}) |")
-        w(f"| 빌드 결과 파일 (패키지에 포함) | {len(result.manifest)} |")
-        w(f"| 정리 폴더 | {', '.join(p.prune) or '없음'} |")
+    if d.get("sync"):
+        s = d["sync"]
+        w("| 빌드 결과 파일 | ✅ 성공 | ⚠️ 경고 | ❌ 실패 |")
+        w("|:---:|:---:|:---:|:---:|")
+        w(f"| **{s['build_files']}** | {c['ok']} | {c['warn']} | {c['error']} |")
     else:
-        by_change = Counter(e.change.change for e in entries)
-        w(f"| 변경 파일 (추가/수정/삭제) | {len(entries)} "
-          f"({by_change[ChangeType.ADDED]}/{by_change[ChangeType.MODIFIED]}/{by_change[ChangeType.DELETED]}) |")
-        w(f"| 서버 반영 파일 | {len(result.manifest)} |")
-        w(f"| 서버 삭제 파일 | {len(result.deletes)} |")
-    for st in (Status.OK, Status.WARN, Status.ERROR, Status.SKIPPED):
-        w(f"| {_ICON[st]} {st.value} | {result.count(st)} |")
+        w("| 서버 반영 | 서버 삭제 | ✅ 성공 | ⚠️ 경고 | ❌ 실패 | ➖ 제외 |")
+        w("|:---:|:---:|:---:|:---:|:---:|:---:|")
+        w(f"| **{d['applied']}** | **{d['deletes']}** | {c['ok']} | {c['warn']} | {c['error']} | {c['skipped']} |")
+    w("")
+    w(f"- 변경 출처: {d['source']}")
+    w(f"- 배포 방식: {d['mode_text']}")
     w("")
 
-    problems = [e for e in entries if e.status in (Status.ERROR, Status.WARN)]
-    if result.source.warnings or problems:
-        w("## 확인 필요")
+    if d["warnings"] or d["problems"]:
+        w("## ⚠️ 확인 필요")
         w("")
-        for msg in result.source.warnings:
-            w(f"- ⚠️ {msg}")
-        for e in sorted(problems, key=lambda e: (e.status != Status.ERROR, e.change.path)):
-            w(f"- {_ICON[e.status]} `{e.change.path}`: {'; '.join(e.messages)}")
+        for msg in d["warnings"]:
+            w(f"- {msg}")
+        for prob in d["problems"]:
+            w(f"- {_ICON[prob['status']]} `{prob['path']}` — {'; '.join(prob['messages'])}")
         w("")
-
-    if result.source.notes:
-        w("## 알림 (패키지 외에 따로 할 일)")
+    if d["notes"]:
+        w("## 📌 따로 할 일")
         w("")
-        for msg in result.source.notes:
-            w(f"- 📌 {msg}")
+        for msg in d["notes"]:
+            w(f"- {msg}")
         w("")
-
-    if result.hooks:
+    if d["hooks"]:
         w("## 서버에서 실행할 명령")
         w("")
-        w("apply·rollback 때 실행 전에 확인을 받습니다(`-y` 로 생략, `--no-hooks` 로 실행 안 함). "
-          "서버 배포 경로에서 실행되고, 명령 하나라도 실패하면 거기서 멈춥니다.")
+        w("apply·rollback 때 실행 전에 묻습니다.")
         w("")
-        labels = {"pre_apply": "반영 전 (실패하면 apply 중단)", "post_apply": "반영 후",
-                  "post_rollback": "원복 후"}
-        for stage, commands in result.hooks.items():
-            w(f"**{stage}** - {labels.get(stage, stage)}")
-            w("")
-            w("```bash")
+        for stage, commands in d["hooks"].items():
             for cmd in commands:
-                w(cmd)
-            w("```")
-            w("")
-
-    if result.source.merge_requests:
-        label = result.source.request_label
-        short = "PR" if label == "Pull Request" else "MR"
-        w(f"## {label}")
-        w("")
-        w(f"| {short} | 제목 | 작성자 | 상태 | 머지 시각 | 브랜치 | 파일 |")
-        w("|:---|:---|:---|:---:|:---|:---|---:|")
-        for mr in result.source.merge_requests:
-            ref = mr.get("ref") or f"!{mr['iid']}"
-            link = f"[{ref}]({mr['web_url']})" if mr.get("web_url") else ref
-            merged = (mr.get("merged_at") or "")[:16].replace("T", " ")
-            branch = f"{mr.get('source_branch', '')} → {mr.get('target_branch', '')}"
-            w(f"| {link} | {_cell(mr['title'])} | {_cell(mr['author'])} | {mr['state']} | {merged} "
-              f"| {_cell(branch)} | {mr['file_count']} |")
+                w(f"- {HOOK_LABELS.get(stage, stage)}: `{cmd}`")
         w("")
 
-    if sync:
-        if result.source_changes:
-            w("## 소스 변경 내역")
-            w("")
-            w("| 구분 | 소스 경로 | 출처 |")
-            w("|:---:|:---|:---|")
-            for c in result.source_changes:
-                w(f"| {c.change.label} | `{_cell(c.path)}` | {_cell(c.origin)} |")
-            w("")
-    else:
-        w("## 변경 파일별 처리 결과")
+    if d["requests"]:
+        w(f"## {d['request_label']}")
         w("")
-        w("| 상태 | 구분 | 소스 경로 | 서버 반영/삭제 파일 | 출처 | 비고 |")
-        w("|:---:|:---:|:---|:---|:---|:---|")
-        for e in entries:
-            outputs = [a.target for a in e.artifacts] + [f"(삭제) {d}" for d in e.deletes]
-            w(f"| {_ICON[e.status]} | {e.change.change.label} | `{_cell(e.change.path)}` "
-              f"| {'<br>'.join(_cell(o) for o in outputs) or '-'} | {_cell(e.change.origin)} "
-              f"| {_cell('; '.join(e.messages)) or ''} |")
+        for mr in d["requests"]:
+            link = f"[{mr['ref']}]({mr['web_url']})" if mr.get("web_url") else mr["ref"]
+            branch = f" · `{mr['source_branch']} → {mr['target_branch']}`" if mr.get("target_branch") else ""
+            w(f"- {link} {mr['title']} · {mr['author']}{branch}")
         w("")
 
-    w("## 패키지에 담긴 파일 구조" if sync else "## 서버 반영 파일 구조")
+    if d.get("sync"):
+        s = d["sync"]
+        w(f"## 빌드 결과 ({s['build_files']}개 파일)")
+        w("")
+        w("서버와 내용이 다른 파일만 반영합니다.")
+        w("")
+        for folder, n in s["top"]:
+            w(f"- `{folder}` {n}개")
+        w("")
+        if s["source_changes"]:
+            w(f"## 소스 변경 ({len(s['source_changes'])}개)")
+            w("")
+            for line in s["source_changes"]:
+                w(f"- {line}")
+            w("")
+    elif d["files"]:
+        w(f"## 반영할 파일 ({len(d['files'])}개)")
+        w("")
+        w("| | 소스 파일 | 서버에 들어갈 파일 |")
+        w("|:---:|:---|:---|")
+        for f in d["files"]:
+            out = [f"`{_cell(t)}`" for t in f["targets"]] + [f"(삭제) `{_cell(t)}`" for t in f["deletes"]]
+            if f["status"] == "error":
+                out = ["(빠짐)"]
+            out += [_cell(n) for n in f["notes"]]
+            w(f"| {_ICON[f['status']]} | `{_cell(f['path'])}` | {'<br>'.join(out) or '-'} |")
+        w("")
+    if d["skipped"]:
+        w(f"## 제외된 파일 ({len(d['skipped'])}개)")
+        w("")
+        for s in d["skipped"]:
+            w(f"- `{s['path']}` — {s['reason']}")
+        w("")
+
+    st = d["steps"]
+    w("## 서버에 반영하는 방법")
     w("")
+    w(f"1. {st['upload']}")
+    w("2. 서버에서 순서대로 실행합니다.")
+    w("")
+    w("```powershell" if d["server_os"] == "windows" else "```bash")
+    width = max(len(cmd) for cmd, _ in st["commands"]) + 2
+    for cmd, desc in st["commands"]:
+        w(f"{cmd:<{width}}# {desc}")
     w("```")
-    w(_tree(result.manifest) if result.manifest else "(없음)")
-    w("```")
     w("")
-    if result.deletes:
-        w("## 서버 삭제 파일")
+    w(f"문제가 생기면 `{st['rollback'][0]}` 로 apply 이전으로 되돌립니다.")
+    for tip in d["tips"]:
         w("")
-        for d in result.deletes:
-            w(f"- `{d}`")
-        w("")
-
-    w("## 서버 반영 절차")
+        w(f"- {tip}")
     w("")
-    _write_deploy_steps(w, result)
     return "\n".join(lines)
 
 
+def write_report(path: Path, result: "PackageResult") -> None:
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(render(result))
+
+
+# ---------------------------------------------------------------------- 보고서 창 (Qt 서식 HTML)
+# Qt 의 서식 문서가 이해하는 범위(표·글자색·배경·여백)만 쓴다. 모서리 둥글기·flex 는 안 된다.
+_T = {"text": "#101828", "muted": "#667085", "border": "#E4E7EC", "head": "#F9FAFB", "code": "#F2F4F7",
+      "success": ("#027A48", "#ECFDF3"), "warning": ("#B54708", "#FFFAEB"), "danger": ("#B42318", "#FEF3F2"),
+      "neutral": ("#344054", "#F2F4F7"), "primary": ("#4F46E5", "#EEF2FF")}
+_TONE = {"ok": "success", "warn": "warning", "error": "danger", "skipped": "neutral"}
+_MONO = "'Cascadia Mono', Consolas, 'Malgun Gothic'"
+
+
+def _e(text: Any) -> str:
+    return html.escape(str(text))
+
+
+def _code(text: str) -> str:
+    return f"<span style=\"font-family:{_MONO}; background:{_T['code']};\">&nbsp;{_e(text)}&nbsp;</span>"
+
+
+def _badge(status: str) -> str:
+    fg, bg = _T[_TONE[status]]
+    return (f"<span style=\"color:{fg}; background:{bg}; font-weight:600;\">&nbsp;{STATUS_TEXT[status]}&nbsp;</span>")
+
+
+def _h2(text: str, count: Optional[int] = None) -> str:
+    extra = f"&nbsp;&nbsp;<span style=\"color:{_T['muted']}; font-weight:400;\">{count}</span>" if count is not None else ""
+    return f"<h2 style=\"font-size:13pt; margin-top:26px; margin-bottom:10px;\">{_e(text)}{extra}</h2>"
+
+
+def _list(items: List[str], color: str = "") -> str:
+    style = f" style=\"color:{color};\"" if color else ""
+    rows = "".join(f"<li style=\"margin-bottom:6px;\"{style}>{item}</li>" for item in items)
+    return f"<ul style=\"margin-top:0; margin-left:-12px;\">{rows}</ul>"
+
+
+def _table(head: List[str], rows: List[List[str]], widths: Optional[List[str]] = None) -> str:
+    cell = f"padding:7px 10px; border-bottom:1px solid {_T['border']};"
+    ths = "".join(f"<th align=\"left\" style=\"{cell} background:{_T['head']}; color:{_T['muted']}; font-size:9pt;\""
+                  + (f" width=\"{widths[i]}\"" if widths and widths[i] else "") + f">{_e(h)}</th>"
+                  for i, h in enumerate(head))
+    trs = "".join("<tr>" + "".join(f"<td valign=\"top\" style=\"{cell}\">{c}</td>" for c in r) + "</tr>" for r in rows)
+    return (f"<table width=\"100%\" cellspacing=\"0\" cellpadding=\"0\" style=\"border-collapse:collapse;\">"
+            f"<tr>{ths}</tr>{trs}</table>")
+
+
+def render_html(d: Dict[str, Any]) -> str:
+    c = d["counts"]
+    tone, text = verdict(d)
+    out: List[str] = []
+    w = out.append
+    w(f"<body style=\"color:{_T['text']}; font-size:10pt;\">")
+    w(f"<h1 style=\"font-size:18pt; margin-bottom:4px;\">{_e(d['project'])} 배포 패키지</h1>")
+    w(f"<p style=\"color:{_T['muted']}; margin-top:0;\">{_e(d['created_at'])}&nbsp;&nbsp;·&nbsp;&nbsp;"
+      f"{_e(d['source'])}&nbsp;&nbsp;·&nbsp;&nbsp;서버 {_e(d['server_path'])}</p>")
+
+    # 결과 한 줄
+    fg, bg = _T[tone]
+    mark = {"success": "✓", "warning": "!", "danger": "✕"}[tone]
+    w(f"<table width=\"100%\" cellspacing=\"0\" cellpadding=\"12\" style=\"margin-top:14px;\">"
+      f"<tr><td style=\"background:{bg}; color:{fg}; font-size:11.5pt; font-weight:600; "
+      f"border:1px solid {fg};\">{mark}&nbsp;&nbsp;{_e(text)}</td></tr></table>")
+
+    # 숫자 카드
+    if d.get("sync"):
+        cards = [("빌드 결과 파일", d["sync"]["build_files"], "primary")]
+    else:
+        cards = [("서버 반영", d["applied"], "primary"), ("서버 삭제", d["deletes"], "primary")]
+    cards += [("성공", c["ok"], "success"), ("경고", c["warn"], "warning"), ("실패", c["error"], "danger")]
+    if not d.get("sync"):
+        cards.append(("제외", c["skipped"], "neutral"))
+    cells = []
+    for title, n, card_tone in cards:
+        cfg, cbg = _T[card_tone]
+        dim = not n and card_tone in ("warning", "danger")
+        color = _T["muted"] if dim else cfg
+        back = _T["head"] if dim else cbg
+        cells.append(f"<td width=\"{100 // len(cards)}%\" style=\"background:{back}; padding:12px 14px;\">"
+                     f"<div style=\"color:{color}; font-size:9pt;\">{title}</div>"
+                     f"<div style=\"color:{color}; font-size:20pt; font-weight:700;\">{n}</div></td>")
+    gap = "<td width=\"8\"></td>"
+    w(f"<table width=\"100%\" cellspacing=\"0\" cellpadding=\"0\" style=\"margin-top:12px;\"><tr>{gap.join(cells)}</tr></table>")
+    w(f"<p style=\"color:{_T['muted']}; margin-top:10px;\">{_e(d['mode_text'])}&nbsp;&nbsp;·&nbsp;&nbsp;"
+      f"패키지 {_e(d['package'])}</p>")
+
+    if d["warnings"] or d["problems"]:
+        w(_h2("확인 필요", len(d["warnings"]) + len(d["problems"])))
+        items = [_e(m) for m in d["warnings"]]
+        items += [f"{_badge(p['status'])}&nbsp;&nbsp;{_code(p['path'])}<br>"
+                  f"<span style=\"color:{_T['muted']};\">{_e('; '.join(p['messages']))}</span>" for p in d["problems"]]
+        w(_list(items))
+    todo = [_e(m) for m in d["notes"]]
+    todo += [f"서버에서 {HOOK_LABELS.get(stage, stage)} 실행 (묻고 실행): {_code(cmd)}"
+             for stage, cmds in d["hooks"].items() for cmd in cmds]
+    if todo:
+        w(_h2("따로 할 일"))
+        w(_list(todo))
+
+    if d["requests"]:
+        w(_h2(d["request_label"], len(d["requests"])))
+        rows = []
+        for mr in d["requests"]:
+            ref = (f"<a href=\"{_e(mr['web_url'])}\" style=\"color:{_T['primary'][0]}; font-weight:600; "
+                   f"text-decoration:none;\">{_e(mr['ref'])}</a>") if mr.get("web_url") else _e(mr["ref"])
+            branch = f"{_e(mr.get('source_branch', ''))} → <b>{_e(mr.get('target_branch', ''))}</b>" \
+                if mr.get("target_branch") else ""
+            rows.append([ref, _e(mr["title"]), _e(mr["author"]),
+                         f"<span style=\"color:{_T['muted']};\">{branch}</span>"])
+        w(_table(["번호", "제목", "작성자", "브랜치 (→ 머지 대상)"], rows, ["60", "", "90", "200"]))
+
+    if d.get("sync"):
+        s = d["sync"]
+        w(_h2("빌드 결과", s["build_files"]))
+        w(f"<p style=\"color:{_T['muted']};\">서버와 내용이 다른 파일만 반영합니다."
+          + (f" 정리 폴더: {_e(', '.join(s['prune']))}" if s["prune"] else "") + "</p>")
+        w(_table(["폴더", "파일 수"], [[_code(k), str(n)] for k, n in s["top"]], ["", "80"]))
+        if s["source_changes"]:
+            w(_h2("소스 변경", len(s["source_changes"])))
+            w(_list([_e(x) for x in s["source_changes"]]))
+    elif d["files"]:
+        w(_h2("반영할 파일", len(d["files"])))
+        rows = []
+        for f in d["files"]:
+            if f["status"] == "error":
+                outs = [f"<span style=\"color:{_T['danger'][0]};\">패키지에서 빠짐</span>"]
+            else:
+                outs = [f"→&nbsp;{_e(t)}" for t in f["targets"]]
+                outs += [f"<span style=\"color:{_T['danger'][0]};\">삭제&nbsp;{_e(t)}</span>" for t in f["deletes"]]
+                outs += [f"<span style=\"color:{_T['muted']};\">{_e(n)}</span>" for n in f["notes"]]
+            rows.append([_badge(f["status"]),
+                         f"<span style=\"color:{_T['muted']};\">{_e(f['change'])}</span>&nbsp;&nbsp;{_e(f['path'])}",
+                         "<br>".join(outs) or "-"])
+        w(_table(["상태", "소스 파일", "서버에 들어갈 파일"], rows, ["56", "45%", ""]))
+    if d["skipped"]:
+        w(_h2("제외된 파일", len(d["skipped"])))
+        w(_list([f"{_e(s['path'])}&nbsp;&nbsp;<span style=\"color:{_T['muted']};\">{_e(s['reason'])}</span>"
+                 for s in d["skipped"]]))
+
+    st = d["steps"]
+    w(_h2("서버에 반영하는 방법"))
+    w(f"<p style=\"margin-bottom:8px;\">1.&nbsp;&nbsp;{_e(st['upload'])}<br>2.&nbsp;&nbsp;서버에서 순서대로 실행합니다.</p>")
+    rows = [[_code(cmd), f"<span style=\"color:{_T['muted']};\">{_e(desc)}</span>"] for cmd, desc in st["commands"]]
+    rows.append([_code(st["rollback"][0]), f"<span style=\"color:{_T['danger'][0]};\">{_e(st['rollback'][1])}</span>"])
+    w(_table(["명령", "하는 일"], rows, ["", "45%"]))
+    if d["tips"]:
+        w(_list([_e(t) for t in d["tips"]], _T["muted"]))
+    w("</body>")
+    return "".join(out)
+
+
+# ---------------------------------------------------------------------- 서버 반영 절차 (화면·보고서 공통)
 def server_steps(result: "PackageResult") -> Tuple[str, List[Tuple[str, str]], Tuple[str, str]]:
-    """화면용 서버 반영 절차: (올리기 안내, [(명령, 설명)...], (원복 명령, 설명)). 아래 보고서 절차와 같은 내용."""
+    """서버 반영 절차: (올리기 안내, [(명령, 설명)...], (원복 명령, 설명))."""
     p = result.project
     name = result.out_dir.name if result.out_dir else "<패키지 폴더>"
     return server_steps_for(name, p.server_path, p.server_os, p.script_name, result.archive_kind)
@@ -179,162 +403,3 @@ def server_steps_for(name: str, server_path: str, server_os: str, script_name: s
     steps += [(f"./{sh} check", "반영 내용 확인 (서버 변경 없음)"), (f"./{sh} backup", "기존 파일 보관"),
               (f"./{sh} apply", f"{server_path} 에 반영")]
     return upload, steps, (f"./{sh} rollback", "문제가 생기면 apply 이전으로 되돌리기")
-
-
-def _write_deploy_steps(w, result: "PackageResult") -> None:
-    if result.project.server_os == "windows":
-        _write_deploy_steps_windows(w, result)
-        return
-    p = result.project
-    sh = p.script_name
-    name = result.out_dir.name if result.out_dir else "<패키지 폴더>"
-    top_dirs = sorted({path.split("/")[0] for path in result.manifest})
-    contents = ", ".join(f"`{d}`" for d in top_dirs[:10]) or "(없음)"
-
-    w(f"**패키지 폴더 = `{name}`** (이 보고서가 들어 있는 폴더)")
-    w("")
-    w("```")
-    w(f"{name}/")
-    w(f"├─ files/          배포할 파일 ({', '.join(top_dirs[:10]) or '없음'}) - {sh} 가 서버 배포 경로로 복사")
-    w(f"├─ {sh:<14}서버에서 실행할 스크립트")
-    w("├─ manifest.txt    반영할 파일 목록")
-    w("├─ delete.txt      서버에서 삭제할 파일 목록")
-    if p.mode == "sync":
-        w("├─ prune.txt       옛 빌드 파일을 정리할 서버 폴더 목록")
-    if result.hooks:
-        w("├─ hooks/          반영 전·후에 서버에서 실행할 명령")
-    w("├─ checksums.sha256  패키지 파일 검증용")
-    w("└─ report.md       이 보고서")
-    w("```")
-    w("")
-    w(f"1. `{name}` 폴더를 **통째로** 서버에 올립니다.")
-    w(f"   - 서버 배포 경로(`{p.server_path}`) **밖**에 올리세요. 예: `~/deploy/{name}`")
-    w(f"   - 안에 올리면 {sh} 와 보고서가 웹 경로에 섞입니다.")
-    if result.archive_kind == "tar":
-        w(f"   - 압축 파일로 올렸다면 먼저 풀기: `tar -xzf {name}.tar.gz`")
-    elif result.archive_kind == "zip":
-        w(f"   - 압축 파일로 올렸다면 먼저 풀기: `unzip {name}.zip`")
-    w(f"2. 서버에서 `{name}` 폴더로 이동해 순서대로 실행합니다.")
-    w("")
-    w("```bash")
-    w(f"cd ~/deploy/{name}")
-    if result.archive_kind != "tar":
-        w(f"chmod +x {sh:<16}# 실행 권한 부여 (처음 한 번)")
-    w(f"./{sh} check         # 1. 반영 내용 확인 (서버 변경 없음)")
-    w(f"./{sh} backup        # 2. 바뀌거나 지워질 기존 파일을 {name}/backup/ 에 보관")
-    w(f"./{sh} apply         # 3. files/ 내용을 {p.server_path} 에 반영")
-    w(f"./{sh} rollback      # 문제 시 apply 이전으로 원복")
-    w(f"./{sh} history       # 이 서버의 배포 이력")
-    w("```")
-    w("")
-    w("check·backup·apply 전에 `checksums.sha256` 으로 패키지 파일이 업로드 중 손상되지 않았는지 검증합니다. "
-      "같은 대상에 다른 배포가 진행 중이면 backup·apply·rollback 이 멈춥니다.")
-    w("")
-    s = p.server
-    if s.owner or s.file_mode or s.dir_mode:
-        w(f"새로 만들어지는 파일·폴더는 소유자 `{s.owner or '그대로'}`, 파일 권한 `{s.file_mode or '그대로'}`, "
-          f"폴더 권한 `{s.dir_mode or '그대로'}` 로 맞춥니다. 기존 파일은 원래 소유자·권한이 유지됩니다.")
-        w("")
-    if result.archive_kind == "tar":
-        w("tar.gz 로 올리면 실행 권한이 이미 들어 있어 `chmod` 가 필요 없습니다. ")
-    w(f"`chmod` 없이 `bash {sh} check` 처럼 실행해도 됩니다.")
-    w("")
-    w(f"`{sh}` 는 `files/` 아래 경로를 그대로 `{p.server_path}/` 아래에 복사하고, 서버와 내용이 같은 파일은 건드리지 않습니다. "
-      f"다른 경로에 반영하려면 두 번째 인자로 지정합니다: `./{sh} apply /다른/경로`")
-    w("")
-    if p.mode == "sync" and p.prune:
-        folders = ", ".join(f"`{d}`" for d in p.prune)
-        w(f"**옛 빌드 파일 정리**: 서버의 {folders} 폴더 안에서 이번 빌드에 없는 파일은 apply 때 삭제됩니다. "
-          f"`check` 에서 `[정리예정]` 으로 미리 확인할 수 있고, 삭제된 파일도 백업되어 `rollback` 으로 되살아납니다.")
-        w("")
-    w(f"> 스크립트 없이 직접 옮기려면 `files/` **안의 내용**({contents})을 `{p.server_path}` 로 복사하세요. "
-      "이 경우 백업, 원복, 옛 파일 정리는 직접 해야 합니다.")
-    w("")
-
-
-def _write_deploy_steps_windows(w, result: "PackageResult") -> None:
-    p = result.project
-    ps = p.script_name
-    name = result.out_dir.name if result.out_dir else "<패키지 폴더>"
-    run = f"powershell -ExecutionPolicy Bypass -File .\\{ps}"
-    top_dirs = sorted({path.split("/")[0] for path in result.manifest})
-    contents = ", ".join(f"`{d}`" for d in top_dirs[:10]) or "(없음)"
-
-    w(f"**패키지 폴더 = `{name}`** (이 보고서가 들어 있는 폴더) - Windows 서버용")
-    w("")
-    w("```")
-    w(f"{name}\\")
-    w(f"├─ files\\          배포할 파일 ({', '.join(top_dirs[:10]) or '없음'}) - {ps} 가 서버 배포 경로로 복사")
-    w(f"├─ {ps:<15}서버에서 실행할 PowerShell 스크립트")
-    w("├─ manifest.txt    반영할 파일 목록")
-    w("├─ delete.txt      서버에서 삭제할 파일 목록")
-    if p.mode == "sync":
-        w("├─ prune.txt       옛 빌드 파일을 정리할 서버 폴더 목록")
-    if result.hooks:
-        w("├─ hooks\\          반영 전·후에 서버에서 실행할 PowerShell 명령")
-    w("├─ checksums.sha256  패키지 파일 검증용")
-    w("└─ report.md       이 보고서")
-    w("```")
-    w("")
-    w(f"1. `{name}` 폴더를 **통째로** 서버에 복사합니다 (원격 데스크톱, 공유 폴더 등).")
-    w(f"   - 서버 배포 경로(`{p.server_path}`) **밖**에 두세요. 예: `D:\\deploy\\{name}`")
-    if result.archive_kind == "zip":
-        w(f"   - 압축 파일로 옮겼다면 먼저 풀기: 탐색기에서 압축 풀기 또는 `Expand-Archive {name}.zip`")
-    w("   - 인터넷·메일로 받은 파일이면 Windows 가 실행을 막을 수 있습니다: "
-      "PowerShell 에서 `Get-ChildItem -Recurse | Unblock-File`")
-    w(f"2. 서버에서 PowerShell 을 열고 `{name}` 폴더로 이동해 순서대로 실행합니다.")
-    w("")
-    w("```powershell")
-    w(f"cd D:\\deploy\\{name}")
-    w(f"{run} check      # 1. 반영 내용 확인 (서버 변경 없음)")
-    w(f"{run} backup     # 2. 바뀌거나 지워질 기존 파일을 backup\\ 에 보관")
-    w(f"{run} apply      # 3. files\\ 내용을 {p.server_path} 에 반영")
-    w(f"{run} rollback   # 문제 시 apply 이전으로 원복")
-    w(f"{run} history    # 이 서버의 배포 이력")
-    w("```")
-    w("")
-    w("`-ExecutionPolicy Bypass` 는 이번 실행에만 서명되지 않은 스크립트를 허용합니다(서버 설정은 바뀌지 않음). "
-      "반영 전·후 명령을 묻지 않고 실행하려면 `-Yes`, 실행하지 않으려면 `-NoHooks` 를 붙입니다.")
-    w("")
-    w("check·backup·apply 전에 `checksums.sha256` 으로 패키지 파일이 손상되지 않았는지 검증하고, "
-      "같은 대상에 다른 배포가 진행 중이면 멈춥니다. 서버와 내용이 같은 파일은 건드리지 않습니다.")
-    w("")
-    if p.mode == "sync" and p.prune:
-        folders = ", ".join(f"`{d}`" for d in p.prune)
-        w(f"**옛 빌드 파일 정리**: 서버의 {folders} 폴더 안에서 이번 빌드에 없는 파일은 apply 때 삭제됩니다. "
-          f"`check` 에서 `[정리예정]` 으로 미리 확인할 수 있고, 삭제된 파일도 백업되어 `rollback` 으로 되살아납니다.")
-        w("")
-    w(f"> 스크립트 없이 직접 옮기려면 `files\\` **안의 내용**({contents})을 `{p.server_path}` 로 복사하세요. "
-      "이 경우 백업, 원복, 옛 파일 정리는 직접 해야 합니다.")
-    w("")
-
-
-def _tree(paths: List[str]) -> str:
-    if len(paths) > TREE_LIMIT:
-        counts = Counter(p.split("/")[0] if "/" in p else "." for p in paths)
-        lines = [f"(파일 {len(paths)}개 - 최상위 폴더별 개수)"]
-        lines += [f"{name + '/' if name != '.' else '(루트)'}  {n}개" for name, n in sorted(counts.items())]
-        return "\n".join(lines)
-    root: Dict[str, dict] = {}
-    for path in paths:
-        node = root
-        for part in path.split("/"):
-            node = node.setdefault(part, {})
-    out = ["."]
-
-    def walk(node: Dict[str, dict], prefix: str) -> None:
-        # 폴더 먼저, 그 다음 파일
-        items = sorted(node.items(), key=lambda kv: (not kv[1], kv[0]))
-        for i, (name, child) in enumerate(items):
-            last = i == len(items) - 1
-            out.append(f"{prefix}{'└── ' if last else '├── '}{name}")
-            if child:
-                walk(child, prefix + ("    " if last else "│   "))
-
-    walk(root, "")
-    return "\n".join(out)
-
-
-def write_report(path: Path, result: "PackageResult") -> None:
-    with open(path, "w", encoding="utf-8", newline="\n") as f:
-        f.write(render(result))

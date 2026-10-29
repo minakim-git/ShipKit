@@ -66,25 +66,39 @@ def collect_requests(provider: Provider, project: ProjectConfig,
 
 
 def check_local_has_requests(project: ProjectConfig, source: SourceInfo, label: str = "MR") -> None:
-    """로컬 저장소(빌드 대상)에 MR/PR 머지 커밋이 들어 있는지 확인한다."""
+    """로컬 브랜치(빌드 대상)에 MR/PR 의 변경이 들어 있는지 확인한다.
+
+    머지 커밋이나 작업 브랜치 끝 커밋 중 하나라도 지금 브랜치에 있으면 반영된 것으로 본다.
+    (작업 브랜치를 develop·master 에 각각 머지하는 흐름에서는 master 로 간 MR 의 머지 커밋이 develop 에 없지만,
+    작업 커밋은 develop 에도 들어 있다.) 없을 때만 원인별로 짧게 한 줄씩 알린다.
+    """
     if not git_local.is_git_repo(project.root):
         source.warnings.append(f"로컬 경로가 git 저장소가 아니어서 {label} 반영 여부를 확인하지 못했습니다.")
         return
+    current = git_local.current_branch(project.root)
+    behind: List[str] = []    # 내 브랜치의 원격에는 있음 -> pull 하면 됨
+    missing: List[str] = []   # 로컬 저장소에 커밋이 아예 없음
+    absent: List[str] = []    # 내 브랜치에 머지되지 않음
     for mr in source.merge_requests:
-        sha = mr.get("commit_sha")
-        if not sha:
+        shas = [s for s in dict.fromkeys((mr.get("commit_sha"), mr.get("head_sha"))) if s]
+        if not shas:
+            continue
+        found = [git_local.contains_commit(project.root, s) for s in shas]
+        if any(found):
             continue
         ref = mr.get("ref") or f"!{mr['iid']}"
-        has = git_local.contains_commit(project.root, sha)
-        if has is False:
-            source.warnings.append(
-                f"로컬 HEAD 에 {label} {ref} 의 커밋({sha[:8]})이 없습니다. "
-                "git pull 후 다시 빌드했는지 확인하세요."
-            )
-        elif has is None:
-            source.warnings.append(
-                f"로컬 저장소에 {label} {ref} 의 커밋({sha[:8]})이 없습니다. git fetch/pull 이 필요합니다."
-            )
+        if all(f is None for f in found):
+            missing.append(ref)
+        elif current and any(git_local.remote_contains(project.root, s, current) for s in shas):
+            behind.append(ref)
+        else:
+            absent.append(ref)
+    if behind:
+        source.warnings.append(f"{label} {', '.join(behind)}: 아직 pull 하지 않은 커밋입니다 → [pull 받기]")
+    if missing:
+        source.warnings.append(f"{label} {', '.join(missing)}: 로컬에 없는 커밋입니다 → [pull 받기]")
+    if absent:
+        source.warnings.append(f"{label} {', '.join(absent)}: {current or '지금 커밋'} 에 머지되지 않았습니다")
 
 
 # ---------------------------------------------------------------------- 배포 계획

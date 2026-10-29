@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "shipkit"
-version = "0.8.0"
+version = "0.8.1"
 description = "ShipKit - Safe Deployment & Rollback Tool"
 requires-python = ">=3.9"
 dependencies = [

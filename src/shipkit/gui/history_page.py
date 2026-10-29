@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 from shipkit import history, report
 from shipkit.gui import theme
 from shipkit.gui.context import AppContext
+from shipkit.gui.report_view import show_report
 from shipkit.gui.widgets import Card, Chip, CommandRow, button, label, open_path
 
 SOURCE_LABEL = {"gitlab-mr": "GitLab MR", "github-pr": "GitHub PR", "git-diff": "git 범위", "manual": "파일 목록",
@@ -161,7 +162,7 @@ class HistoryPage(QWidget):
         self.open_btn = button("폴더 열기")
         self.open_btn.clicked.connect(lambda: self.current and open_path(self.current.path))
         self.report_btn = button("보고서 열기")
-        self.report_btn.clicked.connect(lambda: self.current and open_path(self.current.report))
+        self.report_btn.clicked.connect(lambda: self.current and show_report(self, self.current.report))
         self.remake_btn = button("같은 내용으로 다시 만들기", "primary")
         self.remake_btn.setToolTip("배포 화면에 같은 MR·파일을 채워 넣습니다. 지금 로컬 파일로 새 패키지를 만듭니다.")
         self.remake_btn.clicked.connect(lambda: self.current and self.remake_requested.emit(self.current))

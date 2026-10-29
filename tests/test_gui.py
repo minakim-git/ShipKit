@@ -11,7 +11,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QCoreApplication, QSettings, Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from shipkit import PROJECT_FILE, config_store  # noqa: E402
+from shipkit import PROJECT_FILE, config_store, preflight  # noqa: E402
 from shipkit.config import ConfigError  # noqa: E402
 from shipkit.gui.app import (  # noqa: E402
     ADD_PROJECT, PAGE_CONNECTIONS, PAGE_DEPLOY, PAGE_HISTORY, PAGE_PROJECTS, MainWindow,
@@ -20,7 +20,9 @@ from shipkit.gui.setup_wizard import STEP_CONNECT, STEP_PROJECT, SetupWizard  # 
 from shipkit.gui.deploy_page import (  # noqa: E402
     STEP_DONE, STEP_PICK, STEP_REVIEW, TAB_BUILD, TAB_FILES, TAB_REQUESTS,
 )
+from shipkit.gui.report_view import ReportDialog  # noqa: E402
 from shipkit.gui.tasks import SyncRunner  # noqa: E402
+from shipkit.gui.widgets import META_ROLE  # noqa: E402
 from shipkit.sources import providers  # noqa: E402
 
 from conftest import write  # noqa: E402
@@ -367,6 +369,32 @@ def test_deploy_files_preview_and_make(qapp, tmp_path, maven_project):
     assert d.step == STEP_PICK and d.files_edit.toPlainText() == ""
 
 
+def test_report_dialog_and_pull_button(qapp, tmp_path, maven_project, monkeypatch):
+    dialogs = FakeDialogs()
+    w = make_window(_config(tmp_path, maven_project), dialogs)
+    d = w.deploy_page
+    d.files_edit.setPlainText("src/main/java/com/acme/User.java")
+    d.preview()
+    d.make_package()
+    d.open_report_btn.click()                                   # 보고서는 ShipKit 안의 창으로
+    dialog = [x for x in QApplication.topLevelWidgets() if isinstance(x, ReportDialog)][-1]
+    assert dialog.path == d.last_result.out_dir / "report.md" and dialog.isVisible()
+    assert "User.class" in dialog.browser.toPlainText() and "| " not in dialog.browser.toPlainText()  # 표로 그림
+    dialog.close()
+
+    pulled = []
+    monkeypatch.setattr("shipkit.sources.git_local.pull_ff", lambda root: pulled.append(root) or 2)
+    d.start_over()
+    d._show_checks([preflight.Check("warning", "원격보다 2커밋 뒤처짐", "", preflight.ACTION_PULL)])
+    assert d.pull_btn.isVisibleTo(d)
+    d.files_edit.setPlainText("src/main/java/com/acme/User.java")
+    d.preview()
+    d.pull_btn.click()                                          # 받은 뒤에는 옛 미리보기를 지우고 ① 로
+    assert pulled == [maven_project] and d.step == STEP_PICK and d.prepared is None
+    assert "커밋 2개" in dialogs.messages[-1][2] and "다시 빌드" in dialogs.messages[-1][2]
+    assert not d.pull_btn.isVisibleTo(d)                        # 다시 점검 (git 저장소 아님)
+
+
 def test_deploy_failure_asks_before_making(qapp, tmp_path, maven_project):
     dialogs = FakeDialogs(answer=False)
     w = make_window(_config(tmp_path, maven_project), dialogs)
@@ -441,6 +469,7 @@ def test_project_switcher(qapp, tmp_path, maven_project):
     assert w.ctx.current == "erp"
     sw.activated.emit(sw.findData("alpha"))
     assert w.ctx.current == "alpha" and w.deploy_page.project.server_path == "/app/ALPHA"
+    assert sw.itemData(sw.currentIndex(), META_ROLE) == "maven  ·  /app/ALPHA"
     assert "서버 경로 /app/ALPHA" in w.deploy_page.mode_label.text()
 
     opened = []

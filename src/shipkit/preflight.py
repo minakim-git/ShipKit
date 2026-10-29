@@ -16,11 +16,15 @@ from shipkit.sync import build_root
 SERVICE_NAME = {"gitlab": "GitLab", "github": "GitHub"}
 
 
+ACTION_PULL = "pull"  # 화면에서 [pull 받기] 버튼을 보여 줄 점검
+
+
 @dataclass
 class Check:
     tone: str
     text: str
     hint: str = ""
+    action: str = ""  # 화면에서 바로 고칠 수 있는 문제 (ACTION_PULL)
 
 
 def run(cfg: Optional[Config], project: ProjectConfig, fetch: bool = True) -> List[Check]:
@@ -47,7 +51,7 @@ def _git_checks(project: ProjectConfig, fetch: bool) -> List[Check]:
     basis = "" if st.fetched else " (마지막으로 받아온 원격 기준)"
     if st.behind:
         checks.append(Check("warning", f"원격보다 {st.behind}커밋 뒤처짐",
-                            f"git pull 후 다시 빌드하세요. 지금 만들면 최신 변경이 빠집니다{basis}."))
+                            f"git pull 후 다시 빌드하세요. 지금 만들면 최신 변경이 빠집니다{basis}.", ACTION_PULL))
     elif st.upstream:
         checks.append(Check("success", "원격과 같음" if not st.ahead else f"원격보다 {st.ahead}커밋 앞섬",
                             "로컬 저장소가 원격 최신 내용을 갖고 있습니다" + basis + "." if not st.ahead else

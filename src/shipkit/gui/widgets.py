@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import List, Optional, Sequence
 
 from PySide6.QtCore import QRectF, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QColor, QDesktopServices, QFont, QGuiApplication, QPainter, QPainterPath
+from PySide6.QtGui import QColor, QDesktopServices, QFont, QFontMetrics, QGuiApplication, QPainter, QPainterPath
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QFileDialog, QStyleOptionComboBox, QStylePainter, QFrame, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QStyle, QStyledItemDelegate,
     QStyleOptionViewItem, QVBoxLayout, QWidget,
@@ -225,22 +225,120 @@ class CommandRow(QFrame):
         QTimer.singleShot(1500, lambda: self.copy_btn.setText("복사"))
 
 
-class ElidedComboBox(QComboBox):
-    """고른 글자가 칸보다 길면 가운데를 '…'로 줄여 보여 준다 (예: harami_gro…kepcomcs)."""
+META_ROLE = Qt.ItemDataRole.UserRole + 1   # 프로젝트 전환기 항목의 두 번째 줄 (프리셋 · 서버)
+_AVATAR_COLORS = ("#4F46E5", "#0E9384", "#C11574", "#B54708", "#175CD3", "#6941C6", "#027A48", "#D92D20")
+
+
+def _avatar_color(name: str) -> QColor:
+    return QColor(_AVATAR_COLORS[sum(map(ord, name)) % len(_AVATAR_COLORS)])
+
+
+def _draw_avatar(painter: QPainter, rect: QRectF, name: str) -> None:
+    """프로젝트 이름 첫 글자를 넣은 둥근 사각형 (프로젝트마다 색이 다르다)."""
+    path = QPainterPath()
+    path.addRoundedRect(rect, 7, 7)
+    painter.fillPath(path, _avatar_color(name))
+    font = QFont(painter.font())
+    font.setPointSizeF(10.5)
+    font.setWeight(QFont.Weight.Bold)
+    painter.setFont(font)
+    painter.setPen(QColor("white"))
+    painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, (name[:1] or "?").upper())
+
+
+def _draw_two_lines(painter: QPainter, rect: QRectF, title: str, meta: str, base: QFont,
+                    title_color: str = theme.TEXT) -> None:
+    title_font = QFont(base)
+    title_font.setWeight(QFont.Weight.DemiBold)
+    meta_font = QFont(base)
+    meta_font.setPointSizeF(8.6)
+    half = rect.height() / 2
+    top = QRectF(rect.x(), rect.y(), rect.width(), half if meta else rect.height())
+    painter.setFont(title_font)
+    painter.setPen(QColor(title_color))
+    align = Qt.AlignmentFlag.AlignLeft | (Qt.AlignmentFlag.AlignBottom if meta else Qt.AlignmentFlag.AlignVCenter)
+    painter.drawText(top.adjusted(0, 0, 0, -1), align,
+                     QFontMetrics(title_font).elidedText(title, Qt.TextElideMode.ElideMiddle, int(rect.width())))
+    if meta:
+        bottom = QRectF(rect.x(), rect.y() + half, rect.width(), half)
+        painter.setFont(meta_font)
+        painter.setPen(QColor(theme.MUTED))
+        painter.drawText(bottom.adjusted(0, 1, 0, 0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
+                         QFontMetrics(meta_font).elidedText(meta, Qt.TextElideMode.ElideRight, int(rect.width())))
+
+
+class _SwitcherDelegate(QStyledItemDelegate):
+    """펼친 목록: 프로젝트는 [첫 글자] 이름 / 프리셋 · 서버 두 줄, 동작 항목(추가·가져오기)은 강조색 한 줄."""
+
+    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index) -> None:
+        if index.data(Qt.ItemDataRole.AccessibleDescriptionRole) == "separator":
+            painter.save()
+            painter.setPen(QColor(theme.BORDER))
+            y = option.rect.center().y()
+            painter.drawLine(option.rect.left() + 8, y, option.rect.right() - 8, y)
+            painter.restore()
+            return
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = QRectF(option.rect).adjusted(4, 2, -4, -2)
+        hovered = option.state & (QStyle.StateFlag.State_Selected | QStyle.StateFlag.State_MouseOver)
+        if hovered:
+            path = QPainterPath()
+            path.addRoundedRect(rect, 8, 8)
+            painter.fillPath(path, QColor(theme.HOVER))
+        text = index.data(Qt.ItemDataRole.DisplayRole) or ""
+        meta = index.data(META_ROLE)
+        if meta is None:  # 동작 항목
+            _draw_two_lines(painter, rect.adjusted(12, 0, -8, 0), text, "", option.font, theme.PRIMARY)
+        else:
+            _draw_avatar(painter, QRectF(rect.x() + 8, rect.center().y() - 14, 28, 28), text)
+            _draw_two_lines(painter, rect.adjusted(46, 4, -8, -4), text, meta, option.font)
+        painter.restore()
+
+    def sizeHint(self, option, index):
+        size = super().sizeHint(option, index)
+        if index.data(Qt.ItemDataRole.AccessibleDescriptionRole) == "separator":
+            size.setHeight(9)
+        else:
+            size.setHeight(52 if index.data(META_ROLE) is not None else 38)
+        return size
+
+
+class ProjectSwitcher(QComboBox):
+    """왼쪽 위 작업할 프로젝트 고르기. 닫힌 상태는 [첫 글자] 이름 / 프리셋 · 서버 카드로 보이고,
+    이름이 길면 가운데를 '…'로 줄인다. 펼친 목록에서는 전체 이름이 보인다."""
+
+    def __init__(self):
+        super().__init__()
+        self.setItemDelegate(_SwitcherDelegate(self))
+        self.setMinimumHeight(58)
+
+    def add_project(self, name: str, meta: str) -> None:
+        self.addItem(name, name)
+        self.setItemData(self.count() - 1, meta, META_ROLE)
 
     def paintEvent(self, event) -> None:
         painter = QStylePainter(self)
         opt = QStyleOptionComboBox()
         self.initStyleOption(opt)
-        painter.drawComplexControl(QStyle.ComplexControl.CC_ComboBox, opt)
-        field = self.style().subControlRect(QStyle.ComplexControl.CC_ComboBox, opt,
-                                            QStyle.SubControl.SC_ComboBoxEditField, self)
-        opt.currentText = self.fontMetrics().elidedText(opt.currentText, Qt.TextElideMode.ElideMiddle, field.width() - 4)
-        painter.drawControl(QStyle.ControlElement.CE_ComboBoxLabel, opt)
+        opt.currentText = ""
+        painter.drawComplexControl(QStyle.ComplexControl.CC_ComboBox, opt)  # 테두리·배경·화살표 (스타일시트)
+        field = QRectF(self.style().subControlRect(QStyle.ComplexControl.CC_ComboBox, opt,
+                                                   QStyle.SubControl.SC_ComboBoxEditField, self))
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        index = self.currentIndex()
+        if index < 0:
+            _draw_two_lines(painter, field.adjusted(4, 0, 0, 0), self.placeholderText() or "프로젝트 없음", "",
+                            self.font(), theme.MUTED)
+            return
+        name = self.itemText(index)
+        meta = self.itemData(index, META_ROLE) or ""
+        _draw_avatar(painter, QRectF(field.x() + 2, field.center().y() - 15, 30, 30), name)
+        _draw_two_lines(painter, field.adjusted(42, 8, -2, -8), name, meta, self.font())
 
     def showPopup(self) -> None:
         widest = max((self.fontMetrics().horizontalAdvance(self.itemText(i)) for i in range(self.count())), default=0)
-        self.view().setMinimumWidth(max(self.width(), widest + 48))  # 펼친 목록에서는 전체 이름
+        self.view().setMinimumWidth(max(self.width(), widest + 90))  # 펼친 목록에서는 전체 이름
         super().showPopup()
 
 

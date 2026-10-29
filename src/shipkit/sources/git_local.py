@@ -56,11 +56,11 @@ def is_git_repo(root: Path) -> bool:
         return False
 
 
-def contains_commit(root: Path, sha: str) -> Optional[bool]:
-    """HEAD 가 sha 를 포함하면 True, 아니면 False, 로컬에 없는 커밋이면 None."""
+def contains_commit(root: Path, sha: str, ref: str = "HEAD") -> Optional[bool]:
+    """ref(기본 HEAD)가 sha 를 포함하면 True, 아니면 False, 로컬에 없는 커밋(또는 ref)이면 None."""
     try:
         proc = subprocess.run(
-            ["git", "-C", str(root), "merge-base", "--is-ancestor", sha, "HEAD"],
+            ["git", "-C", str(root), "merge-base", "--is-ancestor", sha, ref],
             capture_output=True, timeout=60, **_QUIET,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -70,6 +70,24 @@ def contains_commit(root: Path, sha: str) -> Optional[bool]:
     if proc.returncode == 1:
         return False
     return None
+
+
+def current_branch(root: Path) -> Optional[str]:
+    """지금 체크아웃한 브랜치 이름 (detached HEAD 이거나 확인하지 못하면 None)."""
+    try:
+        branch = run_git(root, "rev-parse", "--abbrev-ref", "HEAD").strip()
+    except GitError:
+        return None
+    return None if branch in ("", "HEAD") else branch
+
+
+def remote_contains(root: Path, sha: str, branch: str) -> bool:
+    """원격 추적 브랜치(origin/<branch> 등) 가운데 하나라도 sha 를 포함하는지 (마지막으로 받아온 원격 기준)."""
+    try:
+        refs = run_git(root, "for-each-ref", "--format=%(refname)", f"refs/remotes/*/{branch}").split()
+    except GitError:
+        return False
+    return any(contains_commit(root, sha, ref) for ref in refs)
 
 
 def remote_path(root: Path, host_url: str, remote: str = "origin") -> Optional[str]:
@@ -129,6 +147,37 @@ def fetch(root: Path, timeout: int = 20) -> bool:
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return False
     return proc.returncode == 0
+
+
+def pull_ff(root: Path, timeout: int = 120) -> int:
+    """원격 최신 커밋을 fast-forward 로만 받는다 (merge·rebase 는 하지 않음). 반환: 받은 커밋 수.
+
+    로컬과 원격이 갈라졌거나, 커밋 안 한 수정이 받을 파일과 겹치면 아무것도 바꾸지 않고 GitError.
+    """
+    before = run_git(root, "rev-parse", "HEAD").strip()
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0", GCM_INTERACTIVE="never", GIT_ASKPASS="echo")
+    try:
+        proc = subprocess.run(["git", "-C", str(root), "pull", "--ff-only", "--no-rebase", "--quiet"],
+                              capture_output=True, timeout=timeout, env=env, **_QUIET)
+    except FileNotFoundError as e:
+        raise GitError("git 실행 파일을 찾을 수 없습니다. Git 이 설치되어 PATH 에 있는지 확인하세요.") from e
+    except subprocess.TimeoutExpired as e:
+        raise GitError(f"git pull 이 {timeout}초 안에 끝나지 않았습니다. 네트워크를 확인하세요.") from e
+    if proc.returncode != 0:
+        msg = proc.stderr.decode("utf-8", "replace").strip()
+        low = msg.lower()
+        if "fast-forward" in low or "diverg" in low:
+            raise GitError("로컬에 push 하지 않은 커밋이 있어 원격과 갈라졌습니다. 자동으로 합치지 않으니 "
+                           "직접 pull(merge 또는 rebase) 하세요.")
+        if "would be overwritten" in low or "untracked working tree files" in low:
+            files = [line.strip() for line in msg.splitlines() if line.startswith(("\t", "    "))]
+            raise GitError("커밋하지 않은 수정이 받을 파일과 겹쳐서 받지 않았습니다. 그 파일을 커밋하거나 되돌린 뒤 "
+                           "다시 하세요." + (f"\n겹치는 파일: {', '.join(files[:5])}" if files else ""))
+        if "authentication" in low or "could not read" in low or "permission denied" in low:
+            raise GitError("원격 저장소 로그인에 실패했습니다. 명령 창에서 git pull 을 한 번 해서 로그인 정보를 저장하세요.\n" + msg)
+        raise GitError(f"git pull 실패: {msg}")
+    after = run_git(root, "rev-parse", "HEAD").strip()
+    return 0 if before == after else int(run_git(root, "rev-list", "--count", f"{before}..{after}").strip() or 0)
 
 
 def branch_status(root: Path, do_fetch: bool = False) -> BranchStatus:

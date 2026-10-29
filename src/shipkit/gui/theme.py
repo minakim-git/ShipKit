@@ -98,8 +98,9 @@ QLabel#sideFooter {{ color: {SUBTLE}; font-size: 8.5pt; }}
 QLabel#sideCaption {{ color: {SUBTLE}; font-size: 8.5pt; font-weight: 600; padding-left: 2px; }}
 QLabel#sideMeta {{ color: {MUTED}; font-size: 9pt; padding-left: 2px; }}
 QLabel#sideStatus {{ color: {MUTED}; font-size: 9pt; }}
-QComboBox#projectSwitcher {{ background: #F9FAFB; font-weight: 600; min-height: 38px; }}
-QComboBox#projectSwitcher:hover {{ border-color: {PRIMARY}; }}
+QComboBox#projectSwitcher {{ background: #F9FAFB; border-color: {BORDER}; border-radius: 10px; padding: 0 8px; min-height: 58px; }}
+QComboBox#projectSwitcher:hover {{ border-color: {PRIMARY}; background: {SURFACE}; }}
+QComboBox#projectSwitcher QAbstractItemView {{ padding: 4px; }}
 
 /* ---------- 글자 ---------- */
 QLabel#pageTitle {{ font-size: 18pt; font-weight: 700; }}
@@ -206,6 +207,12 @@ QPushButton#step:disabled {{ border-color: {BORDER}; }}
 QFrame#stepLine {{ background: {BORDER_STRONG}; border: none; }}
 QFrame#preflight {{ background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 10px; }}
 QFrame#override {{ background: {PRIMARY_SOFT}; border-radius: 8px; }}
+QPushButton#chipAction {{
+    background: {TONES['warning'][1]}; color: {TONES['warning'][0]}; border: 1px solid #FEDF89; border-radius: 12px;
+    min-height: 24px; max-height: 24px; padding: 0 10px; font-size: 9pt; font-weight: 600;
+}}
+QPushButton#chipAction:hover {{ background: #FEF0C7; border-color: #FEC84B; }}
+QPushButton#chipAction:disabled {{ color: {SUBTLE}; background: {HOVER}; border-color: {BORDER}; }}
 QTableWidget:disabled {{ color: {MUTED}; background: #F9FAFB; }}
 QPushButton#seg {{
     background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 15px; min-height: 28px;
@@ -239,6 +246,7 @@ QLabel#rowTitle {{ font-weight: 600; }}
 QLabel#detailTitle {{ font-size: 14pt; font-weight: 700; }}
 QLabel#refLabel {{ color: {PRIMARY}; font-weight: 600; }}
 QLabel#emptyText {{ color: {MUTED}; font-size: 11pt; }}
+QTextBrowser#report {{ background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 10px; }}
 
 /* ---------- 스크롤바·진행 표시 ---------- */
 QScrollArea {{ background: transparent; border: none; }}

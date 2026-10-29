@@ -177,6 +177,7 @@ def collect_from_prs(client: GitHubClient, repo: str, numbers: List[int]) -> Tup
             "target_branch": pr["target_branch"],
             "web_url": pr["web_url"],
             "commit_sha": pr.get("merge_commit_sha") or pr.get("sha") or "",
+            "head_sha": pr.get("sha") or "",  # 작업 브랜치 끝 커밋 (다른 브랜치에도 머지됐는지 확인용)
             "file_count": len(changes),
         })
     return merge_changes(batches), source

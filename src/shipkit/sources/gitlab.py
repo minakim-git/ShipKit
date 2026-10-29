@@ -171,6 +171,7 @@ def collect_from_mrs(client: GitLabClient, project: Union[str, int],
             "web_url": mr.get("web_url", ""),
             "ref": f"!{mr['iid']}",
             "commit_sha": mr.get("merge_commit_sha") or mr.get("squash_commit_sha") or mr.get("sha") or "",
+            "head_sha": mr.get("sha") or "",  # 작업 브랜치 끝 커밋 (다른 브랜치에도 머지됐는지 확인용)
             "file_count": len(changes),
         })
     return merge_changes(batches), source

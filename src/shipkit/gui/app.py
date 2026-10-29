@@ -23,7 +23,7 @@ from shipkit.gui.projects_page import ProjectsPage
 from shipkit.gui.settings_page import SettingsPage
 from shipkit.gui.setup_wizard import SetupWizard
 from shipkit.gui.tasks import TaskRunner
-from shipkit.gui.widgets import Dialogs, ElidedComboBox, label
+from shipkit.gui.widgets import Dialogs, ProjectSwitcher, label
 from shipkit.secrets import token_source
 
 PAGES = (("배포", "nav-deploy.svg"), ("기록", "nav-history.svg"), ("프로젝트", "nav-projects.svg"),
@@ -113,13 +113,11 @@ class MainWindow(QMainWindow):
         box.setContentsMargins(16, 0, 16, 0)
         box.setSpacing(5)
         box.addWidget(label("작업할 프로젝트", "sideCaption", wrap=False))
-        self.project_switcher = ElidedComboBox()
+        self.project_switcher = ProjectSwitcher()
         self.project_switcher.setObjectName("projectSwitcher")
         self.project_switcher.setCursor(Qt.CursorShape.PointingHandCursor)
         self.project_switcher.activated.connect(self._on_switch)
         box.addWidget(self.project_switcher)
-        self.project_meta = label("", "sideMeta", wrap=False)
-        box.addWidget(self.project_meta)
         side.addLayout(box)
         side.addSpacing(18)
 
@@ -146,7 +144,9 @@ class MainWindow(QMainWindow):
         sw.blockSignals(True)
         sw.clear()
         for name in self.ctx.project_names():
-            sw.addItem(name, name)
+            p = self.ctx.cfg.projects[name]
+            kind = p.preset or ("sync" if p.mode == "sync" else "직접 규칙")
+            sw.add_project(name, f"{kind}  ·  {p.server_path}" + ("  (Windows)" if p.server_os == "windows" else ""))
         if sw.count():
             sw.insertSeparator(sw.count())
         sw.addItem("+  새 프로젝트 추가", ADD_PROJECT)
@@ -192,8 +192,7 @@ class MainWindow(QMainWindow):
         self.project_switcher.setToolTip(self.ctx.current or "")
         if index < 0:
             self.project_switcher.setPlaceholderText("프로젝트 없음")
-        server = "Windows 서버" if p and p.server_os == "windows" else "리눅스 서버"
-        self.project_meta.setText(f"{p.preset or ('sync' if p.mode == 'sync' else '직접 규칙')}  ·  {server}" if p else "")
+        self.project_switcher.update()
 
     def _on_switch(self, index: int) -> None:
         data = self.project_switcher.itemData(index)

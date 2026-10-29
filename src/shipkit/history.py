@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List, Optional
 
-from shipkit import __version__
+from shipkit import __version__, report
 from shipkit.config import ProjectConfig
 from shipkit.models import Status
 
@@ -93,6 +93,7 @@ def write_record(result: "PackageResult") -> Path:
         "archive": result.archive_kind,
         "hooks": result.hooks,
         "changes": [f"{c.change.value}\t{c.path}" for c in changes],
+        "report": report.build_data(result),  # 보고서 창이 같은 모양으로 다시 그릴 수 있게
     }
     path = result.out_dir / RECORD_FILE
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

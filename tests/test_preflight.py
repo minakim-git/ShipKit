@@ -102,3 +102,110 @@ def test_remote_path(tmp_path, url, expected):
         subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True)
     assert git_local.remote_path(root, "https://gitlab.acme.local/") == expected
     assert git_local.remote_path(tmp_path, "https://gitlab.acme.local/") is None   # 저장소 아님
+
+
+def _shared_repo(maven_project, tmp_path):
+    """원격(bare) + 내 저장소(maven_project) + 팀원 저장소(other)."""
+    remote = tmp_path / "remote.git"
+    git(tmp_path, "init", "-q", "--bare", "-b", "main", str(remote))
+    git(maven_project, "init", "-q", "-b", "main")
+    git(maven_project, "add", "-A")
+    git(maven_project, "commit", "-q", "-m", "init")
+    git(maven_project, "remote", "add", "origin", str(remote))
+    git(maven_project, "push", "-q", "-u", "origin", "main")
+    other = tmp_path / "other"
+    git(tmp_path, "clone", "-q", str(remote), str(other))
+    return other
+
+
+def _teammate_commit(other, rel, text):
+    write(other / rel, text)
+    git(other, "commit", "-q", "-am", f"change {rel}")
+    git(other, "push", "-q")
+
+
+def test_pull_ff(maven_project, tmp_path):
+    other = _shared_repo(maven_project, tmp_path)
+    _teammate_commit(other, "pom.xml", "<project>v2</project>")
+    project = make_config(maven_project, tmp_path / "out").projects["erp"]
+    behind = [c for c in preflight.run(None, project) if c.text.startswith("원격보다")][0]
+    assert behind.action == preflight.ACTION_PULL
+
+    write(maven_project / "pom.xml", "<project>my edit</project>")    # 받을 파일과 겹치는 수정 -> 멈춤
+    head = git_local.run_git(maven_project, "rev-parse", "HEAD")
+    with pytest.raises(git_local.GitError, match="겹쳐서"):
+        git_local.pull_ff(maven_project)
+    assert git_local.run_git(maven_project, "rev-parse", "HEAD") == head
+
+    git(maven_project, "checkout", "-q", "--", "pom.xml")
+    write(maven_project / "README.md", "unrelated local edit")          # 겹치지 않는 수정은 그대로 두고 받음
+    assert git_local.pull_ff(maven_project) == 1
+    assert (maven_project / "pom.xml").read_text(encoding="utf-8") == "<project>v2</project>"
+    assert (maven_project / "README.md").read_text(encoding="utf-8") == "unrelated local edit"
+    assert git_local.pull_ff(maven_project) == 0                          # 이미 최신
+
+
+def test_pull_ff_refuses_diverged(maven_project, tmp_path):
+    other = _shared_repo(maven_project, tmp_path)
+    _teammate_commit(other, "pom.xml", "<project>v2</project>")
+    git(maven_project, "commit", "-q", "--allow-empty", "-m", "local only")
+    with pytest.raises(git_local.GitError, match="갈라졌습니다"):
+        git_local.pull_ff(maven_project)
+
+
+def _mr(iid, merge_sha, head_sha=""):
+    return {"iid": iid, "ref": f"!{iid}", "commit_sha": merge_sha, "head_sha": head_sha}
+
+
+def _sha(root):
+    return git_local.run_git(root, "rev-parse", "HEAD").strip()
+
+
+def test_request_commit_warnings(maven_project, tmp_path):
+    """작업 브랜치 -> develop(개발서버) / -> main(운영서버) 흐름. develop 에서 배포할 때
+    main 으로 간 MR 이라도 작업 커밋이 develop 에 있으면 경고하지 않는다. 없을 때만 짧게 알린다."""
+    from shipkit import workflow
+    from shipkit.models import SourceInfo
+    other = _shared_repo(maven_project, tmp_path)                    # main 하나로 시작
+    git(other, "checkout", "-q", "-b", "develop")
+    git(other, "push", "-q", "-u", "origin", "develop")
+
+    git(other, "checkout", "-q", "-b", "feature/a", "develop")        # 작업 브랜치를 develop 과 main 에 각각 머지
+    _commit_only(other, "pom.xml", "<project>a</project>")
+    head_a = _sha(other)
+    for target in ("develop", "main"):
+        git(other, "checkout", "-q", target)
+        git(other, "merge", "-q", "--no-ff", "-m", f"Merge feature/a into {target}", "feature/a")
+        git(other, "push", "-q", "origin", target)
+    merge_a_main = _sha(other)
+
+    git(other, "checkout", "-q", "-b", "feature/b", "main")           # main 에만 머지된 작업
+    _commit_only(other, "README.md", "b")
+    head_b = _sha(other)
+    git(other, "checkout", "-q", "main")
+    git(other, "merge", "-q", "--no-ff", "-m", "Merge feature/b", "feature/b")
+    git(other, "push", "-q", "origin", "main")
+    merge_b = _sha(other)
+
+    git(maven_project, "fetch", "-q")
+    git(maven_project, "checkout", "-q", "-b", "develop", "origin/develop")
+    git(other, "checkout", "-q", "develop")                           # develop 에 새로 올라온, 아직 안 받은 MR
+    _commit_only(other, "pom.xml", "<project>c</project>")
+    head_c = _sha(other)
+    git(other, "push", "-q", "origin", "develop")
+    git(maven_project, "fetch", "-q")
+
+    project = make_config(maven_project, tmp_path / "out").projects["erp"]
+    source = SourceInfo("gitlab-mr", "t", merge_requests=[
+        _mr(1, merge_a_main, head_a), _mr(2, merge_b, head_b), _mr(3, head_c, head_c), _mr(4, "0" * 40)])
+    workflow.check_local_has_requests(project, source)
+    assert source.warnings == [                                       # !1 은 develop 에 작업 커밋이 있어 경고 없음
+        "MR !3: 아직 pull 하지 않은 커밋입니다 → [pull 받기]",
+        "MR !4: 로컬에 없는 커밋입니다 → [pull 받기]",
+        "MR !2: develop 에 머지되지 않았습니다",
+    ]
+
+
+def _commit_only(root, rel, text):
+    write(root / rel, text)
+    git(root, "commit", "-q", "-am", f"change {rel}")
