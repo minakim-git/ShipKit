@@ -392,6 +392,11 @@ QListWidget#records {{ background: transparent; border: none; outline: 0; }}
 QListWidget#records::item {{ border-radius: 8px; margin: 1px 0; }}
 QListWidget#records::item:hover {{ background: {HOVER}; }}
 QListWidget#records::item:selected {{ background: {PRIMARY_SOFT}; }}
+QListWidget#serverList {{ background: {HEAD}; border: 1px solid {BORDER}; border-radius: 8px; padding: 4px; outline: 0; }}
+QListWidget#serverList::item {{ padding: 8px 10px; border-radius: 6px; margin: 1px 0; }}
+QListWidget#serverList::item:hover {{ background: {HOVER}; }}
+QListWidget#serverList::item:selected {{ background: {PRIMARY_SOFT}; color: {PRIMARY}; font-weight: 600; }}
+QPlainTextEdit#serverLog {{ background: {HEAD}; font-size: 9pt; }}
 QListWidget#fileList {{
     background: {SURFACE}; border: none; outline: 0;
     font-family: "Cascadia Mono", Consolas, "Malgun Gothic"; font-size: 9.5pt;

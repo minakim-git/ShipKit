@@ -169,6 +169,38 @@ class ServerOptions:
     history_file: str = DEFAULT_HISTORY_FILE
 
 
+SERVER_AUTHS = ("password", "key")      # 비밀번호 / SSH 키 파일
+RUN_WITH = ("sudo", "su")               # 다른 계정으로 실행하는 방법
+_HOST_RE = re.compile(r"^[A-Za-z0-9._:\[\]-]+$")
+_ACCOUNT_RE = re.compile(r"^[A-Za-z0-9._][A-Za-z0-9._-]*$")
+
+
+@dataclass
+class ServerProfile:
+    """패키지를 올리고 서버 스크립트를 실행할 서버 (SSH/SFTP). 비밀번호·키 암호는 여기에 두지 않는다(키링)."""
+    name: str                           # 화면에 보일 이름 (예: 개발, 운영)
+    host: str
+    user: str                           # 접속 계정
+    port: int = 22
+    auth: str = "password"              # password | key
+    key_file: Optional[str] = None      # auth=key 일 때 개인 키 파일
+    upload_dir: str = "~/deploy"        # 패키지 폴더를 올릴 곳 (이 아래에 날짜 폴더)
+    run_as: Optional[str] = None        # 서버 스크립트를 다른 계정으로 실행 (비우면 접속 계정)
+    run_with: str = "sudo"              # sudo | su
+    run_password: bool = False          # 다른 계정으로 실행할 때 비밀번호가 필요한지 (sudo·su 비밀번호)
+    chown: bool = False                 # 올린 패키지 폴더 소유자를 실행 계정으로 바꾼다
+    server_path: Optional[str] = None   # 이 서버만 배포 경로가 다르면 (비우면 프로젝트 server_path)
+
+    @property
+    def address(self) -> str:
+        return f"{self.user}@{self.host}" + ("" if self.port == 22 else f":{self.port}")
+
+    @property
+    def runner(self) -> str:
+        """서버 스크립트를 실행하는 계정."""
+        return self.run_as or self.user
+
+
 @dataclass
 class GitLabConfig:
     url: str
@@ -218,6 +250,7 @@ class ProjectConfig:
     package_name: str = DEFAULT_PACKAGE_NAME
     hooks: Dict[str, List[Hook]] = field(default_factory=dict)
     server: ServerOptions = field(default_factory=ServerOptions)
+    servers: List[ServerProfile] = field(default_factory=list)  # 패키지를 바로 올릴 서버 (SSH/SFTP)
     project_file: Optional[Path] = None   # 읽어 들인 프로젝트 설정 파일 (없으면 None)
     discovered: bool = False              # 개인 설정에 없고 프로젝트 설정 파일만으로 찾은 프로젝트
 
@@ -538,6 +571,7 @@ def _parse_project(name: str, raw: Dict[str, Any], defaults: Dict[str, Any], bas
         package_name=_parse_package_name(str(get("package_name", DEFAULT_PACKAGE_NAME)), name, where),
         hooks=_parse_hooks(get("hooks"), where),
         server=_parse_server_options(get("server"), where, server_os),
+        servers=parse_servers(get("servers"), where, server_os),
         server_os=server_os,
         project_file=project_file if project_file.is_file() else None,
     )
@@ -594,6 +628,60 @@ def _parse_server_options(raw: Any, where: str, server_os: str = "linux") -> Ser
     if _UNSAFE_SHELL_CHARS.search(history) or not (history.startswith("/") or history.startswith("~/")):
         raise ConfigError(f"{where}.server.history_file 은 '/' 또는 '~/' 로 시작하고 따옴표·$ 등을 쓸 수 없습니다: {history}")
     return ServerOptions(owner=owner, file_mode=modes["file_mode"], dir_mode=modes["dir_mode"], history_file=history)
+
+
+def parse_servers(raw: Any, where: str, server_os: str) -> List[ServerProfile]:
+    if not raw:
+        return []
+    if not isinstance(raw, list):
+        raise ConfigError(f"{where}.servers 는 목록이어야 합니다.")
+    if server_os == "windows":
+        raise ConfigError(f"{where}.servers (바로 올리기)는 아직 리눅스 서버에서만 쓸 수 있습니다.")
+    servers: List[ServerProfile] = []
+    for i, item in enumerate(raw):
+        at = f"{where}.servers[{i}]"
+        item = _require_dict(item, at)
+        name = str(item.get("name") or "").strip()
+        if not name:
+            raise ConfigError(f"{at}.name (서버 이름, 예: 개발)이 필요합니다.")
+        if name in (s.name for s in servers):
+            raise ConfigError(f"{where}.servers 에 같은 이름이 있습니다: {name}")
+        at = f"{where}.servers.{name}"
+        host = str(item.get("host") or "").strip()
+        if not host or not _HOST_RE.match(host):
+            raise ConfigError(f"{at}.host (서버 주소)가 비었거나 올바르지 않습니다: {host}")
+        user = str(item.get("user") or "").strip()
+        if not user or not _ACCOUNT_RE.match(user):
+            raise ConfigError(f"{at}.user (접속 계정)가 비었거나 올바르지 않습니다: {user}")
+        try:
+            port = int(item.get("port") or 22)
+        except (TypeError, ValueError):
+            raise ConfigError(f"{at}.port 는 숫자여야 합니다: {item.get('port')}") from None
+        if not 0 < port < 65536:
+            raise ConfigError(f"{at}.port 는 1~65535 여야 합니다: {port}")
+        auth = str(item.get("auth") or "password")
+        if auth not in SERVER_AUTHS:
+            raise ConfigError(f"{at}.auth 는 {', '.join(SERVER_AUTHS)} 중 하나여야 합니다: {auth}")
+        key_file = _opt_str(item.get("key_file"))
+        if auth == "key" and not key_file:
+            raise ConfigError(f"{at}.key_file (SSH 개인 키 파일)이 필요합니다.")
+        upload_dir = str(item.get("upload_dir") or "~/deploy").strip().rstrip("/") or "/"
+        if _UNSAFE_SHELL_CHARS.search(upload_dir) or not (upload_dir.startswith("/") or upload_dir.startswith("~")):
+            raise ConfigError(f"{at}.upload_dir 는 '/' 나 '~' 로 시작하는 경로여야 합니다: {upload_dir}")
+        run_as = _opt_str(item.get("run_as"))
+        if run_as and not _ACCOUNT_RE.match(run_as):
+            raise ConfigError(f"{at}.run_as (실행 계정)가 올바르지 않습니다: {run_as}")
+        run_with = str(item.get("run_with") or "sudo")
+        if run_with not in RUN_WITH:
+            raise ConfigError(f"{at}.run_with 는 {', '.join(RUN_WITH)} 중 하나여야 합니다: {run_with}")
+        path = item.get("server_path")
+        servers.append(ServerProfile(
+            name=name, host=host, user=user, port=port, auth=auth, key_file=key_file, upload_dir=upload_dir,
+            run_as=None if run_as == user else run_as, run_with=run_with,
+            run_password=bool(item.get("run_password", False)), chown=bool(item.get("chown", False)),
+            server_path=_parse_server_path(path, at, server_os) if path else None,
+        ))
+    return servers
 
 
 def _parse_server_path(value: Any, where: str, server_os: str = "linux") -> str:

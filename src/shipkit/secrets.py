@@ -71,6 +71,37 @@ def token_source(cfg: ServiceConfig) -> Optional[str]:
     return None
 
 
+# ---------------------------------------------------------------------- 서버 접속 비밀번호
+# 키: ssh:<종류>:<계정>@<호스트>:<포트>  종류 = login(접속 비밀번호) / passphrase(키 암호) / run:<실행 계정>
+def server_secret_key(kind: str, user: str, host: str, port: int) -> str:
+    return f"ssh:{kind}:{user}@{host}:{port}"
+
+
+def get_secret(key: str) -> Optional[str]:
+    kr = _keyring()
+    if kr is None:
+        return None
+    try:
+        return kr.get_password(KEYRING_SERVICE, key) or None
+    except Exception as e:
+        raise SecretError(f"키링에서 비밀번호를 읽지 못했습니다: {e}") from e
+
+
+def set_secret(key: str, value: str) -> None:
+    _require_keyring().set_password(KEYRING_SERVICE, key, value)
+
+
+def delete_secret(key: str) -> bool:
+    kr = _keyring()
+    if kr is None:
+        return False
+    try:
+        kr.delete_password(KEYRING_SERVICE, key)
+        return True
+    except Exception:
+        return False
+
+
 def _require_keyring():
     kr = _keyring()
     if kr is None:

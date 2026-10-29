@@ -27,6 +27,7 @@ from shipkit.sources import providers  # noqa: E402
 
 from conftest import write  # noqa: E402
 from test_github import REPO, _client, _pr  # noqa: E402
+from test_remote import sshd  # noqa: E402,F401  (테스트용 SSH 서버 fixture)
 from conftest import FakeResponse  # noqa: E402
 
 API = "https://api.github.com"
@@ -59,6 +60,11 @@ class FakeDialogs:
 
     def password(self, title, text):
         return self.secret
+
+    def ask_secret(self, title, text):  # 서버 비밀번호 입력: 물어본 문구를 남기고 (값, 저장) 을 돌려준다
+        self.messages.append(("secret", title, text))
+        return (self.secret, True) if self.secret is not None else None
+
 
 
 def make_window(config_path, dialogs=None):
@@ -109,6 +115,9 @@ class FakeKeyring:
 
     def set_password(self, service, key, value):
         self.store[(service, key)] = value
+
+    def delete_password(self, service, key):
+        del self.store[(service, key)]
 
 
 class DrivenWizard(SetupWizard):
@@ -514,3 +523,55 @@ def test_theme_switch(qapp, tmp_path, maven_project):
         w.settings_page.set_theme("light")
         QSettings().remove("ui/theme")
     assert not theme.is_dark() and theme.LIGHT["BG"] in qapp.styleSheet()
+
+
+def test_remote_panel_upload_apply_rollback(qapp, tmp_path, maven_project, monkeypatch, sshd):
+    from sshd import LOGIN_PW
+    from test_remote import bash_path
+    keyring = FakeKeyring()
+    monkeypatch.setattr("shipkit.secrets._keyring", lambda: keyring)
+    monkeypatch.setattr("shipkit.remote.known_hosts_path", lambda: tmp_path / "known_hosts")
+    server = tmp_path / "server"
+    write(server / "WEB-INF/views/user/list.jsp", "OLD")
+    path = _config(tmp_path, maven_project, server_path=bash_path(server), servers=[
+        {"name": "개발", "host": "127.0.0.1", "port": sshd.port, "user": "deployer"}])
+    dialogs = FakeDialogs(password=LOGIN_PW)
+    w = make_window(path, dialogs)
+    d = w.deploy_page
+    d.files_edit.setPlainText("src/main/webapp/WEB-INF/views/user/list.jsp")
+    d.preview()
+    d.make_package()
+    panel = d.remote_panel
+    assert panel.main.isVisibleTo(panel) and panel.server_combo.currentText().startswith("개발")
+
+    panel.upload_and_check()                                    # 처음: 지문 확인 + 비밀번호 입력(저장)
+    assert panel.stage == "checked", panel.log.toPlainText()
+    assert [m[1] for m in dialogs.messages if m[0] in ("ask", "secret")] == ["새 서버 확인", "비밀번호 입력"]
+    assert keyring.store[("shipkit", f"ssh:login:deployer@127.0.0.1:{sshd.port}")] == LOGIN_PW
+    panel.apply()
+    assert panel.stage == "applied", panel.log.toPlainText()
+    assert (server / "WEB-INF/views/user/list.jsp").read_text(encoding="utf-8") == "<%-- jsp --%>"
+    asked = len([m for m in dialogs.messages if m[0] == "secret"])
+    panel.rollback()                                            # 저장한 비밀번호를 써서 다시 묻지 않음
+    assert panel.stage == "rolled_back" and (server / "WEB-INF/views/user/list.jsp").read_text(encoding="utf-8") == "OLD"
+    assert len([m for m in dialogs.messages if m[0] == "secret"]) == asked
+
+    keyring.store[("shipkit", f"ssh:login:deployer@127.0.0.1:{sshd.port}")] = "wrong"
+    panel.upload_and_check()                                    # 저장한 비밀번호가 틀리면 지우고 알린다
+    assert dialogs.messages[-1][0] == "error" and "로그인에 실패" in dialogs.messages[-1][2]
+    assert ("shipkit", f"ssh:login:deployer@127.0.0.1:{sshd.port}") not in keyring.store
+
+    # 프로젝트 설정의 서버 연결 탭: 목록·시험
+    w.go(PAGE_PROJECTS)
+    page = w.projects_page
+    assert page.server_list.count() == 1 and page.srv_host.text() == "127.0.0.1"
+    page.srv_mode.setCurrentIndex(1)                            # 다른 계정으로 실행 -> 칸이 나타남
+    assert page.server_form.isRowVisible(page.srv_run_as)
+    page.srv_mode.setCurrentIndex(0)
+    page.test_server()
+    assert dialogs.messages[-1][:2] == ("info", "연결 시험") and "접속 성공" in dialogs.messages[-1][2], dialogs.messages[-1]
+    page.add_server()
+    page.srv_host.setText("10.0.0.9")
+    page.srv_user.setText("app")
+    assert page.save()
+    assert [s["name"] for s in config_store.load_raw(path)["projects"]["erp"]["servers"]] == ["개발", "서버 2"]

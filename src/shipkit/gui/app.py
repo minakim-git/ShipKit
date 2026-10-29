@@ -19,7 +19,7 @@ from shipkit.gui.connections_page import ConnectionsPage
 from shipkit.gui.context import AppContext
 from shipkit.gui.deploy_page import DeployPage
 from shipkit.gui.history_page import HistoryPage
-from shipkit.gui.projects_page import ProjectsPage
+from shipkit.gui.projects_page import TAB_SERVERS, ProjectsPage
 from shipkit.gui.settings_page import SettingsPage
 from shipkit.gui.setup_wizard import SetupWizard
 from shipkit.gui.tasks import TaskRunner
@@ -63,6 +63,7 @@ class MainWindow(QMainWindow):
         self.settings_page = SettingsPage(self.ctx)
         self.wizard_factory = SetupWizard  # 테스트에서 바꿔 끼운다
         self.history_page.remake_requested.connect(self.remake)
+        self.deploy_page.remote_panel.settings_requested.connect(self._open_server_settings)
         self.settings_page.setup_requested.connect(self.run_setup)
         self.settings_page.import_requested.connect(self._import_legacy)
         for page in (self.deploy_page, self.history_page, self.projects_page, self.connections_page,
@@ -231,6 +232,11 @@ class MainWindow(QMainWindow):
         """기록의 [같은 내용으로 다시 만들기]: 배포 화면 ① 고르기에 같은 MR·파일을 채운다."""
         self.deploy_page.prefill(record)
         self.go(PAGE_DEPLOY)
+
+    def _open_server_settings(self) -> None:
+        """배포 완료 화면의 [서버 등록하러 가기]."""
+        self.go(PAGE_PROJECTS)
+        self.projects_page.tabs.setCurrentIndex(TAB_SERVERS)
 
     def _import_legacy(self) -> None:
         self.go(PAGE_PROJECTS)

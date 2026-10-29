@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List, Optional, Sequence
+from typing import List, Optional, Sequence, Tuple
 
 from PySide6.QtCore import QRectF, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QFont, QFontMetrics, QGuiApplication, QPainter, QPainterPath
@@ -393,6 +393,36 @@ class Dialogs:
 
     def ask(self, title: str, text: str) -> bool:
         return QMessageBox.question(self.parent, title, text) == QMessageBox.StandardButton.Yes
+
+    def ask_secret(self, title: str, text: str) -> Optional[Tuple[str, bool]]:
+        """비밀번호 입력 + [이 PC 에 저장]. 반환: (값, 저장 여부) 또는 취소 시 None."""
+        from PySide6.QtWidgets import QCheckBox, QDialog
+        dialog = QDialog(self.parent)
+        dialog.setWindowTitle(title)
+        dialog.setMinimumWidth(460)
+        edit = QLineEdit()
+        edit.setEchoMode(QLineEdit.EchoMode.Password)
+        save = QCheckBox("이 PC 에 저장 (Windows 자격 증명 관리자, 다음부터 묻지 않음)")
+        save.setChecked(True)
+        ok = button("확인", "primary")
+        ok.setDefault(True)
+        ok.clicked.connect(dialog.accept)
+        cancel = button("취소")
+        cancel.clicked.connect(dialog.reject)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        row.addWidget(cancel)
+        row.addWidget(ok)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(20, 18, 20, 16)
+        layout.setSpacing(10)
+        layout.addWidget(label(text))
+        layout.addWidget(edit)
+        layout.addWidget(save)
+        layout.addLayout(row)
+        if not dialog.exec():
+            return None
+        return edit.text(), save.isChecked()
 
     def password(self, title: str, text: str) -> Optional[str]:
         from PySide6.QtWidgets import QInputDialog

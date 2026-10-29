@@ -11,7 +11,7 @@ from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QCheckBox, QComboBox, QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-    QListWidget, QListWidgetItem, QPlainTextEdit, QProgressBar, QPushButton, QStackedWidget, QTableWidget,
+    QListWidget, QListWidgetItem, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QStackedWidget, QTableWidget,
     QTableWidgetItem, QTabWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -19,6 +19,7 @@ from shipkit import packager, preflight, report, workflow
 from shipkit.config import ProjectConfig
 from shipkit.gui import theme
 from shipkit.gui.context import AppContext
+from shipkit.gui.remote_panel import RemotePanel
 from shipkit.gui.report_view import show_report
 from shipkit.gui.widgets import Card, Chip, CommandRow, StatusDelegate, Stepper, button, label, open_path
 from shipkit.models import FileChange, SourceInfo, Status
@@ -355,17 +356,33 @@ class DeployPage(QWidget):
         top.addLayout(texts, 1)
         card.body.addLayout(top)
 
-        card.body.addSpacing(10)
-        card.body.addWidget(label("서버에서 할 일", "cardTitle"))
+        # 서버에 바로 올리고 반영 (서버 연결을 등록한 프로젝트)
+        self.remote_panel = RemotePanel(self.ctx)
+
+        manual = Card("직접 반영할 때 (서버에서 실행할 명령)")
         self.upload_label = label("", "muted")
-        card.body.addWidget(self.upload_label)
+        manual.body.addWidget(self.upload_label)
         self.command_box = QVBoxLayout()
         self.command_box.setSpacing(6)
-        card.body.addLayout(self.command_box)
+        manual.body.addLayout(self.command_box)
         self.hooks_label = label("", "muted")
-        card.body.addWidget(self.hooks_label)
-        card.body.addStretch(1)
-        layout.addWidget(card, 1)
+        manual.body.addWidget(self.hooks_label)
+
+        content = QWidget()
+        stack = QVBoxLayout(content)
+        stack.setContentsMargins(0, 0, 6, 0)
+        stack.setSpacing(12)
+        stack.addWidget(card)            # 결과
+        stack.addWidget(self.remote_panel)  # 바로 반영
+        stack.addWidget(manual)          # 직접 반영
+        stack.addStretch(1)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setWidget(content)
+        scroll.viewport().setAutoFillBackground(False)
+        content.setAutoFillBackground(False)
+        layout.addWidget(scroll, 1)
 
         bar = _bar()
         self.open_folder_btn = button("폴더 열기")
@@ -816,6 +833,7 @@ class DeployPage(QWidget):
 
     def _show_created(self, result: packager.PackageResult) -> None:
         self.last_result = result
+        self.remote_panel.set_package(result)
         self.prepared = None
         self.make_btn.setEnabled(False)
         self.done_label.setText(str(result.out_dir) + (f"\n{result.archive}" if result.archive else ""))
