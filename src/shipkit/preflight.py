@@ -87,7 +87,7 @@ def _token_checks(cfg: Config, project: ProjectConfig) -> List[Check]:
         except Exception:  # 키링을 읽지 못해도 점검 때문에 화면이 멈추지 않게
             has = False
         if not has and kind == "gitlab":
-            checks.append(Check("danger", "GitLab 토큰 없음", "설정 화면에서 토큰을 저장해야 MR 목록을 불러올 수 있습니다."))
+            checks.append(Check("danger", "GitLab 토큰 없음", "왼쪽 [연결] 메뉴에서 토큰을 저장해야 MR 목록을 불러올 수 있습니다."))
         elif not has:
             checks.append(Check("info", "GitHub 토큰 없음", "공개 저장소만 조회할 수 있습니다."))
     return checks

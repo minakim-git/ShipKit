@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -69,6 +70,22 @@ def contains_commit(root: Path, sha: str) -> Optional[bool]:
     if proc.returncode == 1:
         return False
     return None
+
+
+def remote_path(root: Path, host_url: str, remote: str = "origin") -> Optional[str]:
+    """원격 저장소 주소가 host_url 의 서버를 가리키면 그 안의 경로("그룹/프로젝트")를 돌려준다.
+
+    https://gitlab.acme.local/erp/web.git, git@gitlab.acme.local:erp/web.git -> erp/web
+    """
+    try:
+        url = run_git(root, "remote", "get-url", remote).strip()
+    except GitError:
+        return None
+    host = re.sub(r"^[a-z]+://", "", host_url.strip().lower()).split("/")[0].split("@")[-1].split(":")[0]
+    m = re.match(r"^(?:[a-z+]+://)?(?:[^@/]+@)?([^/:]+)(?::\d+)?[:/](.+?)(?:\.git)?/?$", url, re.IGNORECASE)
+    if not host or not m or m.group(1).lower() != host:
+        return None
+    return m.group(2)
 
 
 def resolve_commit(root: Path, rev: str) -> Optional[str]:

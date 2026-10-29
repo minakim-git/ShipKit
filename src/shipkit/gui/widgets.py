@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional, Sequence
 
-from PySide6.QtCore import QRectF, Qt, QTimer, QUrl
+from PySide6.QtCore import QRectF, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QFont, QGuiApplication, QPainter, QPainterPath
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QFileDialog, QStyleOptionComboBox, QStylePainter, QFrame, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QStyle, QStyledItemDelegate,
@@ -156,6 +156,41 @@ class StatusDelegate(QStyledItemDelegate):
         size = super().sizeHint(option, index)
         size.setWidth(size.width() + 26)
         return size
+
+
+class Stepper(QWidget):
+    """① 고르기 ── ② 확인 ── ③ 완료 같은 단계 표시. 갈 수 있는 단계는 눌러서 이동한다."""
+    clicked = Signal(int)
+
+    def __init__(self, names: Sequence[str]):
+        super().__init__()
+        self.names = list(names)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(6)
+        self.buttons: List[QPushButton] = []
+        for i, name in enumerate(self.names):
+            if i:
+                line = QFrame()
+                line.setObjectName("stepLine")
+                line.setFixedSize(24, 2)
+                row.addWidget(line)
+            b = QPushButton(f"{i + 1}  {name}")
+            b.setObjectName("step")
+            b.setMinimumWidth(86)  # 번호가 ✓ 로 바뀌어도 폭이 흔들리지 않게
+            b.clicked.connect(lambda _=False, i=i: self.clicked.emit(i))
+            row.addWidget(b)
+            self.buttons.append(b)
+
+    def set_state(self, current: int, reachable: int) -> None:
+        for i, b in enumerate(self.buttons):
+            state = "current" if i == current else ("done" if i < current else "todo")
+            b.setText(f"{'✓' if state == 'done' else i + 1}  {self.names[i]}")
+            b.setProperty("state", state)
+            b.setEnabled(i != current and i <= reachable)
+            b.setCursor(Qt.CursorShape.PointingHandCursor if b.isEnabled() else Qt.CursorShape.ArrowCursor)
+            b.style().unpolish(b)
+            b.style().polish(b)
 
 
 class CommandRow(QFrame):

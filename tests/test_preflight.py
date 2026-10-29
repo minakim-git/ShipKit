@@ -6,6 +6,7 @@ import pytest
 
 from shipkit import preflight
 from shipkit.config import parse_config
+from shipkit.sources import git_local
 
 from conftest import make_config, write
 
@@ -86,3 +87,18 @@ def test_git_calls_never_open_a_console_window(tmp_path, monkeypatch):
         assert kwargs["stdin"] == subprocess.DEVNULL
         if os.name == "nt":
             assert kwargs["creationflags"] & subprocess.CREATE_NO_WINDOW
+
+
+@pytest.mark.parametrize("url,expected", [
+    ("https://gitlab.acme.local/erp/web.git", "erp/web"),
+    ("git@gitlab.acme.local:erp/web.git", "erp/web"),
+    ("ssh://git@gitlab.acme.local:2222/grp/sub/app.git", "grp/sub/app"),
+    ("https://github.com/acme/web.git", None),                 # 다른 서버
+])
+def test_remote_path(tmp_path, url, expected):
+    root = tmp_path / "repo"
+    root.mkdir()
+    for args in (["init", "-q"], ["remote", "add", "origin", url]):
+        subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True)
+    assert git_local.remote_path(root, "https://gitlab.acme.local/") == expected
+    assert git_local.remote_path(tmp_path, "https://gitlab.acme.local/") is None   # 저장소 아님

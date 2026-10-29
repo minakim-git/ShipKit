@@ -7,7 +7,7 @@ from __future__ import annotations
 import re
 from typing import Callable, Dict, List, Optional, Tuple
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QCheckBox, QComboBox, QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
@@ -19,7 +19,7 @@ from shipkit import packager, preflight, report, workflow
 from shipkit.config import ProjectConfig
 from shipkit.gui import theme
 from shipkit.gui.context import AppContext
-from shipkit.gui.widgets import Card, Chip, CommandRow, StatusDelegate, button, label, open_path
+from shipkit.gui.widgets import Card, Chip, CommandRow, StatusDelegate, Stepper, button, label, open_path
 from shipkit.models import FileChange, SourceInfo, Status
 from shipkit.sources import git_local, providers
 
@@ -54,40 +54,6 @@ def _bar() -> QHBoxLayout:
     row = QHBoxLayout()
     row.setSpacing(12)
     return row
-
-
-class Stepper(QWidget):
-    """① 고르기 ── ② 확인 ── ③ 완료. 갈 수 있는 단계는 눌러서 이동한다."""
-    clicked = Signal(int)
-
-    def __init__(self):
-        super().__init__()
-        row = QHBoxLayout(self)
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(6)
-        self.buttons: List[QPushButton] = []
-        for i, name in enumerate(STEP_NAMES):
-            if i:
-                line = QFrame()
-                line.setObjectName("stepLine")
-                line.setFixedSize(24, 2)
-                row.addWidget(line)
-            b = QPushButton(f"{i + 1}  {name}")
-            b.setObjectName("step")
-            b.setMinimumWidth(86)  # 번호가 ✓ 로 바뀌어도 폭이 흔들리지 않게
-            b.clicked.connect(lambda _=False, i=i: self.clicked.emit(i))
-            row.addWidget(b)
-            self.buttons.append(b)
-
-    def set_state(self, current: int, reachable: int) -> None:
-        for i, b in enumerate(self.buttons):
-            state = "current" if i == current else ("done" if i < current else "todo")
-            b.setText(f"{'✓' if state == 'done' else i + 1}  {STEP_NAMES[i]}")
-            b.setProperty("state", state)
-            b.setEnabled(i != current and i <= reachable)
-            b.setCursor(Qt.CursorShape.PointingHandCursor if b.isEnabled() else Qt.CursorShape.ArrowCursor)
-            b.style().unpolish(b)
-            b.style().polish(b)
 
 
 class DeployPage(QWidget):
@@ -130,7 +96,7 @@ class DeployPage(QWidget):
         self.progress.setVisible(False)
         head.addWidget(self.progress, 0, Qt.AlignmentFlag.AlignVCenter)
         head.addSpacing(12)
-        self.stepper = Stepper()
+        self.stepper = Stepper(STEP_NAMES)
         self.stepper.clicked.connect(self.go_step)
         head.addWidget(self.stepper, 0, Qt.AlignmentFlag.AlignVCenter)
         root.addLayout(head)

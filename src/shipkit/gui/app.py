@@ -15,18 +15,20 @@ from PySide6.QtWidgets import (
 from shipkit import __app_name__, __tagline__, __version__, legacy
 from shipkit.config import ConfigError, find_config, user_config_path
 from shipkit.gui import theme
+from shipkit.gui.connections_page import ConnectionsPage
 from shipkit.gui.context import AppContext
 from shipkit.gui.deploy_page import DeployPage
 from shipkit.gui.history_page import HistoryPage
 from shipkit.gui.projects_page import ProjectsPage
 from shipkit.gui.settings_page import SettingsPage
+from shipkit.gui.setup_wizard import SetupWizard
 from shipkit.gui.tasks import TaskRunner
 from shipkit.gui.widgets import Dialogs, ElidedComboBox, label
 from shipkit.secrets import token_source
 
 PAGES = (("배포", "nav-deploy.svg"), ("기록", "nav-history.svg"), ("프로젝트", "nav-projects.svg"),
-         ("설정", "nav-settings.svg"))
-PAGE_DEPLOY, PAGE_HISTORY, PAGE_PROJECTS, PAGE_SETTINGS = range(4)
+         ("연결", "nav-connections.svg"), ("앱 설정", "nav-settings.svg"))
+PAGE_DEPLOY, PAGE_HISTORY, PAGE_PROJECTS, PAGE_CONNECTIONS, PAGE_SETTINGS = range(5)
 ADD_PROJECT, IMPORT_LEGACY = "__add__", "__legacy__"  # 프로젝트 목록 맨 아래의 동작 항목
 
 
@@ -51,9 +53,14 @@ class MainWindow(QMainWindow):
         self.deploy_page = DeployPage(self.ctx)
         self.history_page = HistoryPage(self.ctx)
         self.projects_page = ProjectsPage(self.ctx)
+        self.connections_page = ConnectionsPage(self.ctx)
         self.settings_page = SettingsPage(self.ctx)
+        self.wizard_factory = SetupWizard  # 테스트에서 바꿔 끼운다
         self.history_page.remake_requested.connect(self.remake)
-        for page in (self.deploy_page, self.history_page, self.projects_page, self.settings_page):
+        self.settings_page.setup_requested.connect(self.run_setup)
+        self.settings_page.import_requested.connect(self._import_legacy)
+        for page in (self.deploy_page, self.history_page, self.projects_page, self.connections_page,
+                     self.settings_page):
             self.stack.addWidget(page)
 
         central = QWidget()
@@ -75,7 +82,7 @@ class MainWindow(QMainWindow):
         self.ctx.connection_listeners.append(self._refresh_status)
         self.ctx.project_listeners.append(self._show_project)
         self.ctx.reload()
-        self.nav.setCurrentRow(PAGE_DEPLOY if self.ctx.cfg and self.ctx.cfg.projects else PAGE_SETTINGS)
+        self.nav.setCurrentRow(PAGE_DEPLOY if self.ctx.project else (PAGE_PROJECTS if self.ctx.cfg else PAGE_CONNECTIONS))
 
     # ------------------------------------------------------------------ 왼쪽
     def _sidebar(self) -> QWidget:
@@ -126,7 +133,7 @@ class MainWindow(QMainWindow):
         self.nav.currentRowChanged.connect(self._on_page)
         side.addWidget(self.nav, 1)
 
-        # 연결 상태 (설정 화면에서 바꾼 내용이 바로 반영된다)
+        # 연결 상태 (연결 화면에서 바꾼 내용이 바로 반영된다)
         self.status_box = QVBoxLayout()
         self.status_box.setContentsMargins(22, 0, 16, 0)
         self.status_box.setSpacing(4)
@@ -192,11 +199,11 @@ class MainWindow(QMainWindow):
         data = self.project_switcher.itemData(index)
         if data in (ADD_PROJECT, IMPORT_LEGACY):
             self._show_project()  # 동작 항목은 선택으로 남기지 않는다
-            self.go(PAGE_PROJECTS)
             if data == ADD_PROJECT:
+                self.go(PAGE_PROJECTS)
                 self.projects_page.add_project()
             else:
-                self.projects_page.import_legacy()
+                self._import_legacy()
             return
         self.ctx.set_project(data)
 
@@ -213,22 +220,28 @@ class MainWindow(QMainWindow):
         self.deploy_page.prefill(record)
         self.go(PAGE_DEPLOY)
 
+    def _import_legacy(self) -> None:
+        self.go(PAGE_PROJECTS)
+        self.projects_page.import_legacy()
+
     def first_run(self) -> None:
-        """설정 파일이 없을 때: 기존 툴 설정 가져오기를 권하고, 아니면 설정 화면으로 안내한다."""
+        """설정 파일이 없으면 처음 실행 안내를 띄운다. 설정 파일이 잘못됐으면 알려 준다."""
         if self.ctx.config_path.is_file():
             if self.ctx.load_error:
                 self.ctx.dialogs.error("설정 파일 오류",
                                        f"{self.ctx.config_path}\n\n{self.ctx.load_error}\n\n설정 파일을 고친 뒤 다시 실행하세요.")
             return
-        db = legacy.legacy_db_path()
-        if db.is_file() and self.ctx.dialogs.ask(
-                "처음 실행", f"기존 배포 툴(compiled-java-deployer)의 프로젝트 설정을 찾았습니다.\n가져올까요?\n\n{db}"):
-            self.projects_page.import_legacy()
-            self.go(PAGE_PROJECTS)
-            return
-        self.ctx.dialogs.info("처음 실행", "GitLab/GitHub 주소와 패키지 생성 경로를 입력하고 '설정 저장'을 누른 뒤,\n"
-                                         "왼쪽 위 프로젝트 목록에서 프로젝트를 추가하세요.")
-        self.go(PAGE_SETTINGS)
+        self.run_setup()
+
+    def run_setup(self) -> None:
+        """처음 실행 안내 (앱 설정에서 다시 열 수도 있다). 끝나면 고른 프로젝트로 배포 화면을 연다."""
+        wizard = self.wizard_factory(self.ctx, self, legacy.legacy_db_path())
+        if wizard.exec():
+            self.ctx.reload(select=wizard.selected)
+            self.ctx.connections_changed()
+            self.go(PAGE_DEPLOY if self.ctx.project else PAGE_PROJECTS)
+        elif not self.ctx.config_path.is_file():
+            self.go(PAGE_CONNECTIONS)
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:

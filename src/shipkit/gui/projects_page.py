@@ -244,7 +244,7 @@ class ProjectDialog(QDialog):
         self.root_field = PathField(placeholder="로컬 git 저장소 최상위 폴더")
         self.root_field.setText(str(entry.get("root", "")))
         self.root_field.edit.textChanged.connect(self._show_project_file)
-        self.output_field = PathField(placeholder=f"비우면 기본값: {defaults.get('output_dir', '(설정 화면에서 지정)')}")
+        self.output_field = PathField(placeholder=f"비우면 기본값: {defaults.get('output_dir', '([앱 설정]에서 지정)')}")
         self.output_field.setText(str(entry.get("output_dir", "")))
         self.preset_combo = QComboBox()
         self.preset_combo.addItem(INHERIT, "")
@@ -854,7 +854,7 @@ class ProjectsPage(QWidget):
         ph(self.root_field.edit, "root", "로컬 git 저장소 최상위 폴더")
         out, src = L.inherited("output_dir")
         self.output_field.edit.setPlaceholderText(
-            f"{src}: {str(out).replace('{project}', name)}" if out else "설정 화면에서 기본 패키지 생성 경로를 정하세요")
+            f"{src}: {str(out).replace('{project}', name)}" if out else "[앱 설정]에서 기본 패키지 생성 경로를 정하세요")
         os_value, os_src = L.inherited("server_os")
         combo_text(self.os_combo, f"{os_src} · {'Windows' if os_value == 'windows' else '리눅스'}" if os_value else "리눅스")
         ph(self.server_edit, "server_path", "예: /app/tomcat/webapps/ROOT  (Windows: D:/tomcat/webapps/ROOT)")
@@ -1070,5 +1070,5 @@ class ProjectsPage(QWidget):
         if self._save(mutate):
             added, skipped = result["added"], result["skipped"]
             text = f"{len(added)}개 프로젝트를 가져왔습니다." + (f"\n이미 있어서 건너뜀: {', '.join(skipped)}" if skipped else "")
-            text += "\n토큰은 가져오지 않습니다. 설정 화면에서 토큰을 저장하세요."
+            text += "\n토큰은 가져오지 않습니다. [연결] 메뉴에서 토큰을 저장하세요."
             self.ctx.dialogs.info("가져오기 완료", text)

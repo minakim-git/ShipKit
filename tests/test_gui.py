@@ -1,5 +1,6 @@
 """GUI(PySide6): 화면 없이(offscreen) 창을 띄워 실제 위젯 조작으로 흐름을 확인한다."""
 import os
+import subprocess
 
 import pytest
 import yaml
@@ -12,7 +13,10 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from shipkit import PROJECT_FILE, config_store  # noqa: E402
 from shipkit.config import ConfigError  # noqa: E402
-from shipkit.gui.app import ADD_PROJECT, PAGE_DEPLOY, PAGE_HISTORY, PAGE_PROJECTS, PAGE_SETTINGS, MainWindow  # noqa: E402
+from shipkit.gui.app import (  # noqa: E402
+    ADD_PROJECT, PAGE_CONNECTIONS, PAGE_DEPLOY, PAGE_HISTORY, PAGE_PROJECTS, MainWindow,
+)
+from shipkit.gui.setup_wizard import STEP_CONNECT, STEP_PROJECT, SetupWizard  # noqa: E402
 from shipkit.gui.deploy_page import (  # noqa: E402
     STEP_DONE, STEP_PICK, STEP_REVIEW, TAB_BUILD, TAB_FILES, TAB_REQUESTS,
 )
@@ -94,21 +98,118 @@ def test_config_store_merge_legacy(tmp_path):
 
 
 # ---------------------------------------------------------------------- 메인 창 / 설정
-def test_first_run_goes_to_settings_and_saves(qapp, tmp_path, monkeypatch):
+class FakeKeyring:
+    def __init__(self):
+        self.store = {}
+
+    def get_password(self, service, key):
+        return self.store.get((service, key))
+
+    def set_password(self, service, key, value):
+        self.store[(service, key)] = value
+
+
+class DrivenWizard(SetupWizard):
+    """exec() 대신 테스트가 정한 조작(plan)을 실행하는 처음 실행 안내."""
+    plan = None
+
+    def exec(self):
+        return type(self).plan(self)
+
+
+def _drive(plan):
+    return type("Driven", (DrivenWizard,), {"plan": staticmethod(plan)})
+
+
+def test_first_run_wizard_new_user(qapp, tmp_path, monkeypatch, maven_project):
     monkeypatch.setattr("shipkit.legacy.legacy_db_path", lambda: tmp_path / "none.db")
-    dialogs = FakeDialogs()
+    keyring = FakeKeyring()
+    monkeypatch.setattr("shipkit.secrets._keyring", lambda: keyring)
     path = tmp_path / "new" / "shipkit.yaml"
-    w = make_window(path, dialogs)
+    w = make_window(path)
+    assert w.nav.currentRow() == PAGE_CONNECTIONS                  # 설정 파일이 없으면 연결부터
+    for args in (["init", "-q"], ["remote", "add", "origin", "git@gitlab.acme.local:erp/web.git"]):
+        subprocess.run(["git", "-C", str(maven_project), *args], check=True, capture_output=True)
+
+    def plan(wz):
+        assert not wz.legacy_card.isVisibleTo(wz) and wz.output_field.text().endswith("{project}")
+        wz.next()                                                  # GitLab 주소 없음 -> 넘어가지 않음
+        assert wz.step == STEP_CONNECT and "GitLab 주소" in wz.error.text()
+        wz.gitlab_url.setText("https://gitlab.acme.local/")
+        wz.token_edit.setText("tok-123")
+        wz.next()
+        wz.output_field.setText((tmp_path / "out" / "{project}").as_posix())
+        assert wz.output_example.text().endswith("/out/erp/2026-10-29-1140")
+        wz.next()
+        assert wz.step == STEP_PROJECT and wz.next_btn.text() == "완료"
+        wz.root_field.setText((maven_project / "src").as_posix())  # 하위 폴더를 골라도 저장소 최상위로
+        assert wz.root_field.text() == maven_project.as_posix()
+        assert wz.name_edit.text() == "erp" and wz.preset_combo.currentData() == "maven"
+        assert wz.gitlab_project.text() == "erp/web"                # 원격 주소로 채움
+        wz.next()                                                  # 서버 경로 없음
+        assert "서버 배포 경로" in wz.error.text()
+        wz.server_edit.setText("/app/ROOT")
+        wz.next()
+        return wz.result() == 1
+
+    w.wizard_factory = _drive(plan)
     w.first_run()
-    assert w.nav.currentRow() == PAGE_SETTINGS and dialogs.messages[-1][1] == "처음 실행"
+    saved = config_store.load_raw(path)
+    assert saved["gitlab"] == {"url": "https://gitlab.acme.local/"}
+    assert saved["projects"]["erp"] == {"root": maven_project.as_posix(), "preset": "maven",
+                                        "server_path": "/app/ROOT", "gitlab_project": "erp/web"}
+    assert keyring.store[("shipkit", "https://gitlab.acme.local")] == "tok-123"   # 토큰은 키링에만
+    assert "tok-123" not in path.read_text(encoding="utf-8")
+    assert w.ctx.current == "erp" and w.nav.currentRow() == PAGE_DEPLOY
+
+
+def test_first_run_wizard_imports_legacy_and_cancel(qapp, tmp_path, monkeypatch):
+    from test_workflow import _legacy_db
+    db = tmp_path / "database.db"
+    _legacy_db(db)
+    monkeypatch.setattr("shipkit.legacy.legacy_db_path", lambda: db)
+    path = tmp_path / "new" / "shipkit.yaml"
+    w = make_window(path)
+
+    w.wizard_factory = _drive(lambda wz: False)                    # 나중에 하기
+    w.first_run()
+    assert not path.exists() and w.nav.currentRow() == PAGE_CONNECTIONS
+
+    def plan(wz):
+        assert wz.legacy_card.isVisibleTo(wz)
+        wz.import_legacy()
+        assert "acme_erp" in wz.imported
+        assert wz.gitlab_url.text() == "https://gitlab.acme.local"
+        wz.next()
+        wz.output_field.setText((tmp_path / "out" / "{project}").as_posix())
+        wz.next()
+        assert wz.imported_note.isVisibleTo(wz)
+        wz.next()                                                  # 프로젝트를 더 등록하지 않고 완료
+        return wz.result() == 1
+
+    w.wizard_factory = _drive(plan)
+    w.settings_page.setup_requested.emit()                        # 앱 설정의 [처음 실행 안내 다시 보기]
+    saved = config_store.load_raw(path)
+    assert "acme_erp" in saved["projects"] and saved["defaults"]["output_dir"].endswith("/out/{project}")
+    assert w.ctx.current == "acme_erp"
+
+
+def test_connections_and_app_settings_save_their_own_keys(qapp, tmp_path, maven_project):
+    path = _config(tmp_path, maven_project)
+    w = make_window(path)
+    c = w.connections_page
+    c.gitlab.enabled.setChecked(True)
+    c.gitlab.url.setText("https://gitlab.acme.local/")
+    c.save()
     s = w.settings_page
-    s.gitlab.enabled.setChecked(True)
-    s.gitlab.url.setText("https://gitlab.acme.local/")
+    assert s.file_chip.text() == "있음" and str(path) == s.path_label.text()
     s.output_field.setText("D:/deploy/{project}")
+    s.package_name.setText("%Y%m%d-%H%M")
     s.save()
     saved = config_store.load_raw(path)
-    assert saved["gitlab"]["url"] == "https://gitlab.acme.local/" and saved["defaults"]["output_dir"] == "D:/deploy/{project}"
-    assert "github" not in saved and w.ctx.cfg is not None
+    assert saved["gitlab"]["url"] == "https://gitlab.acme.local/" and "github" not in saved
+    assert saved["defaults"] == {"output_dir": "D:/deploy/{project}", "package_name": "%Y%m%d-%H%M"}
+    assert saved["projects"]["erp"]["server_path"] == "/app/ROOT"
 
 
 # ---------------------------------------------------------------------- 프로젝트 화면
