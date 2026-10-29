@@ -216,7 +216,8 @@ class ProjectsPage(QWidget):
         row = self.table.currentRow()
         return self.table.item(row, 0).text() if row >= 0 and self.table.item(row, 0) else None
 
-    def _save(self, mutate) -> bool:
+    def _save(self, mutate, select: Optional[str] = None) -> bool:
+        """설정을 고쳐 저장하고 다시 읽는다. select: 저장 뒤 작업 프로젝트로 고를 이름."""
         data = config_store.load_raw(self.ctx.config_path)
         before = copy.deepcopy(data)
         try:
@@ -226,7 +227,7 @@ class ProjectsPage(QWidget):
             self.ctx.dialogs.error("저장하지 못했습니다", str(e))
             return False
         if data != before:
-            self.ctx.reload()
+            self.ctx.reload(select)
         return True
 
     def add_project(self) -> None:
@@ -244,7 +245,8 @@ class ProjectsPage(QWidget):
         entry = (data.get("projects") or {}).get(old_name, {}) if old_name else {}
         dialog = self.dialog_factory(self, old_name or "", entry, data.get("defaults") or {})
         while dialog.exec():
-            if self._save(lambda d: config_store.set_project(d, dialog.name(), dialog.values(), old_name)):
+            if self._save(lambda d: config_store.set_project(d, dialog.name(), dialog.values(), old_name),
+                          select=dialog.name()):
                 return
 
     def delete_project(self) -> None:

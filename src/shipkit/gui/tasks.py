@@ -51,13 +51,18 @@ class TaskRunner(QObject):
         super().__init__(parent)
         self._pool = QThreadPool.globalInstance()
         self._active: Set[_Signals] = set()
+        self._quiet: Set[_Signals] = set()  # 신호 객체가 끝날 때까지 사라지지 않게 잡아 둔다
 
     def run(self, fn: Callable[[], Any], on_done: Callable[[Any], None],
-            on_failed: Optional[Callable[[str], None]] = None) -> None:
+            on_failed: Optional[Callable[[str], None]] = None, quiet: bool = False) -> None:
+        """quiet: 화면의 버튼을 잠그지 않는 가벼운 작업 (예: 시작 전 점검)."""
         signals = _Signals()
-        self._active.add(signals)
+        self._quiet.add(signals) if quiet else self._active.add(signals)
 
         def finish() -> None:
+            if quiet:
+                self._quiet.discard(signals)
+                return
             self._active.discard(signals)
             if not self._active:
                 self.busy_changed.emit(False)
@@ -73,7 +78,8 @@ class TaskRunner(QObject):
 
         signals.done.connect(done)
         signals.failed.connect(failed)
-        self.busy_changed.emit(True)
+        if not quiet:
+            self.busy_changed.emit(True)
         self._pool.start(_Task(fn, signals))
 
 
@@ -82,7 +88,7 @@ class SyncRunner(QObject):
     busy_changed = Signal(bool)
 
     def run(self, fn: Callable[[], Any], on_done: Callable[[Any], None],
-            on_failed: Optional[Callable[[str], None]] = None) -> None:
+            on_failed: Optional[Callable[[str], None]] = None, quiet: bool = False) -> None:
         try:
             result = fn()
         except Exception as e:

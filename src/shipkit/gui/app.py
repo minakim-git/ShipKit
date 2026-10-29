@@ -1,4 +1,4 @@
-"""ShipKit 메인 창: 왼쪽 메뉴(배포 / 프로젝트 / 설정) + 오른쪽 화면."""
+"""ShipKit 메인 창: 왼쪽(로고 · 작업할 프로젝트 · 메뉴 · 연결 상태) + 오른쪽 화면."""
 from __future__ import annotations
 
 import sys
@@ -8,8 +8,8 @@ from typing import Optional, Sequence
 from PySide6.QtCore import QCoreApplication, QSize, Qt
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
-    QApplication, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMainWindow, QStackedWidget, QVBoxLayout,
-    QWidget,
+    QApplication, QComboBox, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMainWindow, QStackedWidget,
+    QVBoxLayout, QWidget,
 )
 
 from shipkit import __app_name__, __tagline__, __version__, legacy
@@ -21,9 +21,11 @@ from shipkit.gui.projects_page import ProjectsPage
 from shipkit.gui.settings_page import SettingsPage
 from shipkit.gui.tasks import TaskRunner
 from shipkit.gui.widgets import Dialogs, label
+from shipkit.secrets import token_source
 
 PAGES = (("배포", "nav-deploy.svg"), ("프로젝트", "nav-projects.svg"), ("설정", "nav-settings.svg"))
 PAGE_DEPLOY, PAGE_PROJECTS, PAGE_SETTINGS = range(3)
+ADD_PROJECT, IMPORT_LEGACY = "__add__", "__legacy__"  # 프로젝트 목록 맨 아래의 동작 항목
 
 
 def default_config_path() -> Path:
@@ -38,8 +40,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle(f"{__app_name__} - {__tagline__}")
         self.setWindowIcon(QIcon(theme.logo_pixmap(32)))
-        self.resize(1220, 820)
-        self.setMinimumSize(980, 640)
+        self.resize(1240, 840)
+        self.setMinimumSize(1000, 660)
         self.ctx = AppContext(config_path=config_path or default_config_path(),
                               runner=runner or TaskRunner(self), dialogs=dialogs or Dialogs(self))
 
@@ -59,21 +61,24 @@ class MainWindow(QMainWindow):
         page_area.setObjectName("pageArea")
         page_area.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         page_layout = QVBoxLayout(page_area)
-        page_layout.setContentsMargins(28, 22, 28, 18)
+        page_layout.setContentsMargins(28, 22, 28, 20)
         page_layout.addWidget(self.stack)
         layout.addWidget(page_area, 1)
         self.setCentralWidget(central)
-        self.statusBar().setSizeGripEnabled(False)
 
-        self.ctx.listeners.append(self._update_status)
+        self.ctx.listeners.append(self._refresh_projects)
+        self.ctx.listeners.append(self._refresh_status)
+        self.ctx.connection_listeners.append(self._refresh_status)
+        self.ctx.project_listeners.append(self._show_project)
         self.ctx.reload()
         self.nav.setCurrentRow(PAGE_DEPLOY if self.ctx.cfg and self.ctx.cfg.projects else PAGE_SETTINGS)
 
+    # ------------------------------------------------------------------ 왼쪽
     def _sidebar(self) -> QWidget:
         sidebar = QWidget()
         sidebar.setObjectName("sidebar")
         sidebar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        sidebar.setFixedWidth(220)
+        sidebar.setFixedWidth(236)
         side = QVBoxLayout(sidebar)
         side.setContentsMargins(0, 22, 0, 16)
         side.setSpacing(0)
@@ -90,32 +95,106 @@ class MainWindow(QMainWindow):
         brand_row.addWidget(logo)
         brand_row.addLayout(texts, 1)
         side.addLayout(brand_row)
-        side.addSpacing(22)
+        side.addSpacing(24)
+
+        # 작업할 프로젝트: 고르면 모든 화면이 이 프로젝트 기준으로 바뀐다
+        box = QVBoxLayout()
+        box.setContentsMargins(16, 0, 16, 0)
+        box.setSpacing(5)
+        box.addWidget(label("작업할 프로젝트", "sideCaption", wrap=False))
+        self.project_switcher = QComboBox()
+        self.project_switcher.setObjectName("projectSwitcher")
+        self.project_switcher.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.project_switcher.activated.connect(self._on_switch)
+        box.addWidget(self.project_switcher)
+        self.project_meta = label("", "sideMeta", wrap=False)
+        box.addWidget(self.project_meta)
+        side.addLayout(box)
+        side.addSpacing(18)
 
         self.nav = QListWidget()
         self.nav.setObjectName("nav")
         self.nav.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.nav.setIconSize(QSize(18, 18))
         for text, icon in PAGES:
-            item = QListWidgetItem(theme.svg_icon(icon, theme.MUTED, 18, theme.PRIMARY), f"  {text}")
-            self.nav.addItem(item)
+            self.nav.addItem(QListWidgetItem(theme.svg_icon(icon, theme.MUTED, 18, theme.PRIMARY), f"  {text}"))
         self.nav.currentRowChanged.connect(self.stack.setCurrentIndex)
         side.addWidget(self.nav, 1)
 
-        footer = label(__tagline__, "sideFooter")
-        footer.setContentsMargins(22, 0, 16, 0)
-        side.addWidget(footer)
+        # 연결 상태 (설정 화면에서 바꾼 내용이 바로 반영된다)
+        self.status_box = QVBoxLayout()
+        self.status_box.setContentsMargins(22, 0, 16, 0)
+        self.status_box.setSpacing(4)
+        side.addLayout(self.status_box)
         return sidebar
 
-    def _update_status(self) -> None:
+    def _refresh_projects(self) -> None:
+        """설정을 다시 읽었을 때: 프로젝트 목록을 새로 채운다."""
+        sw = self.project_switcher
+        sw.blockSignals(True)
+        sw.clear()
+        for name in self.ctx.project_names():
+            sw.addItem(name, name)
+        if sw.count():
+            sw.insertSeparator(sw.count())
+        sw.addItem("+  새 프로젝트 추가", ADD_PROJECT)
+        sw.addItem("기존 툴에서 가져오기", IMPORT_LEGACY)
+        sw.blockSignals(False)
+
+    def _refresh_status(self) -> None:
+        """왼쪽 아래 연결 상태 (설정 파일을 다시 읽거나 토큰을 저장·삭제했을 때)."""
+        while self.status_box.count():
+            item = self.status_box.takeAt(0)
+            if item.widget():
+                item.widget().hide()
+                item.widget().deleteLater()
         cfg = self.ctx.cfg
         if self.ctx.load_error:
-            self.statusBar().showMessage(f"설정 파일 오류: {self.ctx.load_error}")
-        elif cfg is None:
-            self.statusBar().showMessage("설정 파일이 없습니다. 설정 화면에서 저장하거나 기존 툴에서 가져오세요.")
+            lines = [("danger", "설정 파일 오류", self.ctx.load_error)]
         else:
-            self.statusBar().showMessage(f"설정 파일: {self.ctx.config_path}  ·  프로젝트 {len(cfg.projects)}개")
+            lines = []
+            for key, name in (("gitlab", "GitLab"), ("github", "GitHub")):
+                service = getattr(cfg, key, None) if cfg else None
+                if service is None:
+                    continue
+                try:
+                    has = token_source(service) is not None
+                except Exception:
+                    has = False
+                tone = "success" if has else ("danger" if key == "gitlab" else "warning")
+                lines.append((tone, f"{name}  {'연결됨' if has else '토큰 없음'}", service.url))
+        for tone, text, tip in lines:
+            w = label(f"<span style='color:{theme.TONES[tone][0]}'>●</span>&nbsp;&nbsp;{text}", "sideStatus", wrap=False)
+            w.setToolTip(tip)
+            self.status_box.addWidget(w)
+        path = label(str(self.ctx.config_path.name), "sideFooter", wrap=False)
+        path.setToolTip(f"설정 파일: {self.ctx.config_path}")
+        self.status_box.addSpacing(4)
+        self.status_box.addWidget(path)
 
+    def _show_project(self) -> None:
+        """작업 프로젝트가 바뀌었을 때: 전환기 선택과 아래 설명을 맞춘다."""
+        p = self.ctx.project
+        index = self.project_switcher.findData(self.ctx.current) if p else -1
+        self.project_switcher.setCurrentIndex(index)
+        if index < 0:
+            self.project_switcher.setPlaceholderText("프로젝트 없음")
+        server = "Windows 서버" if p and p.server_os == "windows" else "리눅스 서버"
+        self.project_meta.setText(f"{p.preset or ('sync' if p.mode == 'sync' else '직접 규칙')}  ·  {server}" if p else "")
+
+    def _on_switch(self, index: int) -> None:
+        data = self.project_switcher.itemData(index)
+        if data in (ADD_PROJECT, IMPORT_LEGACY):
+            self._show_project()  # 동작 항목은 선택으로 남기지 않는다
+            self.go(PAGE_PROJECTS)
+            if data == ADD_PROJECT:
+                self.projects_page.add_project()
+            else:
+                self.projects_page.import_legacy()
+            return
+        self.ctx.set_project(data)
+
+    # ------------------------------------------------------------------ 이동
     def go(self, page: int) -> None:
         self.nav.setCurrentRow(page)
 
@@ -133,7 +212,7 @@ class MainWindow(QMainWindow):
             self.go(PAGE_PROJECTS)
             return
         self.ctx.dialogs.info("처음 실행", "GitLab/GitHub 주소와 패키지 생성 경로를 입력하고 '설정 저장'을 누른 뒤,\n"
-                                         "프로젝트 화면에서 프로젝트를 추가하세요.")
+                                         "왼쪽 위 프로젝트 목록에서 프로젝트를 추가하세요.")
         self.go(PAGE_SETTINGS)
 
 

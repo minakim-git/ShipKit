@@ -133,6 +133,8 @@ class StatusDelegate(QStyledItemDelegate):
         opt.text = ""
         style = opt.widget.style() if opt.widget else QApplication.style()
         style.drawControl(QStyle.ControlElement.CE_ItemViewItem, opt, painter, opt.widget)
+        if not text:
+            return
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         font = QFont(option.font)

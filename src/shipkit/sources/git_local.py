@@ -1,7 +1,9 @@
 """로컬 git 저장소에서 두 리비전 사이의 변경 파일을 수집한다 (GitLab 토큰 불필요)."""
 from __future__ import annotations
 
+import os
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Set, Tuple
 
@@ -10,6 +12,12 @@ from shipkit.models import ChangeType, FileChange, normalize_repo_path
 
 class GitError(Exception):
     pass
+
+
+# 화면 프로그램(ShipKit.exe)에서 git 을 부를 때 명령 창이 깜빡이지 않게 한다 (Windows 전용 옵션).
+# 입력도 막아 두어 git 이 무언가를 물어보며 멈추지 않게 한다.
+_QUIET = {"stdin": subprocess.DEVNULL,
+          **({"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {})}
 
 
 def parse_range(rev_range: str) -> Tuple[str, str]:
@@ -28,7 +36,7 @@ def run_git(root: Path, *args: str) -> str:
     try:
         proc = subprocess.run(
             ["git", "-C", str(root), "-c", "core.quotepath=false", *args],
-            capture_output=True, timeout=60,
+            capture_output=True, timeout=60, **_QUIET,
         )
     except FileNotFoundError as e:
         raise GitError("git 실행 파일을 찾을 수 없습니다. Git 이 설치되어 PATH 에 있는지 확인하세요.") from e
@@ -52,7 +60,7 @@ def contains_commit(root: Path, sha: str) -> Optional[bool]:
     try:
         proc = subprocess.run(
             ["git", "-C", str(root), "merge-base", "--is-ancestor", sha, "HEAD"],
-            capture_output=True, timeout=60,
+            capture_output=True, timeout=60, **_QUIET,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return None
@@ -84,6 +92,44 @@ def dirty_paths(root: Path) -> Set[str]:
         paths.add(tok[3:])
         i += 2 if tok[0] in "RC" else 1  # 이름변경은 원래 경로가 다음 토큰에 온다
     return paths
+
+
+@dataclass
+class BranchStatus:
+    branch: Optional[str]          # None = 브랜치가 아닌 커밋에 있음 (detached HEAD)
+    upstream: Optional[str]        # 추적하는 원격 브랜치 (예: origin/main)
+    ahead: int = 0                 # 원격에 아직 안 올린 로컬 커밋 수
+    behind: int = 0                # 로컬에 아직 안 받은 원격 커밋 수
+    fetched: Optional[bool] = None  # 원격 최신 상태를 받아왔는지 (None = 시도 안 함)
+
+
+def fetch(root: Path, timeout: int = 20) -> bool:
+    """원격 브랜치 정보만 받아온다 (작업 파일은 건드리지 않음). 로그인 창이 뜨지 않게 막고, 실패하면 False."""
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0", GCM_INTERACTIVE="never", GIT_ASKPASS="echo")
+    try:
+        proc = subprocess.run(["git", "-C", str(root), "fetch", "--quiet", "--no-tags"],
+                              capture_output=True, timeout=timeout, env=env, **_QUIET)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+    return proc.returncode == 0
+
+
+def branch_status(root: Path, do_fetch: bool = False) -> BranchStatus:
+    branch = run_git(root, "rev-parse", "--abbrev-ref", "HEAD").strip()
+    branch = None if branch == "HEAD" else branch
+    try:
+        upstream = run_git(root, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}").strip() or None
+    except GitError:
+        upstream = None
+    status = BranchStatus(branch, upstream)
+    if upstream is None:
+        return status
+    if do_fetch:
+        status.fetched = fetch(root)
+    counts = run_git(root, "rev-list", "--left-right", "--count", "HEAD...@{u}").split()
+    if len(counts) == 2:
+        status.ahead, status.behind = int(counts[0]), int(counts[1])
+    return status
 
 
 def collect_from_git(root: Path, rev_range: str) -> Tuple[List[FileChange], str]:

@@ -95,6 +95,11 @@ QListWidget#nav::item {{ color: {MUTED}; padding: 9px 12px; margin: 2px 12px; bo
 QListWidget#nav::item:hover {{ background: {HOVER}; color: {TEXT}; }}
 QListWidget#nav::item:selected {{ background: {PRIMARY_SOFT}; color: {PRIMARY}; font-weight: 600; }}
 QLabel#sideFooter {{ color: {SUBTLE}; font-size: 8.5pt; }}
+QLabel#sideCaption {{ color: {SUBTLE}; font-size: 8.5pt; font-weight: 600; padding-left: 2px; }}
+QLabel#sideMeta {{ color: {MUTED}; font-size: 9pt; padding-left: 2px; }}
+QLabel#sideStatus {{ color: {MUTED}; font-size: 9pt; }}
+QComboBox#projectSwitcher {{ background: #F9FAFB; font-weight: 600; min-height: 38px; }}
+QComboBox#projectSwitcher:hover {{ border-color: {PRIMARY}; }}
 
 /* ---------- 글자 ---------- */
 QLabel#pageTitle {{ font-size: 18pt; font-weight: 700; }}
@@ -108,6 +113,7 @@ QLabel#chip {{ border-radius: 11px; padding: 3px 10px; font-size: 9pt; font-weig
 /* ---------- 카드 ---------- */
 QFrame#card {{ background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 12px; }}
 QFrame#banner {{ border-radius: 12px; }}
+QFrame#detail {{ background: #F9FAFB; border: 1px solid {BORDER}; border-radius: 8px; }}
 QFrame#banner[tone="success"] {{ background: {TONES['success'][1]}; border: 1px solid #ABEFC6; }}
 QFrame#banner[tone="danger"] {{ background: {TONES['danger'][1]}; border: 1px solid #FECDCA; }}
 QFrame#divider {{ background: {BORDER}; max-height: 1px; min-height: 1px; border: none; }}
@@ -185,6 +191,37 @@ QHeaderView::section {{
 QTableCornerButton::section {{ background: #F9FAFB; border: none; }}
 QListWidget#messages {{ background: transparent; border: none; outline: 0; }}
 QListWidget#messages::item {{ padding: 6px 10px; border-radius: 8px; margin: 2px 0; }}
+
+/* ---------- 배포 단계 ---------- */
+QPushButton#step {{
+    background: transparent; border: 1px solid {BORDER}; border-radius: 15px; min-height: 28px;
+    padding: 0 12px; color: {SUBTLE}; font-weight: 600;
+}}
+QPushButton#step:hover {{ background: {HOVER}; }}
+QPushButton#step[state="done"] {{ color: {PRIMARY}; background: {PRIMARY_SOFT}; border-color: {PRIMARY_SOFT}; }}
+QPushButton#step[state="current"], QPushButton#step[state="current"]:disabled {{
+    color: white; background: {PRIMARY}; border-color: {PRIMARY};
+}}
+QPushButton#step:disabled {{ border-color: {BORDER}; }}
+QFrame#stepLine {{ background: {BORDER_STRONG}; border: none; }}
+QFrame#preflight {{ background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 10px; }}
+QPushButton#seg {{
+    background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 15px; min-height: 28px;
+    padding: 0 12px; color: {MUTED}; font-weight: 500;
+}}
+QPushButton#seg:hover {{ background: {HOVER}; }}
+QPushButton#seg:checked {{ background: {PRIMARY_SOFT}; color: {PRIMARY}; border-color: {PRIMARY_DISABLED}; font-weight: 600; }}
+QTreeWidget {{ background: {SURFACE}; border: none; outline: 0; }}
+QTreeWidget::item {{ padding: 6px 4px; border-bottom: 1px solid #F2F4F7; }}
+QTreeView::branch {{ background: transparent; border-bottom: 1px solid #F2F4F7; }}
+QTreeView::branch:has-children:closed {{ image: url("{asset('chevron-right.svg')}"); }}
+QTreeView::branch:has-children:open {{ image: url("{asset('chevron-open.svg')}"); }}
+QLabel#code {{
+    font-family: "Cascadia Mono", Consolas, "Malgun Gothic"; font-size: 9.5pt; color: {TEXT};
+}}
+QFrame#cmdRow {{ background: #F9FAFB; border: 1px solid {BORDER}; border-radius: 8px; }}
+QLabel#stepNum {{ background: {PRIMARY_SOFT}; color: {PRIMARY}; border-radius: 12px; font-size: 9pt; font-weight: 700; }}
+QLabel#doneTitle {{ font-size: 15pt; font-weight: 700; }}
 
 /* ---------- 스크롤바·진행 표시 ---------- */
 QScrollArea {{ background: transparent; border: none; }}

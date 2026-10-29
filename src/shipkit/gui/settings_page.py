@@ -138,6 +138,7 @@ class ServiceBox(Card):
             dialogs.error("토큰 저장 실패", str(e))
             return
         self.update_token_status()
+        self.page.ctx.connections_changed()
         dialogs.info("토큰 저장", f"{cfg.label} 토큰을 Windows 자격 증명 관리자에 저장했습니다.")
 
     def remove_token(self) -> None:
@@ -150,6 +151,7 @@ class ServiceBox(Card):
         except (ConfigError, SecretError) as e:
             dialogs.error("토큰 삭제 실패", str(e))
         self.update_token_status()
+        self.page.ctx.connections_changed()
 
     def test_connection(self) -> None:
         ctx = self.page.ctx

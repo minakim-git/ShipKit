@@ -12,8 +12,10 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from shipkit import PROJECT_FILE, config_store  # noqa: E402
 from shipkit.config import ConfigError  # noqa: E402
-from shipkit.gui.app import PAGE_DEPLOY, PAGE_SETTINGS, MainWindow  # noqa: E402
-from shipkit.gui.deploy_page import TAB_BUILD, TAB_FILES, TAB_REQUESTS  # noqa: E402
+from shipkit.gui.app import ADD_PROJECT, PAGE_DEPLOY, PAGE_PROJECTS, PAGE_SETTINGS, MainWindow  # noqa: E402
+from shipkit.gui.deploy_page import (  # noqa: E402
+    STEP_DONE, STEP_PICK, STEP_REVIEW, TAB_BUILD, TAB_FILES, TAB_REQUESTS,
+)
 from shipkit.gui.tasks import SyncRunner  # noqa: E402
 from shipkit.sources import providers  # noqa: E402
 
@@ -164,19 +166,31 @@ def test_deploy_files_preview_and_make(qapp, tmp_path, maven_project):
     assert not d.tabs.isTabVisible(TAB_REQUESTS) and not d.tabs.isTabVisible(TAB_BUILD)
     assert d.tabs.currentIndex() == TAB_FILES
 
+    assert d.step == STEP_PICK and d.last_checks                 # 시작 전 점검이 돌았다
     d.files_edit.setPlainText("src/main/java/com/acme/User.java\nsrc/main/webapp/WEB-INF/views/user/list.jsp\n")
+    assert d.pick_summary.text() == "파일 2개"
     d.preview()
-    assert d.make_btn.isEnabled() and d.result_table.rowCount() == 2
+    assert d.step == STEP_REVIEW and d.make_btn.isEnabled() and d.result_tree.topLevelItemCount() == 2
     assert "서버 반영 4개" in d.summary_label.text()
-    d.files_edit.appendPlainText("pom.xml")          # 입력이 바뀌면 다시 미리보기 해야 함
-    assert not d.make_btn.isEnabled()
+    user = d.result_tree.findItems("User.java", Qt.MatchFlag.MatchEndsWith, 2)[0]
+    children = [user.child(i).text(2) for i in range(user.childCount())]  # 소스 아래에 서버 파일이 한 줄씩
+    assert "→  WEB-INF/classes/com/acme/User.class" in children
+    assert "→  WEB-INF/classes/com/acme/User$Inner.class" in children and user.isExpanded()
+
+    d.go_step(STEP_PICK)                             # 이전으로 돌아가 입력을 바꾸면 다시 미리보기 해야 함
+    d.files_edit.appendPlainText("pom.xml")
+    assert not d.make_btn.isEnabled() and not d.stepper.buttons[STEP_REVIEW].isEnabled()
     d.preview()
     assert any("pom.xml" in d.messages.item(i).text() for i in range(d.messages.count()))  # 알림
 
     d.make_package()
     pkg = d.last_result.out_dir
-    assert (pkg / "files/WEB-INF/classes/com/acme/User.class").is_file()
-    assert d.done_label.isVisibleTo(w) and "./shipkit.sh check" in d.done_label.text()
+    assert d.step == STEP_DONE and (pkg / "files/WEB-INF/classes/com/acme/User.class").is_file()
+    assert str(pkg) in d.done_label.text()
+    assert d.done_commands == [f"cd ~/deploy/{pkg.name}", "chmod +x shipkit.sh", "./shipkit.sh check",
+                               "./shipkit.sh backup", "./shipkit.sh apply", "./shipkit.sh rollback"]
+    d.start_over()
+    assert d.step == STEP_PICK and d.files_edit.toPlainText() == ""
 
 
 def test_deploy_failure_asks_before_making(qapp, tmp_path, maven_project):
@@ -186,8 +200,13 @@ def test_deploy_failure_asks_before_making(qapp, tmp_path, maven_project):
     d.files_edit.setPlainText("src/main/webapp/WEB-INF/views/user/list.jsp\nsrc/main/webapp/nope.jsp")
     d.preview()
     assert "실패 1" in d.summary_label.text()
+    d.filter_buttons["error"].click()                # 실패만 걸러 보기
+    tree = d.result_tree
+    visible = [tree.topLevelItem(i).text(2) for i in range(tree.topLevelItemCount()) if not tree.topLevelItem(i).isHidden()]
+    assert visible == ["src/main/webapp/nope.jsp"]
+    assert not d.filter_buttons["warn"].isVisibleTo(w)  # 해당 항목이 없는 상태 버튼은 숨김
     d.make_package()
-    assert dialogs.messages[-1][0] == "ask" and d.last_result is None
+    assert dialogs.messages[-1][0] == "ask" and d.last_result is None and d.step == STEP_REVIEW
     dialogs.answer = True
     d.make_package()
     assert (d.last_result.out_dir / "manifest.txt").read_text(encoding="utf-8") == "WEB-INF/views/user/list.jsp\n"
@@ -234,3 +253,23 @@ def test_deploy_sync_project_defaults_to_build_tab(qapp, tmp_path):
     d.preview()
     d.make_package()
     assert d.last_result.archive.name.endswith(".tar.gz")
+
+
+def test_project_switcher(qapp, tmp_path, maven_project):
+    path = _config(tmp_path, maven_project)
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    data["projects"]["alpha"] = {"root": maven_project.as_posix(), "server_path": "/app/ALPHA"}
+    path.write_text(yaml.safe_dump(data), encoding="utf-8")
+    w = make_window(path)
+    sw = w.project_switcher
+    assert [sw.itemData(i) for i in range(2)] == ["alpha", "erp"] and sw.findData(ADD_PROJECT) > 0
+    sw.activated.emit(sw.findData("erp"))
+    assert w.ctx.current == "erp"
+    sw.activated.emit(sw.findData("alpha"))
+    assert w.ctx.current == "alpha" and w.deploy_page.project.server_path == "/app/ALPHA"
+    assert "서버 경로 /app/ALPHA" in w.deploy_page.mode_label.text()
+
+    opened = []
+    w.projects_page.add_project = lambda: opened.append(True)
+    sw.activated.emit(sw.findData(ADD_PROJECT))      # 동작 항목: 프로젝트 추가 창을 열고, 선택은 그대로
+    assert opened and w.nav.currentRow() == PAGE_PROJECTS and sw.currentData() == "alpha"
