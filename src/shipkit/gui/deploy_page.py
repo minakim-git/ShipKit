@@ -71,7 +71,14 @@ class DeployPage(QWidget):
         self._build_ui()
         ctx.project_listeners.append(self._on_project_changed)
         ctx.connection_listeners.append(lambda: self.project is not None and self.run_preflight())
+        theme.on_change(self._repaint_preview)
         ctx.runner.busy_changed.connect(self._set_busy)
+
+    def _repaint_preview(self) -> None:
+        """테마가 바뀌면 미리 칠해 둔 미리보기 글자색을 새 색으로 다시 칠한다."""
+        if self.prepared is not None and self.last_result is None:
+            project, changes, source, result, entries = self.prepared
+            self._show_preview((project, changes, source, entries, result))
 
     @property
     def project(self) -> Optional[ProjectConfig]:
@@ -127,12 +134,12 @@ class DeployPage(QWidget):
         row.addStretch(1)
         # '원격보다 N커밋 뒤처짐' 배지 바로 옆에 붙는 작은 버튼 (_show_checks 에서 자리를 잡는다)
         self.pull_btn = button("pull 받기", "chipAction")
-        self.pull_btn.setIcon(theme.svg_icon("download.svg", theme.TONES["warning"][0], 14))
+        theme.bind_icon(self.pull_btn, "download.svg", "warning", 14)
         self.pull_btn.setToolTip("원격의 최신 커밋을 받습니다 (git pull --ff-only). 합치기(merge)는 하지 않습니다.")
         self.pull_btn.clicked.connect(self.pull)
         self.pull_btn.hide()
         self.recheck_btn = button("다시 점검", "ghost")
-        self.recheck_btn.setIcon(theme.svg_icon("refresh.svg", theme.PRIMARY, 16))
+        theme.bind_icon(self.recheck_btn, "refresh.svg", "PRIMARY", 16)
         self.recheck_btn.clicked.connect(self.run_preflight)
         row.addWidget(self.recheck_btn)
         self.check_chips: List[Chip] = []
@@ -334,6 +341,7 @@ class DeployPage(QWidget):
         top.setSpacing(16)
         icon = QLabel()
         icon.setPixmap(theme.svg_icon("success.svg", "", 48).pixmap(48, 48))
+        theme.on_change(lambda: icon.setPixmap(theme.svg_icon("success.svg", "", 48).pixmap(48, 48)))
         top.addWidget(icon, 0, Qt.AlignmentFlag.AlignTop)
         texts = QVBoxLayout()
         texts.setSpacing(6)

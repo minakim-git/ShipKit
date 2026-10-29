@@ -42,7 +42,8 @@ class ReportDialog(QDialog):
         data = _report_data(path)
         if data is not None:  # 기록에 정리된 보고서 데이터가 있으면 전용 화면으로
             self.browser.document().setDocumentMargin(26)
-            self.browser.setHtml(report.render_html(data))
+            self.browser.setHtml(report.render_html(data, theme.report_colors()))
+            theme.on_change(lambda: self.browser.setHtml(report.render_html(data, theme.report_colors())))
         else:                 # 예전 패키지: 마크다운을 여백을 넉넉히 해서 보여 준다
             self.browser.setMarkdown(self.markdown)
             _decorate(self.browser)
@@ -92,9 +93,9 @@ def _decorate(browser: QTextBrowser) -> None:
             for col in range(frame.columns()):  # 머리글 줄
                 cell = frame.cellAt(0, col)
                 cf = cell.format()
-                cf.setBackground(QColor("#F9FAFB"))
+                cf.setBackground(QColor(theme.HEAD))
                 cell.setFormat(cf)
-    code_bg = QColor("#F2F4F7")
+    code_bg = QColor(theme.HOVER)
     block = doc.begin()
     while block.isValid():
         fmt = block.blockFormat()

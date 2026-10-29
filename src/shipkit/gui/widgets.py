@@ -211,7 +211,7 @@ class CommandRow(QFrame):
         code.setObjectName("code")
         code.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.copy_btn = button("복사", "ghost")
-        self.copy_btn.setIcon(theme.svg_icon("copy.svg", theme.PRIMARY, 16))
+        theme.bind_icon(self.copy_btn, "copy.svg", "PRIMARY", 16)
         self.copy_btn.clicked.connect(self.copy)
         row.addWidget(num)
         row.addWidget(code)
@@ -247,7 +247,7 @@ def _draw_avatar(painter: QPainter, rect: QRectF, name: str) -> None:
 
 
 def _draw_two_lines(painter: QPainter, rect: QRectF, title: str, meta: str, base: QFont,
-                    title_color: str = theme.TEXT) -> None:
+                    title_color: str = "TEXT") -> None:
     title_font = QFont(base)
     title_font.setWeight(QFont.Weight.DemiBold)
     meta_font = QFont(base)
@@ -255,7 +255,7 @@ def _draw_two_lines(painter: QPainter, rect: QRectF, title: str, meta: str, base
     half = rect.height() / 2
     top = QRectF(rect.x(), rect.y(), rect.width(), half if meta else rect.height())
     painter.setFont(title_font)
-    painter.setPen(QColor(title_color))
+    painter.setPen(QColor(theme.color(title_color)))
     align = Qt.AlignmentFlag.AlignLeft | (Qt.AlignmentFlag.AlignBottom if meta else Qt.AlignmentFlag.AlignVCenter)
     painter.drawText(top.adjusted(0, 0, 0, -1), align,
                      QFontMetrics(title_font).elidedText(title, Qt.TextElideMode.ElideMiddle, int(rect.width())))
@@ -289,7 +289,7 @@ class _SwitcherDelegate(QStyledItemDelegate):
         text = index.data(Qt.ItemDataRole.DisplayRole) or ""
         meta = index.data(META_ROLE)
         if meta is None:  # 동작 항목
-            _draw_two_lines(painter, rect.adjusted(12, 0, -8, 0), text, "", option.font, theme.PRIMARY)
+            _draw_two_lines(painter, rect.adjusted(12, 0, -8, 0), text, "", option.font, "PRIMARY")
         else:
             _draw_avatar(painter, QRectF(rect.x() + 8, rect.center().y() - 14, 28, 28), text)
             _draw_two_lines(painter, rect.adjusted(46, 4, -8, -4), text, meta, option.font)
@@ -329,7 +329,7 @@ class ProjectSwitcher(QComboBox):
         index = self.currentIndex()
         if index < 0:
             _draw_two_lines(painter, field.adjusted(4, 0, 0, 0), self.placeholderText() or "프로젝트 없음", "",
-                            self.font(), theme.MUTED)
+                            self.font(), "MUTED")
             return
         name = self.itemText(index)
         meta = self.itemData(index, META_ROLE) or ""

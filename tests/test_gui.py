@@ -498,3 +498,19 @@ def test_history_lists_packages_and_remakes(qapp, tmp_path, maven_project):
     h.remake_btn.click()                                     # 같은 내용으로 다시 만들기 -> 배포 ① 에 채움
     assert w.nav.currentRow() == PAGE_DEPLOY and d.step == STEP_PICK and d.tabs.currentIndex() == TAB_FILES
     assert d.files_edit.toPlainText().splitlines() == ["M\tsrc/main/java/com/acme/User.java", "D\tsrc/main/webapp/old.jsp"]
+
+
+def test_theme_switch(qapp, tmp_path, maven_project):
+    from shipkit.gui import theme
+    w = make_window(_config(tmp_path, maven_project))
+    try:
+        w.settings_page.set_theme("dark")                      # 앱 설정에서 바로 바뀌고 이 PC 에 기억
+        assert QSettings().value("ui/theme") == "dark" and theme.is_dark()
+        assert theme.DARK["BG"] in qapp.styleSheet() and qapp.palette().window().color().name() == theme.DARK["BG"].lower()
+        arrow = theme.asset("chevron-down.svg")                 # 스타일시트 그림도 어두운 색 사본
+        assert "shipkit-theme" in arrow and theme.DARK["MUTED"] in open(arrow, encoding="utf-8").read()
+        assert w.settings_page.theme_buttons["dark"].isChecked()
+    finally:
+        w.settings_page.set_theme("light")
+        QSettings().remove("ui/theme")
+    assert not theme.is_dark() and theme.LIGHT["BG"] in qapp.styleSheet()

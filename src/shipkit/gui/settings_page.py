@@ -1,13 +1,16 @@
-"""앱 설정 화면: 패키지 기본 위치, 설정 파일, 기존 툴 가져오기, 처음 실행 안내, 버전 정보."""
+"""앱 설정 화면: 화면 테마, 패키지 기본 위치, 설정 파일, 기존 툴 가져오기, 처음 실행 안내, 버전 정보."""
 from __future__ import annotations
 
 import copy
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QFormLayout, QHBoxLayout, QLineEdit, QScrollArea, QVBoxLayout, QWidget
+from PySide6.QtCore import QSettings, Qt, Signal
+from PySide6.QtWidgets import (
+    QApplication, QButtonGroup, QFormLayout, QHBoxLayout, QLineEdit, QPushButton, QScrollArea, QVBoxLayout, QWidget,
+)
 
 from shipkit import CONFIG_NAME, __app_name__, __tagline__, __version__, config_store
 from shipkit.config import ConfigError
+from shipkit.gui import theme
 from shipkit.gui.context import AppContext
 from shipkit.gui.widgets import Card, Chip, PathField, button, label, open_path, page_header
 
@@ -39,6 +42,24 @@ class SettingsPage(QWidget):
         layout = QVBoxLayout(content)
         layout.setContentsMargins(0, 0, 6, 0)
         layout.setSpacing(14)
+
+        look = Card("화면", "이 PC 에만 저장됩니다. '시스템 설정 따르기'는 Windows 의 밝게/어둡게 설정을 바로 따라갑니다.")
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        self.theme_group = QButtonGroup(self)
+        self.theme_buttons = {}
+        for key, text in theme.SETTINGS:
+            b = QPushButton(text)
+            b.setObjectName("seg")
+            b.setCheckable(True)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.theme_group.addButton(b)
+            self.theme_buttons[key] = b
+            b.clicked.connect(lambda _=False, key=key: self.set_theme(key))
+            row.addWidget(b)
+        row.addStretch(1)
+        look.body.addLayout(row)
+        layout.addWidget(look)
 
         defaults = Card("패키지 기본값", "프로젝트 설정에서 따로 정하지 않으면 이 값을 씁니다.")
         form = _form()
@@ -94,7 +115,17 @@ class SettingsPage(QWidget):
         outer.addWidget(scroll, 1)
         ctx.listeners.append(self.refresh)
 
+    def set_theme(self, key: str) -> None:
+        """테마를 바로 바꾸고 이 PC 에 기억한다 (저장 버튼과 상관없음)."""
+        QSettings().setValue("ui/theme", key)
+        self.theme_buttons[key].setChecked(True)
+        app = QApplication.instance()
+        if app is not None:
+            theme.apply(app, key)
+
     def refresh(self) -> None:
+        current = str(QSettings().value("ui/theme", "system"))
+        self.theme_buttons.get(current, self.theme_buttons["system"]).setChecked(True)
         exists = self.ctx.config_path.is_file()
         self.path_label.setText(str(self.ctx.config_path))
         if self.ctx.load_error:

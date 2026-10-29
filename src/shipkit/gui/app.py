@@ -5,8 +5,8 @@ import sys
 from pathlib import Path
 from typing import Optional, Sequence
 
-from PySide6.QtCore import QCoreApplication, QSize, Qt
-from PySide6.QtGui import QIcon
+from PySide6.QtCore import QCoreApplication, QSettings, QSize, Qt
+from PySide6.QtGui import QGuiApplication, QIcon
 from PySide6.QtWidgets import (
     QApplication, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMainWindow, QStackedWidget,
     QVBoxLayout, QWidget,
@@ -30,6 +30,12 @@ PAGES = (("배포", "nav-deploy.svg"), ("기록", "nav-history.svg"), ("프로�
          ("연결", "nav-connections.svg"), ("앱 설정", "nav-settings.svg"))
 PAGE_DEPLOY, PAGE_HISTORY, PAGE_PROJECTS, PAGE_CONNECTIONS, PAGE_SETTINGS = range(5)
 ADD_PROJECT, IMPORT_LEGACY = "__add__", "__legacy__"  # 프로젝트 목록 맨 아래의 동작 항목
+
+
+def current_theme_setting() -> str:
+    """앱 설정의 화면 테마 (system / light / dark)."""
+    value = str(QSettings().value("ui/theme", "system"))
+    return value if value in dict(theme.SETTINGS) else "system"
 
 
 def default_config_path() -> Path:
@@ -80,6 +86,7 @@ class MainWindow(QMainWindow):
         self.ctx.listeners.append(self._refresh_projects)
         self.ctx.listeners.append(self._refresh_status)
         self.ctx.connection_listeners.append(self._refresh_status)
+        theme.on_change(self._refresh_status)
         self.ctx.project_listeners.append(self._show_project)
         self.ctx.reload()
         self.nav.setCurrentRow(PAGE_DEPLOY if self.ctx.project else (PAGE_PROJECTS if self.ctx.cfg else PAGE_CONNECTIONS))
@@ -125,8 +132,10 @@ class MainWindow(QMainWindow):
         self.nav.setObjectName("nav")
         self.nav.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.nav.setIconSize(QSize(18, 18))
-        for text, icon in PAGES:
-            self.nav.addItem(QListWidgetItem(theme.svg_icon(icon, theme.MUTED, 18, theme.PRIMARY), f"  {text}"))
+        for text, _icon in PAGES:
+            self.nav.addItem(QListWidgetItem(f"  {text}"))
+        self._nav_icons()
+        theme.on_change(self._nav_icons)
         self.nav.currentRowChanged.connect(self.stack.setCurrentIndex)
         self.nav.currentRowChanged.connect(self._on_page)
         side.addWidget(self.nav, 1)
@@ -137,6 +146,10 @@ class MainWindow(QMainWindow):
         self.status_box.setSpacing(4)
         side.addLayout(self.status_box)
         return sidebar
+
+    def _nav_icons(self) -> None:
+        for i, (_text, icon) in enumerate(PAGES):
+            self.nav.item(i).setIcon(theme.svg_icon(icon, "MUTED", 18, "PRIMARY"))
 
     def _refresh_projects(self) -> None:
         """설정을 다시 읽었을 때: 프로젝트 목록을 새로 채운다."""
@@ -248,7 +261,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     QCoreApplication.setApplicationName(__app_name__)
     app = QApplication.instance() or QApplication(list(argv) if argv is not None else sys.argv)
     app.setStyle("Fusion")
-    app.setStyleSheet(theme.stylesheet())
+    theme.apply(app, current_theme_setting())
+    # '시스템 설정 따르기'일 때는 Windows 에서 밝게/어둡게를 바꾸면 바로 따라간다
+    QGuiApplication.styleHints().colorSchemeChanged.connect(
+        lambda *_: current_theme_setting() == "system" and theme.apply(app, "system"))
     window = MainWindow()
     window.show()
     window.first_run()

@@ -270,7 +270,17 @@ def _table(head: List[str], rows: List[List[str]], widths: Optional[List[str]] =
             f"<tr>{ths}</tr>{trs}</table>")
 
 
-def render_html(d: Dict[str, Any]) -> str:
+def render_html(d: Dict[str, Any], colors: Optional[Dict[str, Any]] = None) -> str:
+    """colors: 화면 테마 색 (theme.report_colors). 없으면 밝은 색."""
+    global _T
+    saved, _T = _T, {**_T, **(colors or {})}
+    try:
+        return _render_html(d)
+    finally:
+        _T = saved
+
+
+def _render_html(d: Dict[str, Any]) -> str:
     c = d["counts"]
     tone, text = verdict(d)
     out: List[str] = []
