@@ -205,6 +205,8 @@ QPushButton#step[state="current"], QPushButton#step[state="current"]:disabled {{
 QPushButton#step:disabled {{ border-color: {BORDER}; }}
 QFrame#stepLine {{ background: {BORDER_STRONG}; border: none; }}
 QFrame#preflight {{ background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 10px; }}
+QFrame#override {{ background: {PRIMARY_SOFT}; border-radius: 8px; }}
+QTableWidget:disabled {{ color: {MUTED}; background: #F9FAFB; }}
 QPushButton#seg {{
     background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 15px; min-height: 28px;
     padding: 0 12px; color: {MUTED}; font-weight: 500;

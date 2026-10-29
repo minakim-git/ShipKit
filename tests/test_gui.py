@@ -129,11 +129,12 @@ class FakeProjectDialog:
 
 
 def test_projects_add_edit_delete(qapp, tmp_path, maven_project):
-    path = _config(tmp_path, maven_project, hooks={"post_apply": ["restart"]})
+    path = _config(tmp_path, maven_project, hooks={"post_apply": ["restart"]}, source_encoding="cp949")
     dialogs = FakeDialogs()
     w = make_window(path, dialogs)
     page = w.projects_page
-    assert page.table.rowCount() == 1
+    assert page.name_edit.text() == "erp" and page.status_chip.text() == "설정 정상"
+    assert page.hook_tables["post_apply"].rows() == [{"run": "restart", "when": ""}]
 
     root = tmp_path / "web"
     write(root / PROJECT_FILE, yaml.safe_dump({"preset": "vite", "server_path": "/var/www/web"}))
@@ -143,18 +144,90 @@ def test_projects_add_edit_delete(qapp, tmp_path, maven_project):
     ])
     page.add_project()
     assert any(m[0] == "error" and "root" in m[2] for m in dialogs.messages)
-    assert w.ctx.cfg.projects["web"].preset == "vite" and page.table.rowCount() == 2
+    assert w.ctx.cfg.projects["web"].preset == "vite" and w.ctx.current == "web" and page.loaded_name == "web"
+    assert "팀 공유 · vite" in page.preset_combo.itemText(0) and page.mode_stack.currentIndex() == 1  # sync
+    assert page.server_edit.placeholderText() == "팀 공유: /var/www/web"
 
-    page.table.selectRow(0)  # erp
-    page.dialog_factory = lambda *a: FakeProjectDialog(*a, plan=[("erp", {"root": maven_project.as_posix(),
-                                                                          "server_path": "/app/NEW"})])
-    page.edit_project()
-    raw = config_store.load_raw(path)["projects"]["erp"]
-    assert raw["server_path"] == "/app/NEW" and raw["hooks"] == {"post_apply": ["restart"]}
+    w.ctx.set_project("erp")
+    page.server_edit.setText("/app/NEW")
+    assert page.dirty and page.save_btn.isEnabled() and page.status_chip.text() == "저장하지 않음"
+    page.server_edit.setText("relative/path")                      # 잘못된 값은 저장할 수 없다
+    assert page.status_chip.text() == "설정 오류" and not page.save_btn.isEnabled()
+    page.server_edit.setText("/app/NEW")
+    page.name_edit.setText("erp2")                                 # 이름 바꾸기
+    assert page.save()
+    raw = config_store.load_raw(path)["projects"]
+    assert "erp" not in raw and raw["erp2"]["server_path"] == "/app/NEW" and w.ctx.current == "erp2"
+    assert raw["erp2"]["hooks"] == {"post_apply": ["restart"]} and raw["erp2"]["source_encoding"] == "cp949"
+    assert not page.dirty and list(raw) == ["erp2", "web"]
+    page.server_edit.setText("/app/X")
+    page.server_edit.setText("/app/NEW")                           # 원래 값으로 돌리면 바뀐 것 없음
+    assert not page.dirty and not page.save_btn.isEnabled()
 
-    page.table.selectRow(1)
+    page.server_edit.setText("/app/OTHER")                         # 저장하지 않고 다른 프로젝트로 -> 묻는다
+    dialogs.answer = False
+    w.ctx.set_project("web")
+    assert dialogs.messages[-1][1] == "저장하지 않은 변경" and page.loaded_name == "web" and not page.dirty
+    assert config_store.load_raw(path)["projects"]["erp2"]["server_path"] == "/app/NEW"
+
+    dialogs.answer = True
     page.delete_project()
-    assert "web" not in w.ctx.cfg.projects
+    assert "web" not in w.ctx.cfg.projects and w.ctx.current == "erp2"
+
+
+def test_project_rules_override_and_path_test(qapp, tmp_path, maven_project):
+    path = _config(tmp_path, maven_project)
+    w = make_window(path)
+    page = w.projects_page
+    rules = page.rules_table
+    assert page.rules_override.source == "프리셋 maven" and not rules.table.isEnabled()
+    assert [r["dest"] for r in rules.rows()] == ["WEB-INF/classes", "WEB-INF/classes", "."]
+
+    page.test_input.setPlainText("src/main/java/com/acme/User.java\nsrc/main/webapp/WEB-INF/views/user/list.jsp\n"
+                                 "D\tsrc/main/webapp/old.jsp\nREADME.md")
+    page.run_path_test()
+    tree = page.test_tree
+    items = {tree.topLevelItem(i).text(1).split("  ", 1)[1]: tree.topLevelItem(i) for i in range(tree.topLevelItemCount())}
+    user = items["src/main/java/com/acme/User.java"]
+    assert user.text(0) == "성공" and "→  /app/ROOT/WEB-INF/classes/com/acme/User$Inner.class" in [
+        user.child(i).text(2) for i in range(user.childCount())]
+    assert items["src/main/webapp/old.jsp"].child(0).text(2) == "(삭제)  /app/ROOT/old.jsp"
+    assert items["README.md"].text(0) == "제외"
+
+    page.rules_override.check.setChecked(True)                   # 직접 지정: 프리셋 규칙을 복사해 고친다
+    assert rules.table.isEnabled() and len(rules.rows()) == 3
+    rules.table.item(2, 1).setText("static")
+    page.run_path_test()
+    jsp = [tree.topLevelItem(i) for i in range(tree.topLevelItemCount())
+           if tree.topLevelItem(i).text(1).endswith("list.jsp")][0]
+    assert jsp.child(0).text(2) == "→  /app/ROOT/static/WEB-INF/views/user/list.jsp"   # 저장 전 값으로 시험
+    assert page.save()
+    saved = config_store.load_raw(path)["projects"]["erp"]["rules"]
+    assert saved[2] == {"src": "src/main/webapp", "dest": "static"} and saved[0]["build_dir"] == "target/classes"
+    assert w.ctx.project.rules[2].dest == "static"
+
+    page.rules_override.check.setChecked(False)                  # 다시 프리셋을 따름
+    assert page.save() and "rules" not in config_store.load_raw(path)["projects"]["erp"]
+
+
+def test_project_shared_file_values_and_hook_override(qapp, tmp_path, maven_project):
+    write(maven_project / PROJECT_FILE, yaml.safe_dump({"server_path": "/app/SHARED",
+                                                        "hooks": {"post_apply": ["restart"]}}))
+    path = tmp_path / "shipkit.yaml"
+    path.write_text(yaml.safe_dump({"defaults": {"output_dir": (tmp_path / "out").as_posix()},
+                                    "projects": {"erp": {"root": maven_project.as_posix()}}}), encoding="utf-8")
+    w = make_window(path)
+    page = w.projects_page
+    assert page.server_edit.placeholderText() == "팀 공유: /app/SHARED" and page.basic_note.isVisibleTo(page)
+    assert page.hooks_override.source == "팀 공유" and not page.hook_tables["post_apply"].table.isEnabled()
+    assert page.hook_tables["post_apply"].rows() == [{"run": "restart", "when": ""}]
+    assert page.hook_tables["pre_apply"].table.placeholder.startswith("예: ")
+
+    page.hooks_override.check.setChecked(True)                    # 이 PC 에서는 서버 명령을 끈다
+    page.hook_tables["post_apply"].table.selectRow(0)
+    page.hook_tables["post_apply"].remove_selected()
+    assert page.save() and config_store.load_raw(path)["projects"]["erp"]["hooks"] == {}
+    assert w.ctx.project.hooks == {} and w.ctx.project.server_path == "/app/SHARED"
 
 
 # ---------------------------------------------------------------------- 배포 화면
