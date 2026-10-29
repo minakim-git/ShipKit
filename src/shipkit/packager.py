@@ -11,6 +11,7 @@
     <서버 스크립트>  check / backup / apply / rollback / history
                     리눅스: shipkit.sh (LF), Windows(server_os: windows): shipkit.ps1 (UTF-8 BOM, CRLF)
     report.md       배포 보고서
+    shipkit-record.json  화면의 '기록'용 정보 (출처, 개수, 다시 만들기용 변경 목록)
 """
 from __future__ import annotations
 
@@ -22,7 +23,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from shipkit import hooks, report, script
+from shipkit import history, hooks, report, script
 from shipkit.config import ProjectConfig
 from shipkit.models import Entry, FileChange, SourceInfo, Status, normalize_repo_path
 
@@ -112,6 +113,7 @@ def build_package(project: ProjectConfig, entries: List[Entry], source: SourceIn
                                project.server, project.server_os)
     result.out_dir = out_dir
     report.write_report(out_dir / "report.md", result)
+    history.write_record(result)
 
     if archive:
         result.archive = _make_archive(out_dir, archive, project.script_name)
@@ -138,7 +140,7 @@ def _write_checksums(out_dir: Path, script_name: str) -> None:
     candidates = [p for p in out_dir.rglob("*") if p.is_file()]
     for path in sorted(candidates, key=lambda p: p.relative_to(out_dir).as_posix()):
         rel = path.relative_to(out_dir).as_posix()
-        if rel in (script_name, "report.md", "checksums.sha256"):
+        if rel in (script_name, "report.md", "checksums.sha256", history.RECORD_FILE):
             continue
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         lines.append(f"{digest}  {rel}")

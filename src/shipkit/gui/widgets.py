@@ -4,10 +4,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QRectF, Qt, QUrl
-from PySide6.QtGui import QColor, QDesktopServices, QFont, QPainter, QPainterPath
+from PySide6.QtCore import QRectF, Qt, QTimer, QUrl
+from PySide6.QtGui import QColor, QDesktopServices, QFont, QGuiApplication, QPainter, QPainterPath
 from PySide6.QtWidgets import (
-    QApplication, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QStyle, QStyledItemDelegate,
+    QApplication, QComboBox, QFileDialog, QStyleOptionComboBox, QStylePainter, QFrame, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QStyle, QStyledItemDelegate,
     QStyleOptionViewItem, QVBoxLayout, QWidget,
 )
 
@@ -156,6 +156,57 @@ class StatusDelegate(QStyledItemDelegate):
         size = super().sizeHint(option, index)
         size.setWidth(size.width() + 26)
         return size
+
+
+class CommandRow(QFrame):
+    """서버에서 실행할 명령 한 줄: 번호 · 명령 · 설명 · [복사]"""
+
+    def __init__(self, number: str, command: str, description: str):
+        super().__init__()
+        self.setObjectName("cmdRow")
+        self.command = command
+        row = QHBoxLayout(self)
+        row.setContentsMargins(10, 4, 6, 4)
+        row.setSpacing(12)
+        num = QLabel(number)
+        num.setObjectName("stepNum")
+        num.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        num.setFixedSize(24, 24)
+        code = QLabel(command)
+        code.setObjectName("code")
+        code.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.copy_btn = button("복사", "ghost")
+        self.copy_btn.setIcon(theme.svg_icon("copy.svg", theme.PRIMARY, 16))
+        self.copy_btn.clicked.connect(self.copy)
+        row.addWidget(num)
+        row.addWidget(code)
+        row.addSpacing(8)
+        row.addWidget(label(description, "muted", wrap=False), 1)
+        row.addWidget(self.copy_btn)
+
+    def copy(self) -> None:
+        QGuiApplication.clipboard().setText(self.command)
+        self.copy_btn.setText("복사됨")
+        QTimer.singleShot(1500, lambda: self.copy_btn.setText("복사"))
+
+
+class ElidedComboBox(QComboBox):
+    """고른 글자가 칸보다 길면 가운데를 '…'로 줄여 보여 준다 (예: harami_gro…kepcomcs)."""
+
+    def paintEvent(self, event) -> None:
+        painter = QStylePainter(self)
+        opt = QStyleOptionComboBox()
+        self.initStyleOption(opt)
+        painter.drawComplexControl(QStyle.ComplexControl.CC_ComboBox, opt)
+        field = self.style().subControlRect(QStyle.ComplexControl.CC_ComboBox, opt,
+                                            QStyle.SubControl.SC_ComboBoxEditField, self)
+        opt.currentText = self.fontMetrics().elidedText(opt.currentText, Qt.TextElideMode.ElideMiddle, field.width() - 4)
+        painter.drawControl(QStyle.ControlElement.CE_ComboBoxLabel, opt)
+
+    def showPopup(self) -> None:
+        widest = max((self.fontMetrics().horizontalAdvance(self.itemText(i)) for i in range(self.count())), default=0)
+        self.view().setMinimumWidth(max(self.width(), widest + 48))  # 펼친 목록에서는 전체 이름
+        super().showPopup()
 
 
 class PathField(QWidget):

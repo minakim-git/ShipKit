@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from collections import Counter
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, List, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 from shipkit import __app_name__, __tagline__, __version__
 from shipkit.models import ChangeType, Status
@@ -153,25 +153,31 @@ def render(result: "PackageResult") -> str:
 
 def server_steps(result: "PackageResult") -> Tuple[str, List[Tuple[str, str]], Tuple[str, str]]:
     """화면용 서버 반영 절차: (올리기 안내, [(명령, 설명)...], (원복 명령, 설명)). 아래 보고서 절차와 같은 내용."""
-    p, name = result.project, (result.out_dir.name if result.out_dir else "<패키지 폴더>")
-    if p.server_os == "windows":
-        run = f"powershell -ExecutionPolicy Bypass -File .\\{p.script_name}"
+    p = result.project
+    name = result.out_dir.name if result.out_dir else "<패키지 폴더>"
+    return server_steps_for(name, p.server_path, p.server_os, p.script_name, result.archive_kind)
+
+
+def server_steps_for(name: str, server_path: str, server_os: str, script_name: str,
+                     archive_kind: Optional[str]) -> Tuple[str, List[Tuple[str, str]], Tuple[str, str]]:
+    if server_os == "windows":
+        run = f"powershell -ExecutionPolicy Bypass -File .\\{script_name}"
         upload = f"{name} 폴더를 서버의 배포 경로 밖(예: D:\\deploy)에 통째로 복사합니다."
         steps = [(f"cd D:\\deploy\\{name}", "패키지 폴더로 이동")]
-        if result.archive_kind == "zip":
+        if archive_kind == "zip":
             steps.insert(0, (f"Expand-Archive {name}.zip", "압축 풀기"))
         steps += [(f"{run} check", "반영 내용 확인 (서버 변경 없음)"), (f"{run} backup", "기존 파일 보관"),
-                  (f"{run} apply", f"{p.server_path} 에 반영")]
+                  (f"{run} apply", f"{server_path} 에 반영")]
         return upload, steps, (f"{run} rollback", "문제가 생기면 apply 이전으로 되돌리기")
-    sh = p.script_name
+    sh = script_name
     upload = f"{name} 폴더를 서버의 배포 경로 밖(예: ~/deploy)에 통째로 올립니다."
     steps = [(f"cd ~/deploy/{name}", "패키지 폴더로 이동")]
-    if result.archive_kind == "tar":
+    if archive_kind == "tar":
         steps.insert(0, (f"tar -xzf {name}.tar.gz", "압축 풀기"))
     else:
         steps.append((f"chmod +x {sh}", "실행 권한 (처음 한 번)"))
     steps += [(f"./{sh} check", "반영 내용 확인 (서버 변경 없음)"), (f"./{sh} backup", "기존 파일 보관"),
-              (f"./{sh} apply", f"{p.server_path} 에 반영")]
+              (f"./{sh} apply", f"{server_path} 에 반영")]
     return upload, steps, (f"./{sh} rollback", "문제가 생기면 apply 이전으로 되돌리기")
 
 

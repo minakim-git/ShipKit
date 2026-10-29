@@ -223,6 +223,21 @@ QFrame#cmdRow {{ background: #F9FAFB; border: 1px solid {BORDER}; border-radius:
 QLabel#stepNum {{ background: {PRIMARY_SOFT}; color: {PRIMARY}; border-radius: 12px; font-size: 9pt; font-weight: 700; }}
 QLabel#doneTitle {{ font-size: 15pt; font-weight: 700; }}
 
+/* ---------- 기록 ---------- */
+QListWidget#records {{ background: transparent; border: none; outline: 0; }}
+QListWidget#records::item {{ border-radius: 8px; margin: 1px 0; }}
+QListWidget#records::item:hover {{ background: {HOVER}; }}
+QListWidget#records::item:selected {{ background: {PRIMARY_SOFT}; }}
+QListWidget#fileList {{
+    background: {SURFACE}; border: none; outline: 0;
+    font-family: "Cascadia Mono", Consolas, "Malgun Gothic"; font-size: 9.5pt;
+}}
+QListWidget#fileList::item {{ padding: 4px 6px; border-bottom: 1px solid #F2F4F7; }}
+QLabel#rowTitle {{ font-weight: 600; }}
+QLabel#detailTitle {{ font-size: 14pt; font-weight: 700; }}
+QLabel#refLabel {{ color: {PRIMARY}; font-weight: 600; }}
+QLabel#emptyText {{ color: {MUTED}; font-size: 11pt; }}
+
 /* ---------- 스크롤바·진행 표시 ---------- */
 QScrollArea {{ background: transparent; border: none; }}
 QScrollBar:vertical {{ background: transparent; width: 10px; margin: 2px; }}

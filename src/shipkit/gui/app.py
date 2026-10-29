@@ -8,7 +8,7 @@ from typing import Optional, Sequence
 from PySide6.QtCore import QCoreApplication, QSize, Qt
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
-    QApplication, QComboBox, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMainWindow, QStackedWidget,
+    QApplication, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMainWindow, QStackedWidget,
     QVBoxLayout, QWidget,
 )
 
@@ -17,14 +17,16 @@ from shipkit.config import ConfigError, find_config, user_config_path
 from shipkit.gui import theme
 from shipkit.gui.context import AppContext
 from shipkit.gui.deploy_page import DeployPage
+from shipkit.gui.history_page import HistoryPage
 from shipkit.gui.projects_page import ProjectsPage
 from shipkit.gui.settings_page import SettingsPage
 from shipkit.gui.tasks import TaskRunner
-from shipkit.gui.widgets import Dialogs, label
+from shipkit.gui.widgets import Dialogs, ElidedComboBox, label
 from shipkit.secrets import token_source
 
-PAGES = (("배포", "nav-deploy.svg"), ("프로젝트", "nav-projects.svg"), ("설정", "nav-settings.svg"))
-PAGE_DEPLOY, PAGE_PROJECTS, PAGE_SETTINGS = range(3)
+PAGES = (("배포", "nav-deploy.svg"), ("기록", "nav-history.svg"), ("프로젝트", "nav-projects.svg"),
+         ("설정", "nav-settings.svg"))
+PAGE_DEPLOY, PAGE_HISTORY, PAGE_PROJECTS, PAGE_SETTINGS = range(4)
 ADD_PROJECT, IMPORT_LEGACY = "__add__", "__legacy__"  # 프로젝트 목록 맨 아래의 동작 항목
 
 
@@ -47,9 +49,11 @@ class MainWindow(QMainWindow):
 
         self.stack = QStackedWidget()
         self.deploy_page = DeployPage(self.ctx)
+        self.history_page = HistoryPage(self.ctx)
         self.projects_page = ProjectsPage(self.ctx)
         self.settings_page = SettingsPage(self.ctx)
-        for page in (self.deploy_page, self.projects_page, self.settings_page):
+        self.history_page.remake_requested.connect(self.remake)
+        for page in (self.deploy_page, self.history_page, self.projects_page, self.settings_page):
             self.stack.addWidget(page)
 
         central = QWidget()
@@ -102,7 +106,7 @@ class MainWindow(QMainWindow):
         box.setContentsMargins(16, 0, 16, 0)
         box.setSpacing(5)
         box.addWidget(label("작업할 프로젝트", "sideCaption", wrap=False))
-        self.project_switcher = QComboBox()
+        self.project_switcher = ElidedComboBox()
         self.project_switcher.setObjectName("projectSwitcher")
         self.project_switcher.setCursor(Qt.CursorShape.PointingHandCursor)
         self.project_switcher.activated.connect(self._on_switch)
@@ -119,6 +123,7 @@ class MainWindow(QMainWindow):
         for text, icon in PAGES:
             self.nav.addItem(QListWidgetItem(theme.svg_icon(icon, theme.MUTED, 18, theme.PRIMARY), f"  {text}"))
         self.nav.currentRowChanged.connect(self.stack.setCurrentIndex)
+        self.nav.currentRowChanged.connect(self._on_page)
         side.addWidget(self.nav, 1)
 
         # 연결 상태 (설정 화면에서 바꾼 내용이 바로 반영된다)
@@ -177,6 +182,7 @@ class MainWindow(QMainWindow):
         p = self.ctx.project
         index = self.project_switcher.findData(self.ctx.current) if p else -1
         self.project_switcher.setCurrentIndex(index)
+        self.project_switcher.setToolTip(self.ctx.current or "")
         if index < 0:
             self.project_switcher.setPlaceholderText("프로젝트 없음")
         server = "Windows 서버" if p and p.server_os == "windows" else "리눅스 서버"
@@ -195,8 +201,17 @@ class MainWindow(QMainWindow):
         self.ctx.set_project(data)
 
     # ------------------------------------------------------------------ 이동
+    def _on_page(self, page: int) -> None:
+        if page == PAGE_HISTORY:  # 배포 화면에서 방금 만든 패키지가 바로 보이게
+            self.history_page.refresh()
+
     def go(self, page: int) -> None:
         self.nav.setCurrentRow(page)
+
+    def remake(self, record) -> None:
+        """기록의 [같은 내용으로 다시 만들기]: 배포 화면 ① 고르기에 같은 MR·파일을 채운다."""
+        self.deploy_page.prefill(record)
+        self.go(PAGE_DEPLOY)
 
     def first_run(self) -> None:
         """설정 파일이 없을 때: 기존 툴 설정 가져오기를 권하고, 아니면 설정 화면으로 안내한다."""

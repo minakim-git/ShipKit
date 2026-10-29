@@ -7,8 +7,8 @@ from __future__ import annotations
 import re
 from typing import Callable, Dict, List, Optional, Tuple
 
-from PySide6.QtCore import QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QGuiApplication
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QCheckBox, QComboBox, QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QPlainTextEdit, QProgressBar, QPushButton, QStackedWidget, QTableWidget,
@@ -19,7 +19,7 @@ from shipkit import packager, preflight, report, workflow
 from shipkit.config import ProjectConfig
 from shipkit.gui import theme
 from shipkit.gui.context import AppContext
-from shipkit.gui.widgets import Card, Chip, StatusDelegate, button, label, open_path
+from shipkit.gui.widgets import Card, Chip, CommandRow, StatusDelegate, button, label, open_path
 from shipkit.models import FileChange, SourceInfo, Status
 from shipkit.sources import git_local, providers
 
@@ -88,38 +88,6 @@ class Stepper(QWidget):
             b.setCursor(Qt.CursorShape.PointingHandCursor if b.isEnabled() else Qt.CursorShape.ArrowCursor)
             b.style().unpolish(b)
             b.style().polish(b)
-
-
-class CommandRow(QFrame):
-    """서버에서 실행할 명령 한 줄: 번호 · 명령 · 설명 · [복사]"""
-
-    def __init__(self, number: str, command: str, description: str):
-        super().__init__()
-        self.setObjectName("cmdRow")
-        self.command = command
-        row = QHBoxLayout(self)
-        row.setContentsMargins(10, 4, 6, 4)
-        row.setSpacing(12)
-        num = QLabel(number)
-        num.setObjectName("stepNum")
-        num.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        num.setFixedSize(24, 24)
-        code = QLabel(command)
-        code.setObjectName("code")
-        code.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.copy_btn = button("복사", "ghost")
-        self.copy_btn.setIcon(theme.svg_icon("copy.svg", theme.PRIMARY, 16))
-        self.copy_btn.clicked.connect(self.copy)
-        row.addWidget(num)
-        row.addWidget(code)
-        row.addSpacing(8)
-        row.addWidget(label(description, "muted", wrap=False), 1)
-        row.addWidget(self.copy_btn)
-
-    def copy(self) -> None:
-        QGuiApplication.clipboard().setText(self.command)
-        self.copy_btn.setText("복사됨")
-        QTimer.singleShot(1500, lambda: self.copy_btn.setText("복사"))
 
 
 class DeployPage(QWidget):
@@ -259,7 +227,8 @@ class DeployPage(QWidget):
         layout.addLayout(bar)
         self.req_table = _table(["", "번호", "제목", "작성자", "머지 / 수정 시각"])
         self.req_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        self.req_table.setColumnWidth(0, 44)
+        for col, width in ((0, 44), (1, 76), (3, 96), (4, 150)):  # 목록을 불러오기 전에도 제목이 잘리지 않게
+            self.req_table.setColumnWidth(col, width)
         self.req_table.setTextElideMode(Qt.TextElideMode.ElideRight)
         self.req_table.cellClicked.connect(self._toggle_row)
         self.req_table.itemChanged.connect(self._invalidate)
@@ -459,6 +428,22 @@ class DeployPage(QWidget):
         self.go_step(STEP_PICK)
         self.run_preflight()
 
+    def prefill(self, record) -> None:
+        """기록에서 [같은 내용으로 다시 만들기]: 같은 MR/PR 번호나 같은 파일 목록을 ① 고르기에 채운다.
+        파일은 지금 로컬 저장소에서 다시 가져오므로, 그 사이 바뀐 내용이 있으면 새 내용이 들어간다."""
+        self.start_over()
+        kind = record.request_kind
+        if record.requests and kind and self.tabs.isTabVisible(TAB_REQUESTS):
+            self.service_combo.setCurrentIndex(max(0, self.service_combo.findData(kind)))
+            self.tabs.setCurrentIndex(TAB_REQUESTS)
+            self.extra_edit.setText(" ".join(str(r["iid"]) for r in record.requests))
+        elif record.source_kind == "build" and self.tabs.isTabVisible(TAB_BUILD):
+            self.tabs.setCurrentIndex(TAB_BUILD)
+        else:
+            self.tabs.setCurrentIndex(TAB_FILES)
+            self.files_edit.setPlainText("\n".join(record.changes))
+        self._update_pick_summary()
+
     # ------------------------------------------------------------------ 프로젝트
     def _on_project_changed(self) -> None:
         cfg, p = self.ctx.cfg, self.project
@@ -607,8 +592,10 @@ class DeployPage(QWidget):
                     item.setForeground(QColor(theme.PRIMARY))
                 self.req_table.setItem(row, col, item)
         self.req_table.blockSignals(False)
+        header = self.req_table.horizontalHeader()
         for col in (1, 3, 4):
             self.req_table.resizeColumnToContents(col)
+            self.req_table.setColumnWidth(col, max(self.req_table.columnWidth(col), header.sectionSizeHint(col)))
         self.req_table.setColumnWidth(0, 44)
         self.req_hint.setText("조회된 항목이 없습니다. 상태(머지됨/열림)나 검색어를 바꿔 보세요." if not items else
                               f"{len(items)}개 · 행을 누르면 선택됩니다. 여러 개를 고르면 머지된 순서대로 합칩니다.")

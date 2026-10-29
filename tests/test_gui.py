@@ -12,7 +12,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from shipkit import PROJECT_FILE, config_store  # noqa: E402
 from shipkit.config import ConfigError  # noqa: E402
-from shipkit.gui.app import ADD_PROJECT, PAGE_DEPLOY, PAGE_PROJECTS, PAGE_SETTINGS, MainWindow  # noqa: E402
+from shipkit.gui.app import ADD_PROJECT, PAGE_DEPLOY, PAGE_HISTORY, PAGE_PROJECTS, PAGE_SETTINGS, MainWindow  # noqa: E402
 from shipkit.gui.deploy_page import (  # noqa: E402
     STEP_DONE, STEP_PICK, STEP_REVIEW, TAB_BUILD, TAB_FILES, TAB_REQUESTS,
 )
@@ -273,3 +273,25 @@ def test_project_switcher(qapp, tmp_path, maven_project):
     w.projects_page.add_project = lambda: opened.append(True)
     sw.activated.emit(sw.findData(ADD_PROJECT))      # 동작 항목: 프로젝트 추가 창을 열고, 선택은 그대로
     assert opened and w.nav.currentRow() == PAGE_PROJECTS and sw.currentData() == "alpha"
+
+
+def test_history_lists_packages_and_remakes(qapp, tmp_path, maven_project):
+    w = make_window(_config(tmp_path, maven_project))
+    d, h = w.deploy_page, w.history_page
+    w.go(PAGE_HISTORY)
+    assert h.body.currentWidget() is h.empty                  # 아직 패키지가 없음
+    w.go(PAGE_DEPLOY)
+    d.files_edit.setPlainText("src/main/java/com/acme/User.java\nD\tsrc/main/webapp/old.jsp")
+    d.preview()
+    d.make_package()
+    w.go(PAGE_HISTORY)                                       # 화면을 열면 새로 만든 패키지가 보인다
+    assert h.list.count() == 1 and h.current.path == d.last_result.out_dir
+    assert h.tabs.tabText(0) == "파일 4" and h.files.item(3).text() == "(삭제) old.jsp"
+    h.search.setText("user$inner")                           # 파일 경로로 찾기
+    assert not h.list.item(0).isHidden()
+    h.search.setText("nothing-like-this")
+    assert h.list.item(0).isHidden() and h.count_label.text() == "0개 찾음 / 전체 1개"
+
+    h.remake_btn.click()                                     # 같은 내용으로 다시 만들기 -> 배포 ① 에 채움
+    assert w.nav.currentRow() == PAGE_DEPLOY and d.step == STEP_PICK and d.tabs.currentIndex() == TAB_FILES
+    assert d.files_edit.toPlainText().splitlines() == ["M\tsrc/main/java/com/acme/User.java", "D\tsrc/main/webapp/old.jsp"]
