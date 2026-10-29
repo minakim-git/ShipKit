@@ -126,6 +126,26 @@ def test_checksum_mismatch_blocks(maven_project, tmp_path):
     assert code != 0 and not (pkg / "backup").exists()
 
 
+def _translated_sha256sum(tmp_path):
+    """한국어 로케일 서버처럼 'OK' 대신 '성공'을 출력하는 sha256sum. LC_ALL 을 무시하고 종료 코드는 그대로 둔다."""
+    fake = tmp_path / "fake_sha256sum.sh"
+    write(fake, 'sha256sum() { local out rc; out="$(command sha256sum "$@" 2>&1)"; rc=$?\n'
+                '  printf "%s\\n" "$out" | sed "s/: OK$/: 성공/; s/: FAILED$/: 실패/"; return $rc; }\n')
+    return {"BASH_ENV": fake.as_posix()}  # 비대화형 bash 가 스크립트 실행 전에 읽는다
+
+
+@needs_bash
+def test_checksum_ignores_translated_output(maven_project, tmp_path):
+    pkg = build(maven_project, tmp_path).out_dir
+    server = _server(tmp_path)
+    env = _translated_sha256sum(tmp_path)
+    code, out = run_deploy(pkg, "check", server.as_posix(), env=env)
+    assert code == 0, out
+    (pkg / "files/WEB-INF/views/user/list.jsp").write_text("tampered", encoding="utf-8")
+    code, out = run_deploy(pkg, "check", server.as_posix(), env=env)
+    assert code != 0 and "checksums.sha256 불일치" in out and "list.jsp" in out
+
+
 @needs_bash
 def test_hooks_need_confirmation_and_run_with_yes(maven_project, tmp_path):
     pkg = build(maven_project, tmp_path, hooks={

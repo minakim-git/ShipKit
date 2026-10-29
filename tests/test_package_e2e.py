@@ -66,11 +66,11 @@ def test_package_layout(maven_project, tmp_path):
     assert again.out_dir.name == "2026-10-27-0900_2"
 
 
-def run_deploy(pkg: Path, *args, home: Path = None):
+def run_deploy(pkg: Path, *args, home: Path = None, env: dict = None):
     """서버 스크립트 실행. 배포 이력·잠금이 실제 홈/임시 폴더에 남지 않도록 HOME·TMPDIR 을 격리한다."""
     sandbox = home or (pkg.parent / "_home")
     sandbox.mkdir(parents=True, exist_ok=True)
-    env = dict(os.environ, HOME=sandbox.as_posix(), TMPDIR=sandbox.as_posix())
+    env = dict(os.environ, HOME=sandbox.as_posix(), TMPDIR=sandbox.as_posix(), **(env or {}))
     proc = subprocess.run([BASH, (pkg / SCRIPT_NAME).as_posix(), *args], capture_output=True,
                           stdin=subprocess.DEVNULL, env=env)
     return proc.returncode, proc.stdout.decode("utf-8", "replace") + proc.stderr.decode("utf-8", "replace")

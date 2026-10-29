@@ -73,7 +73,7 @@ verify_package() {
         warn "checksums.sha256 이 없어 패키지 검증을 건너뜁니다."
         return 0
     fi
-    local tool bad
+    local tool out
     if command -v sha256sum >/dev/null 2>&1; then
         tool="sha256sum"
     elif command -v shasum >/dev/null 2>&1; then
@@ -82,11 +82,12 @@ verify_package() {
         warn "sha256sum/shasum 이 없어 패키지 검증을 건너뜁니다."
         return 0
     fi
-    bad="$(cd "$SCRIPT_DIR" && $tool -c checksums.sha256 2>&1 | grep -v ': OK$')"
-    if [ -n "$bad" ]; then
-        echo "$bad" | sed 's/^/  /' >&2
-        die "패키지 파일이 손상되었거나 바뀌었습니다 (checksums.sha256 불일치). 패키지를 다시 올려주세요."
+    # 성공 여부는 종료 코드로 판정한다. 출력 문구는 계정 언어 설정에 따라 번역되므로(OK/성공) 실패 줄을 보여주는 데만 쓴다.
+    if out="$(cd "$SCRIPT_DIR" && LC_ALL=C $tool -c checksums.sha256 2>&1)"; then
+        return 0
     fi
+    echo "$out" | grep -v ': OK$' | sed 's/^/  /' >&2
+    die "패키지 파일이 손상되었거나 바뀌었습니다 (checksums.sha256 불일치). 패키지를 다시 올려주세요."
 }
 
 # ------------------------------------------------------------------ 동시 실행 잠금
