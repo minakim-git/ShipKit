@@ -11,6 +11,9 @@
                                     (sync 모드 프로젝트는 변경 출처 없이도 실행 가능)
   shipkit presets                   사용 가능한 프리셋 목록
   shipkit token   set | delete | status  [gitlab | github]
+  shipkit deploy  [-p 프로젝트] --server 이름 [--package 폴더] [--apply --hooks|--no-hooks | --rollback]
+                                    설정한 서버에 패키지를 올리고 check (--apply: backup·apply 까지)
+  shipkit server-status [-p 프로젝트] --server 이름   서버의 배포 이력과 지금 반영된 패키지
 
 종료 코드: 0 성공, 1 처리 실패(또는 --strict 경고), 2 설정·사용법 오류
 """
@@ -20,6 +23,7 @@ import argparse
 import getpass
 import logging
 import sqlite3
+import os
 import sys
 from importlib import resources
 from pathlib import Path
@@ -27,7 +31,7 @@ from typing import List, Optional, Sequence, Tuple
 
 from shipkit import (
     CLI_NAME, PROJECT_FILE, __app_name__, __tagline__, __version__, legacy, mapper, packager,
-    projectfile, sync, workflow,
+    projectfile, remote, remote_cli, sync, workflow,
 )
 from shipkit.config import (
     _GITHUB_REPO_RE, DEFAULT_CONFIG_NAME, PRESET_ALIASES, PRESETS, Config, ConfigError, ProjectConfig,
@@ -436,6 +440,48 @@ def cmd_token(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+# ---------------------------------------------------------------------- deploy / server-status (서버에 바로 반영)
+def _remote_target(args: argparse.Namespace):
+    cfg = load_config(args.config)
+    project = cfg.project(args.project)
+    profile = remote_cli.find_server(project, args.server)
+    remote_cli.ensure_host_key(profile, getattr(args, "accept_host_key", False))
+    secrets = remote_cli.collect_secrets(profile, os.environ, save=getattr(args, "save_password", False))
+    return project, profile, secrets
+
+
+def cmd_deploy(args: argparse.Namespace) -> int:
+    if args.apply and args.rollback:
+        raise UsageError("--apply 와 --rollback 은 함께 쓸 수 없습니다.")
+    action = "rollback" if args.rollback else ("apply" if args.apply else "check")
+    run_hooks = True if args.hooks else (False if args.no_hooks else None)
+    if action == "rollback" and run_hooks is None:
+        run_hooks = False
+    if action == "apply" and run_hooks is None:  # 올리기 전에 미리 확인 (올린 뒤에 멈추면 헛수고)
+        raise UsageError("서버 명령(hooks)을 함께 실행할지 --hooks 또는 --no-hooks 로 정하세요.")
+    try:
+        project, profile, secrets = _remote_target(args)
+        package = remote_cli.find_package(project, args.package)
+        print(f"패키지 {package.name}  ->  {profile.name} ({profile.address})  [{action}]")
+        return EXIT_OK if remote_cli.deploy(project, profile, package, action, secrets, run_hooks) == 0 else EXIT_FAIL
+    except remote_cli.DeployError as e:
+        raise UsageError(str(e)) from e
+    except remote.RemoteError as e:
+        print(f"[오류] {e}", file=sys.stderr)
+        return EXIT_FAIL
+
+
+def cmd_server_status(args: argparse.Namespace) -> int:
+    try:
+        project, profile, secrets = _remote_target(args)
+        return remote_cli.server_status(project, profile, secrets, limit=args.limit)
+    except remote_cli.DeployError as e:
+        raise UsageError(str(e)) from e
+    except remote.RemoteError as e:
+        print(f"[오류] {e}", file=sys.stderr)
+        return EXIT_FAIL
+
+
 # ---------------------------------------------------------------------- main
 def build_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
@@ -505,6 +551,23 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("presets", parents=[common], help="사용 가능한 프리셋 목록")
     p.set_defaults(func=cmd_presets)
+
+    for name, func, help_text in (("deploy", cmd_deploy, "설정한 서버에 패키지를 올리고 check (--apply 로 반영, --rollback 으로 되돌리기)"),
+                                  ("server-status", cmd_server_status, "서버의 배포 이력과 지금 반영된 패키지")):
+        p = sub.add_parser(name, parents=[common], help=help_text)
+        p.add_argument("-p", "--project", help="프로젝트 이름")
+        p.add_argument("--server", help="프로젝트 설정의 서버 연결 이름 (하나뿐이면 생략)")
+        p.add_argument("--accept-host-key", action="store_true", help="처음 접속하는 서버의 지문을 묻지 않고 기억 (자동화용)")
+        p.add_argument("--save-password", action="store_true", help="터미널에서 입력한 비밀번호를 OS 키링에 저장")
+        if name == "deploy":
+            p.add_argument("--package", metavar="FOLDER", help="올릴 패키지 폴더 (기본: 가장 최근에 만든 패키지)")
+            p.add_argument("--apply", action="store_true", help="check 뒤에 backup → apply 까지 실행")
+            p.add_argument("--rollback", action="store_true", help="올려 둔 패키지 폴더에서 rollback 실행")
+            p.add_argument("--hooks", action="store_true", help="서버 명령(hooks)을 묻지 않고 함께 실행")
+            p.add_argument("--no-hooks", action="store_true", help="서버 명령(hooks)을 실행하지 않음")
+        else:
+            p.add_argument("--limit", type=int, default=20, help="보여 줄 최근 이력 수")
+        p.set_defaults(func=func)
 
     p = sub.add_parser("token", parents=[common], help="GitLab/GitHub 토큰 관리 (OS 키링)")
     p.add_argument("action", choices=["set", "delete", "status"])

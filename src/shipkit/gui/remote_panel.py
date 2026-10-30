@@ -25,23 +25,7 @@ from shipkit.secrets import SecretError, delete_secret, get_secret, server_secre
 HOOK_TEXT = {"pre_apply": "반영 전", "post_apply": "반영 후", "post_rollback": "되돌린 후"}
 
 
-def _secret_slots(profile: ServerProfile) -> List[Tuple[str, str, str]]:
-    """이 서버에 필요한 비밀번호: (용도, 키링 키, 물어볼 문구)."""
-    slots = []
-    p = profile
-    if p.auth == "password":
-        slots.append(("login", server_secret_key("login", p.user, p.host, p.port), f"{p.address} 접속 비밀번호"))
-    elif p.key_file and remote.key_needs_passphrase(p.key_file):
-        slots.append(("login", server_secret_key("passphrase", p.user, p.host, p.port),
-                      f"SSH 키 암호 ({p.key_file})"))
-    needs_run = p.run_as and (p.run_password or (p.chown and p.user != "root"))
-    if needs_run:
-        if p.run_with == "su" and p.run_password:
-            key, text = server_secret_key(f"su:{p.run_as}", p.user, p.host, p.port), f"{p.run_as} 계정 비밀번호 (su)"
-        else:
-            key, text = server_secret_key("sudo", p.user, p.host, p.port), f"{p.user} 계정의 sudo 비밀번호"
-        slots.append(("run", key, text))
-    return slots
+_secret_slots = remote.secret_slots   # 어떤 비밀번호가 필요한지는 명령어(shipkit deploy)와 같은 규칙
 
 
 class RemoteClient:

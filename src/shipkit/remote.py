@@ -113,6 +113,26 @@ class Secrets:
     run: Optional[str] = None     # 다른 계정으로 실행할 때 sudo·su 비밀번호
 
 
+def secret_slots(profile: ServerProfile) -> List[Tuple[str, str, str]]:
+    """이 서버에 필요한 비밀번호: (용도 login/run, 키링 키, 물어볼 문구). 화면과 명령어가 같은 키로 저장·조회한다."""
+    from shipkit.secrets import server_secret_key
+    slots = []
+    p = profile
+    if p.auth == "password":
+        slots.append(("login", server_secret_key("login", p.user, p.host, p.port), f"{p.address} 접속 비밀번호"))
+    elif p.key_file and key_needs_passphrase(p.key_file):
+        slots.append(("login", server_secret_key("passphrase", p.user, p.host, p.port),
+                      f"SSH 키 암호 ({p.key_file})"))
+    needs_run = p.run_as and (p.run_password or (p.chown and p.user != "root"))
+    if needs_run:
+        if p.run_with == "su" and p.run_password:
+            key, text = server_secret_key(f"su:{p.run_as}", p.user, p.host, p.port), f"{p.run_as} 계정 비밀번호 (su)"
+        else:
+            key, text = server_secret_key("sudo", p.user, p.host, p.port), f"{p.user} 계정의 sudo 비밀번호"
+        slots.append(("run", key, text))
+    return slots
+
+
 class Connection(Protocol):
     def home(self) -> str: ...
     def upload(self, local_dir: Path, remote_dir: str, progress: Optional[Progress] = None) -> None: ...

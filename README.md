@@ -368,6 +368,16 @@ GUI 테스트는 화면 없이(`QT_QPA_PLATFORM=offscreen`) 실제 위젯을 조
 - 올리고 확인(check)이 끝나면 로그 위에 결과가 표로 정리됩니다: apply 때 바뀌는 파일 수와, 신규·변경·동일·삭제예정·이미없음·정리예정별 파일 목록.
 - 반영·되돌리기 전에 항상 확인을 받고, 서버 명령(hooks)이 있으면 함께 실행할지 묻습니다.
 - 진행 중에는 **취소** 버튼으로 올리기·실행을 끊을 수 있습니다(서버에서 이미 시작된 명령은 끝까지 돌 수 있습니다). 서버 출력이 10분 동안 없으면 네트워크가 끊긴 것으로 보고 저절로 중단합니다.
+- 명령어로도 같은 일을 할 수 있습니다(Jenkins 등). 처음 접속하는 서버는 `--accept-host-key`로 지문을 기억하고, 비밀번호는 환경변수 `SHIPKIT_SSH_PASSWORD`(접속)·`SHIPKIT_RUN_PASSWORD`(sudo/su)나 화면에서 저장한 키링 값을 씁니다. 터미널에서는 없으면 물어봅니다.
+
+  ```bash
+  shipkit deploy -p erp --server 개발                       # 가장 최근 패키지를 올리고 check 만
+  shipkit deploy -p erp --server 개발 --apply --no-hooks    # check 뒤 backup → apply (--hooks: 서버 명령도 실행)
+  shipkit deploy -p erp --server 개발 --rollback            # 올려 둔 패키지 폴더에서 rollback
+  shipkit deploy -p erp --server 개발 --package D:/deploy/erp/2026-10-30-1523   # 특정 패키지
+  shipkit server-status -p erp --server 개발               # 지금 반영된 패키지와 최근 이력
+  ```
+
 - 올리고 실행한 결과는 패키지의 `shipkit-record.json`에 남아 **기록** 화면에서 보입니다. 기록 화면의 **서버 상태**는 서버의 `~/.shipkit/history.log`(설정 `server.history_file`)를 실행 계정으로 읽어 지금 반영된 패키지와 최근 이력을 보여 주고, **서버에서 되돌리기**는 그 패키지의 서버 폴더에서 `shipkit.sh rollback`을 실행합니다.
 - 지금은 리눅스 서버만 지원합니다.
 
