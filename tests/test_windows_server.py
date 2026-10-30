@@ -164,6 +164,23 @@ def test_ps_full_cycle_with_hooks(maven_project, tmp_path):
 
 
 @needs_powershell
+def test_ps_rollback_removes_folders_apply_created(maven_project, tmp_path):
+    """rollback 은 apply 가 새로 만든 폴더만 비어 있으면 지우고, 원래 있던 빈 폴더는 둔다."""
+    pkg = build_windows(maven_project, tmp_path).out_dir
+    server = tmp_path / "server root"
+    write(server / "WEB-INF/classes/com/acme/User.class", "OLD")   # views 폴더는 없음 -> apply 가 만든다
+    (server / "keep-empty").mkdir()
+    sandbox = tmp_path / "sandbox"
+    assert run_ps(pkg, "backup", str(server), sandbox=sandbox)[0] == 0
+    code, out = run_ps(pkg, "apply", str(server), "-NoHooks", sandbox=sandbox)
+    assert code == 0 and (server / "WEB-INF/views/user/list.jsp").is_file(), out
+    code, out = run_ps(pkg, "rollback", str(server), "-NoHooks", sandbox=sandbox)
+    assert code == 0 and "빈 폴더 정리 3개" in out, out              # WEB-INF/views/user, WEB-INF/views, js
+    assert not (server / "WEB-INF/views").exists() and not (server / "js").exists() and (server / "keep-empty").is_dir()
+    assert (server / "WEB-INF/classes/com/acme/User.class").read_text(encoding="utf-8") == "OLD"
+
+
+@needs_powershell
 def test_ps_checksum_and_pre_apply_failure(maven_project, tmp_path):
     pkg = build_windows(maven_project, tmp_path, hooks={"pre_apply": ["cmd /c exit 3"]}).out_dir
     server = _server(tmp_path)

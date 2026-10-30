@@ -115,9 +115,14 @@ def test_deploy_script_backup_apply_rollback(maven_project, tmp_path):
     assert after["WEB-INF/classes/com/acme/UserService.class"] == "UNTOUCHED"
     assert "old.jsp" not in after
 
+    assert (server / "WEB-INF/views/user").is_dir()              # apply 가 새로 만든 폴더
+    (server / "keep-empty").mkdir()                                # 원래 있던 빈 폴더는 rollback 이 건드리면 안 됨
+
     code, out = run_deploy(pkg, "rollback", target)
     assert code == 0, out
     assert snapshot() == before
+    assert "빈 폴더 정리 2개" in out                                # WEB-INF/views/user, WEB-INF/views
+    assert not (server / "WEB-INF/views").exists() and (server / "keep-empty").is_dir()
 
 
 @needs_bash

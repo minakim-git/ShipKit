@@ -144,12 +144,34 @@ function Cmd-History {
 
 # ------------------------------------------------------------------ 파일 복사
 # 수정 시각을 '지금'으로 두어 WAS 가 변경을 감지하게 한다 (Copy-Item 은 원본 시각을 유지하므로 따로 맞춘다).
+# apply 중($script:RecordDirs)에 새로 만든 폴더는 기록해 두었다가 rollback 때 비어 있으면 지운다
+$script:RecordDirs = $false
+$script:CreatedDirs = @()
 function Put-File([string]$Source, [string]$Rel) {
     $dest = Server-Path $Rel
     $parent = Split-Path -Parent $dest
-    if (-not (Test-Path -LiteralPath $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+    if (-not (Test-Path -LiteralPath $parent)) {
+        $missing = @(); $d = $parent
+        while ($d -and -not (Test-Path -LiteralPath $d)) { $missing += $d; $d = Split-Path -Parent $d }
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+        if ($script:RecordDirs) { $script:CreatedDirs += $missing }
+    }
     Copy-Item -LiteralPath $Source -Destination $dest -Force
     (Get-Item -LiteralPath $dest).LastWriteTime = Get-Date
+}
+
+# apply 가 만든 폴더 가운데 비어 있는 것을 깊은 곳부터 지운다 (원래 있던 폴더는 건드리지 않는다). 반환: 지운 개수
+function Remove-CreatedDirs {
+    $n = 0
+    $prefix = $script:Target.TrimEnd("\") + "\"
+    foreach ($d in (Read-List (Join-Path $StateDir "created_dirs.txt") | Sort-Object -Unique -Descending)) {
+        if (-not $d.StartsWith($prefix)) { continue }
+        if ((Test-Path -LiteralPath $d -PathType Container) -and -not (Get-ChildItem -LiteralPath $d -Force | Select-Object -First 1)) {
+            Remove-Item -LiteralPath $d -Force -ErrorAction SilentlyContinue
+            if (-not (Test-Path -LiteralPath $d)) { $n++ }
+        }
+    }
+    return $n
 }
 
 # ------------------------------------------------------------------ 반영 전·후 명령 (hooks)
@@ -307,6 +329,7 @@ function Cmd-Apply {
     $rc = Run-Hook "pre_apply"
     if ($rc -eq 1) { Log-History "중단: pre_apply 실패"; Die "pre_apply 명령이 실패해서 apply 를 중단했습니다. 서버 파일은 바뀌지 않았습니다." }
     if ($rc -eq 2 -and -not $NoHooks) { Die "pre_apply 명령을 실행하지 않아 apply 를 중단했습니다. 서버 파일은 바뀌지 않았습니다. (명령 없이 진행하려면 -NoHooks)" }
+    $script:RecordDirs = $true; $script:CreatedDirs = @()
     foreach ($rel in (Read-List $Manifest)) {
         Check-Rel $rel
         $src = Package-Path $FilesDir $rel
@@ -314,6 +337,8 @@ function Cmd-Apply {
         if (Same-File $src (Server-Path $rel)) { $same++; continue }  # 서버와 같은 파일은 건드리지 않는다
         try { Put-File $src $rel; $ok++ } catch { Warn "반영 실패: $rel ($($_.Exception.Message))"; $fail++ }
     }
+    $script:RecordDirs = $false
+    Write-List (Join-Path $StateDir "created_dirs.txt") $script:CreatedDirs
     foreach ($rel in (Read-List $Deletes)) {
         $r = Remove-ServerFile $rel
         if ($r -eq 0) { $removed++ } elseif ($r -eq 1) { $fail++ }
@@ -352,8 +377,9 @@ function Cmd-Rollback {
         $r = Remove-ServerFile $rel
         if ($r -eq 0) { $removed++ } elseif ($r -eq 1) { $fail++ }
     }
+    $dirs = Remove-CreatedDirs  # apply 가 새로 만든 폴더가 비었으면 함께 정리
     Remove-Item -LiteralPath (Join-Path $StateDir "apply.done") -Force -ErrorAction SilentlyContinue
-    $summary = "복구 ${restored}개, 신규 파일 제거 ${removed}개, 실패 ${fail}개"
+    $summary = "복구 ${restored}개, 신규 파일 제거 ${removed}개, 빈 폴더 정리 ${dirs}개, 실패 ${fail}개"
     Info $summary
     if ($fail -ne 0) { Log-History $summary; Release-Lock; exit 1 }
     $rc = Run-Hook "post_rollback"

@@ -274,7 +274,7 @@ chmod +x shipkit.sh       # 실행 권한 부여 (tar.gz로 올렸다면 필요 
 ./shipkit.sh check        # 신규/변경/동일/삭제예정/정리예정 확인 (서버 변경 없음)
 ./shipkit.sh backup       # 바뀌거나 지워질 기존 파일을 backup/ 에 보관
 ./shipkit.sh apply        # 반영 + 삭제 + 정리 (backup 없이는 실행되지 않음)
-./shipkit.sh rollback     # backup 기준으로 원복 (새로 추가된 파일은 제거)
+./shipkit.sh rollback     # backup 기준으로 원복 (새로 추가된 파일과, apply 가 새로 만든 빈 폴더는 제거)
 ./shipkit.sh history      # 이 서버의 배포 이력 (최근 20건)
 ```
 

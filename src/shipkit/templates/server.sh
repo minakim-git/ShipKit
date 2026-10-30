@@ -148,6 +148,8 @@ set_attrs() {
 }
 
 # 파일의 상위 폴더를 만들고, 새로 만든 폴더에만 소유자/권한을 적용한다.
+# apply 중(RECORD_DIRS=1)에 새로 만든 폴더는 기록해 두었다가 rollback 때 비어 있으면 지운다.
+RECORD_DIRS=0
 ensure_parent() {
     local parent d i
     local -a missing=()
@@ -155,8 +157,21 @@ ensure_parent() {
     d="$parent"
     while [ ! -d "$d" ]; do missing+=("$d"); d="$(dirname "$d")"; done
     mkdir -p "$parent" || return 1
-    for (( i=${#missing[@]}-1; i>=0; i-- )); do set_attrs dir "${missing[$i]}"; done
+    for (( i=${#missing[@]}-1; i>=0; i-- )); do
+        set_attrs dir "${missing[$i]}"
+        [ "$RECORD_DIRS" -eq 1 ] && printf '%s\n' "${missing[$i]}" >> "$STATE_DIR/created_dirs.txt"
+    done
     return 0
+}
+
+# apply 가 만든 폴더 가운데 비어 있는 것을 깊은 곳부터 지운다 (원래 있던 폴더는 건드리지 않는다). 출력: 지운 개수
+remove_created_dirs() {
+    local d n=0
+    while IFS= read -r d; do
+        case "$d" in "$TARGET"/*) ;; *) continue ;; esac
+        [ -d "$d" ] && rmdir "$d" 2>/dev/null && n=$((n + 1))
+    done < <(read_list "$STATE_DIR/created_dirs.txt" | LC_ALL=C sort -u -r)
+    echo "$n"
 }
 
 # src 를 서버의 rel 위치로 복사. 새로 생긴 파일에만 소유자/권한을 적용한다.
@@ -346,6 +361,8 @@ cmd_apply() {
     elif [ "$rc" -eq 2 ] && [ "$RUN_HOOKS" -eq 1 ]; then
         die "pre_apply 명령을 실행하지 않아 apply 를 중단했습니다. 서버 파일은 바뀌지 않았습니다. (명령 없이 진행하려면 --no-hooks)"
     fi
+    : > "$STATE_DIR/created_dirs.txt"
+    RECORD_DIRS=1
     while IFS= read -r rel; do
         check_rel "$rel"
         if [ ! -f "$FILES_DIR/$rel" ]; then
@@ -361,6 +378,7 @@ cmd_apply() {
             warn "반영 실패: $rel"; fail=$((fail + 1))
         fi
     done < <(read_list "$MANIFEST")
+    RECORD_DIRS=0
     while IFS= read -r rel; do
         remove_file "$rel"; rc=$?
         [ "$rc" -eq 0 ] && removed=$((removed + 1)); [ "$rc" -eq 1 ] && fail=$((fail + 1))
@@ -390,7 +408,7 @@ cmd_apply() {
 cmd_rollback() {
     require_backup
     acquire_lock
-    local rel restored=0 removed=0 fail=0 rc summary
+    local rel restored=0 removed=0 dirs=0 fail=0 rc summary
     while IFS= read -r rel; do
         check_rel "$rel"
         if put_file "$BACKUP_FILES/$rel" "$rel"; then
@@ -405,8 +423,9 @@ cmd_rollback() {
             if rm -f -- "$TARGET/$rel"; then removed=$((removed + 1)); else warn "삭제 실패: $rel"; fail=$((fail + 1)); fi
         fi
     done < <(read_list "$STATE_DIR/absent.txt")
+    dirs="$(remove_created_dirs)"  # apply 가 새로 만든 폴더가 비었으면 함께 정리
     rm -f "$STATE_DIR/apply.done"
-    summary="복구 ${restored}개, 신규 파일 제거 ${removed}개, 실패 ${fail}개"
+    summary="복구 ${restored}개, 신규 파일 제거 ${removed}개, 빈 폴더 정리 ${dirs}개, 실패 ${fail}개"
     info "$summary"
     if [ "$fail" -ne 0 ]; then
         log_history "$summary"
