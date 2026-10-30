@@ -205,6 +205,9 @@ class _Server(paramiko.ServerInterface):
             return
         argv = [self.owner.bash] + argv[1:] if argv[0] == "bash" else [self.owner.bash, "-c", command]
         proc = subprocess.run(argv, capture_output=True, cwd=str(self.owner.home), stdin=subprocess.DEVNULL)
-        channel.sendall(proc.stdout + proc.stderr)
-        channel.send_exit_status(proc.returncode)
+        try:
+            channel.sendall(proc.stdout + proc.stderr)
+            channel.send_exit_status(proc.returncode)
+        except (OSError, EOFError):
+            pass  # 손님이 [취소]로 먼저 끊은 경우
         channel.close()

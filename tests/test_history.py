@@ -16,6 +16,29 @@ def _package(maven_project, out, lines, source=None, now=None):
     return project, packager.build_package(project, entries, source, source_changes=changes, now=now)
 
 
+def test_deployments_appended_and_summarized(maven_project, tmp_path):
+    """화면에서 서버에 올린 결과는 기록 파일에 쌓이고, 서버마다 마지막 상태와 '지금 반영된 서버'를 알 수 있다."""
+    _, result = _package(maven_project, tmp_path / "out", ["src/main/webapp/WEB-INF/views/user/list.jsp"],
+                         now=datetime(2026, 10, 1, 9, 0))
+    folder = result.out_dir
+    when = datetime(2026, 10, 1, 10, 0)
+    history.append_deployment(folder, "개발", "deployer@10.0.0.5", "check", 0, "/home/d/deploy/p", "/srv/app", when)
+    history.append_deployment(folder, "개발", "deployer@10.0.0.5", "apply", 0, "/home/d/deploy/p", "/srv/app", when)
+    history.append_deployment(folder, "운영", "app@prod", "apply", 1, "/home/app/deploy/p", "/srv/app", when)
+    r = history.read_record(folder)
+    assert [d["action"] for d in r.deployments] == ["check", "apply", "apply"]
+    assert r.deployments[0]["at"] == "2026-10-01T10:00:00" and r.deployments[2]["ok"] is False
+    states = r.server_states()
+    assert set(states) == {"개발", "운영"} and states["개발"]["action"] == "apply" and states["개발"]["ok"]
+    assert [d["server"] for d in r.applied_servers()] == ["개발"]       # 운영은 실패했으니 반영된 서버가 아님
+    history.append_deployment(folder, "개발", "deployer@10.0.0.5", "rollback", 0, "/home/d/deploy/p", "/srv/app")
+    r = history.read_record(folder)
+    assert r.applied_servers() == [] and r.server_states()["개발"]["action"] == "rollback"
+    assert "개발" in r.search_text()
+    data = json.loads((folder / history.RECORD_FILE).read_text(encoding="utf-8"))
+    assert data["project"] == "erp" and len(data["deployments"]) == 4   # 다른 내용은 그대로
+
+
 def test_record_written_and_listed(maven_project, tmp_path):
     out = tmp_path / "out"
     _, first = _package(maven_project, out, ["src/main/webapp/WEB-INF/views/user/list.jsp"],

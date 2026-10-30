@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QComboBox, QHBoxLayout, QPlainTextEdit, QProgressBar, QVBoxLayout, QWidget,
 )
 
-from shipkit import remote
+from shipkit import history, remote
 from shipkit.config import ProjectConfig, ServerProfile
 from shipkit.gui.context import AppContext
 from shipkit.gui.widgets import Card, Chip, button, label
@@ -345,6 +345,16 @@ class RemotePanel(Card):
         self.log.insertPlainText(text.replace("\r\n", "\n"))
         self.log.ensureCursorVisible()
 
+    def _record(self, p: ServerProfile, res: remote.StepResult) -> None:
+        """서버에서 한 일을 패키지 기록 파일에 남긴다 (기록 화면의 '서버 반영' 탭, 서버에서 되돌리기)."""
+        if self.result is None or self.result.out_dir is None:
+            return
+        try:
+            history.append_deployment(self.result.out_dir, p.name, p.address, res.action, res.code, res.remote_dir,
+                                      p.server_path or self.project.server_path)
+        except OSError as e:
+            self._append(f"\n[경고] 반영 이력을 기록 파일에 남기지 못했습니다: {e}\n")
+
     def _progress(self, sent: int, total: int) -> None:
         self.progress.show()
         self.progress.setRange(0, total)
@@ -385,6 +395,7 @@ class RemotePanel(Card):
 
         def done(res: remote.StepResult) -> None:
             self.remote_dir = res.remote_dir
+            self._record(p, res)
             if res.ok:
                 self._append("\n✓ 확인 끝. 위 내용을 보고 [백업 후 반영]을 누르세요.\n")
                 self._set_stage("checked")
@@ -416,6 +427,7 @@ class RemotePanel(Card):
         remote_dir = self.remote_dir
 
         def done(res: remote.StepResult) -> None:
+            self._record(p, res)
             if res.ok:
                 self._append("\n✓ 반영했습니다. 문제가 있으면 [되돌리기]를 누르세요.\n")
                 self._set_stage("applied")
@@ -436,6 +448,7 @@ class RemotePanel(Card):
         remote_dir = self.remote_dir
 
         def done(res: remote.StepResult) -> None:
+            self._record(p, res)
             self._append("\n✓ 되돌렸습니다.\n" if res.ok else f"\n✗ rollback 실패 (종료 코드 {res.code})\n")
             self._set_stage("rolled_back" if res.ok else "apply_failed")
 

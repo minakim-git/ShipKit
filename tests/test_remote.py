@@ -217,6 +217,59 @@ def test_cancel_and_idle_timeout(sshd, tmp_path):
         quick.close()
 
 
+@needs_bash
+def test_pty_output_is_not_lost(sshd, tmp_path):
+    """가상 터미널(su)로 실행할 때 암호 질문을 지켜보느라 모아 둔 앞부분 출력이 사라지면 안 된다 (이력 조회가 들쭉날쭉하던 문제)."""
+    p = _profile(sshd)
+    conn = _connect(sshd, tmp_path, p, remote.Secrets(login=LOGIN_PW))
+    try:
+        for n in (3, 30, 300):   # 암호 감시 창(PROMPT_WINDOW)보다 짧은 출력, 긴 출력 모두
+            out = []
+            assert conn.run(f"bash -c 'for i in $(seq 1 {n}); do echo line-$i; done'", out.append, pty=True) == 0
+            lines = [ln for ln in "".join(out).replace("\r\n", "\n").split("\n") if ln]
+            assert lines == [f"line-{i}" for i in range(1, n + 1)], (n, lines[:3], len(lines))
+    finally:
+        conn.close()
+
+
+def test_parse_server_history():
+    text = ("2026-10-01 10:00:00\tdeployer\tbackup\t/srv/app\t2026-10-01-0900\t보관 2개\n"
+            "2026-10-01 10:01:00\tdeployer\tapply\t/srv/app\t2026-10-01-0900\t반영 2개, 동일(건너뜀) 0개\r\n"
+            "2026-10-01 10:05:00\tdeployer\tapply\t/srv/other\t2026-10-01-1000\t반영 1개\n"
+            "깨진 줄\n\n")
+    entries = remote.parse_history(text)
+    assert [e["action"] for e in entries] == ["backup", "apply", "apply"]
+    assert entries[1]["result"] == "반영 2개, 동일(건너뜀) 0개" and entries[1]["package"] == "2026-10-01-0900"
+    assert remote.current_package(entries, "/srv/app")["package"] == "2026-10-01-0900"   # backup 은 서버를 안 바꿈
+    assert remote.current_package(entries, "/srv/none") is None
+    entries.append(dict(zip(remote.HISTORY_FIELDS, ["t", "u", "rollback", "/srv/app", "2026-10-01-0900", "복구 2개"])))
+    assert remote.current_package(entries, "/srv/app")["action"] == "rollback"
+
+
+@needs_bash
+def test_fetch_history_from_server(sshd, tmp_path, maven_project):
+    server = tmp_path / "server"
+    write(server / "WEB-INF/views/user/list.jsp", "OLD")
+    log = tmp_path / "home/.shipkit/history.log"
+    project = make_config(maven_project, tmp_path / "out", server_path=bash_path(server),
+                          server={"history_file": bash_path(log)}).project("erp")
+    changes = [FileChange("src/main/webapp/WEB-INF/views/user/list.jsp", C.MODIFIED, "!1")]
+    result = packager.build_package(project, mapper.plan(project, changes), SourceInfo("manual", "t"),
+                                    source_changes=changes, now=datetime(2026, 10, 30, 9, 0))
+    p = _profile(sshd)
+    conn = _connect(sshd, tmp_path, p, remote.Secrets(login=LOGIN_PW))
+    out = []
+    try:
+        assert remote.fetch_history(conn, p, remote.Secrets(), bash_path(log), out.append) == []   # 아직 이력 없음
+        res = remote.upload_and_check(conn, p, remote.Secrets(), result.out_dir, out.append)
+        assert res.ok and remote.backup_and_apply(conn, p, remote.Secrets(), res.remote_dir, out.append, False).ok
+        entries = remote.fetch_history(conn, p, remote.Secrets(), bash_path(log), out.append)
+        assert [e["action"] for e in entries] == ["backup", "apply"] and entries[-1]["package"] == result.out_dir.name
+        assert remote.current_package(entries, bash_path(server))["action"] == "apply"
+    finally:
+        conn.close()
+
+
 def test_login_failure(sshd, tmp_path):
     p = _profile(sshd)
     known = tmp_path / "known_hosts"

@@ -478,6 +478,12 @@ class Dialogs:
     def ask(self, title: str, text: str) -> bool:
         return QMessageBox.question(self.parent, title, text) == QMessageBox.StandardButton.Yes
 
+    def choose(self, title: str, text: str, options: Sequence[str]) -> Optional[str]:
+        """목록에서 하나 고르기. 취소하면 None."""
+        from PySide6.QtWidgets import QInputDialog
+        value, ok = QInputDialog.getItem(self.parent, title, text, list(options), 0, False)
+        return value if ok else None
+
     def ask_secret(self, title: str, text: str) -> Optional[Tuple[str, bool]]:
         """비밀번호 입력 + [이 PC 에 저장]. 반환: (값, 저장 여부) 또는 취소 시 None."""
         from PySide6.QtWidgets import QCheckBox, QDialog

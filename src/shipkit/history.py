@@ -43,6 +43,7 @@ class PackageRecord:
     changes: List[str] = field(default_factory=list)      # 다시 만들기용 'M<TAB>경로' 줄
     archive_kind: Optional[str] = None
     hooks: Dict[str, List[str]] = field(default_factory=dict)
+    deployments: List[dict] = field(default_factory=list)  # 화면에서 서버에 반영한 이력 (append_deployment)
     has_record: bool = True               # False = 기록 파일이 없는 예전 패키지
 
     @property
@@ -66,9 +67,40 @@ class PackageRecord:
         return {"gitlab-mr": "gitlab", "github-pr": "github"}.get(self.source_kind)
 
     def search_text(self) -> str:
-        """목록 검색 대상: 설명, MR 번호·제목, 파일 경로."""
+        """목록 검색 대상: 설명, MR 번호·제목, 파일 경로, 반영한 서버 이름."""
         parts = [self.name, self.description] + [f"{r.get('ref', '')} {r.get('title', '')}" for r in self.requests]
+        parts += [str(d.get("server", "")) for d in self.deployments]
         return "\n".join(parts + self.applied + self.deletes).lower()
+
+    def server_states(self) -> Dict[str, dict]:
+        """서버마다 마지막으로 서버를 바꾼 반영 이력 (check 는 서버를 바꾸지 않으므로 뺀다). 최근 것부터 순서 유지."""
+        states: Dict[str, dict] = {}
+        for d in self.deployments:
+            if d.get("action") in ("apply", "rollback", "backup"):
+                states[str(d.get("server", ""))] = d
+        return states
+
+    def applied_servers(self) -> List[dict]:
+        """지금 이 패키지가 반영돼 있는(마지막 이력이 성공한 apply 인) 서버의 이력."""
+        return [d for d in self.server_states().values() if d.get("action") == "apply" and d.get("ok")]
+
+
+# ---------------------------------------------------------------------- 서버 반영 이력
+def append_deployment(folder: Path, server: str, address: str, action: str, code: int, remote_dir: str,
+                      target: str, when: Optional[datetime] = None) -> dict:
+    """화면에서 서버에 올리고 실행한 결과를 기록 파일에 덧붙인다 (기록 화면의 '서버 반영' 탭)."""
+    entry = {"at": (when or datetime.now()).isoformat(timespec="seconds"), "server": server, "address": address,
+             "action": action, "ok": code == 0, "code": code, "remote_dir": remote_dir, "target": target}
+    path = folder / RECORD_FILE
+    try:
+        data = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    except (ValueError, OSError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    data.setdefault("deployments", []).append(entry)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return entry
 
 
 # ---------------------------------------------------------------------- 쓰기
@@ -127,6 +159,7 @@ def read_record(folder: Path) -> Optional[PackageRecord]:
                 script_name=server.get("script", "shipkit.sh"), applied=applied, deletes=deletes,
                 counts=data.get("counts") or {}, requests=source.get("requests") or [],
                 changes=data.get("changes") or [], archive_kind=data.get("archive"), hooks=data.get("hooks") or {},
+                deployments=[d for d in data.get("deployments") or [] if isinstance(d, dict)],
             )
         except (ValueError, KeyError, TypeError):
             pass  # 손상된 기록 파일은 예전 패키지처럼 읽는다

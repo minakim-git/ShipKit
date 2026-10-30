@@ -65,6 +65,10 @@ class FakeDialogs:
         self.messages.append(("secret", title, text))
         return (self.secret, True) if self.secret is not None else None
 
+    def choose(self, title, text, options):
+        self.messages.append(("choose", title, text))
+        return options[0] if self.answer else None
+
 
 
 def make_window(config_path, dialogs=None):
@@ -593,8 +597,9 @@ def test_remote_panel_upload_apply_rollback(qapp, tmp_path, maven_project, monke
     monkeypatch.setattr("shipkit.remote.known_hosts_path", lambda: tmp_path / "known_hosts")
     server = tmp_path / "server"
     write(server / "WEB-INF/views/user/list.jsp", "OLD")
-    path = _config(tmp_path, maven_project, server_path=bash_path(server), servers=[
-        {"name": "개발", "host": "127.0.0.1", "port": sshd.port, "user": "deployer"}])
+    path = _config(tmp_path, maven_project, server_path=bash_path(server),
+                   server={"history_file": bash_path(tmp_path / "home/.shipkit/history.log")},  # 진짜 홈을 안 건드리게
+                   servers=[{"name": "개발", "host": "127.0.0.1", "port": sshd.port, "user": "deployer"}])
     dialogs = FakeDialogs(password=LOGIN_PW)
     w = make_window(path, dialogs)
     d = w.deploy_page
@@ -615,6 +620,40 @@ def test_remote_panel_upload_apply_rollback(qapp, tmp_path, maven_project, monke
     panel.rollback()                                            # 저장한 비밀번호를 써서 다시 묻지 않음
     assert panel.stage == "rolled_back" and (server / "WEB-INF/views/user/list.jsp").read_text(encoding="utf-8") == "OLD"
     assert len([m for m in dialogs.messages if m[0] == "secret"]) == asked
+
+    # 기록 화면: 서버 반영 이력이 기록 파일에 남고, 서버 상태 조회와 서버에서 되돌리기가 된다
+    w.go(PAGE_HISTORY)
+    h = w.history_page
+    r = h.current
+    assert [d["action"] for d in r.deployments] == ["check", "apply", "rollback"] and all(d["ok"] for d in r.deployments)
+    assert h.deploy_list.count() == 3 and "되돌림" in h.tabs.tabText(2) or h.tabs.tabText(2) == "서버 반영 3"
+    chips = [h.chips.itemAt(i).widget().text() for i in range(h.chips.count()) if h.chips.itemAt(i).widget()]
+    assert any(c.startswith("개발  되돌림") for c in chips)
+    assert h.rollback_btn.isVisibleTo(h) and not h.rollback_btn.isEnabled()   # 되돌린 뒤라 반영된 서버가 없음
+
+    w.go(PAGE_DEPLOY)                                           # 새 패키지를 만들어 반영하면 기록 화면에서 되돌릴 수 있다
+    d.start_over()                                              # (같은 패키지 폴더는 backup/ 이 남아 있어 다시 backup 하지 않음)
+    d.files_edit.setPlainText("src/main/webapp/WEB-INF/views/user/list.jsp")
+    d.preview()
+    d.make_package()
+    panel.upload_and_check()
+    panel.apply()
+    assert panel.stage == "applied", panel.log.toPlainText()
+    w.go(PAGE_HISTORY)
+    h.list.setCurrentRow(0)                                     # 가장 최근 패키지 (이전 선택은 유지되므로 직접 고름)
+    assert h.current.path == d.last_result.out_dir
+    assert h.rollback_btn.isEnabled() and (server / "WEB-INF/views/user/list.jsp").read_text(encoding="utf-8") == "<%-- jsp --%>"
+    h.rollback_on_server()
+    assert h.rollback_dialog.result is not None and h.rollback_dialog.result.ok, h.rollback_dialog.log.toPlainText()
+    assert (server / "WEB-INF/views/user/list.jsp").read_text(encoding="utf-8") == "OLD"
+    assert h.current.deployments[-1]["action"] == "rollback" and not h.rollback_btn.isEnabled()
+
+    assert h.status_btn.isVisibleTo(h)
+    h.show_server_status()
+    status = h.status_dialog
+    status.fetch()
+    assert status.entries and status.entries[-1]["action"] == "rollback", status.entries
+    assert "되돌림" in status.summary.text() and status.table.rowCount() == len(status.entries)
 
     keyring.store[("shipkit", f"ssh:login:deployer@127.0.0.1:{sshd.port}")] = "wrong"
     panel.upload_and_check()                                    # 저장한 비밀번호가 틀리면 지우고 알린다

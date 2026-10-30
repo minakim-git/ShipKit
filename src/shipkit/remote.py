@@ -20,7 +20,7 @@ import socket
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Optional, Protocol
+from typing import Callable, List, Optional, Protocol
 
 from shipkit.config import ServerProfile, user_config_path
 
@@ -273,8 +273,8 @@ class SSHConnection:
                         chan.sendall((password + "\n").encode("utf-8"))
                         answered, pending = True, ""
                     elif len(pending) > PROMPT_WINDOW:  # 질문 없이 출력이 이어지면 평범한 출력으로 본다
+                        output(pending)  # 모아 둔 것을 먼저 내보내고 비운다 (순서가 바뀌면 이 조각이 사라진다)
                         answered, pending = True, ""
-                        output(pending)
                     continue
                 output(text)
             if pending:
@@ -423,3 +423,45 @@ def backup_and_apply(conn: Connection, profile: ServerProfile, secrets: Secrets,
     if not result.ok:
         return result
     return run_action(conn, profile, secrets, remote_dir, "apply", output, yes=run_hooks, no_hooks=not run_hooks)
+
+
+# ---------------------------------------------------------------------- 서버 배포 이력 (history.log)
+HISTORY_FIELDS = ("at", "user", "action", "target", "package", "result")
+
+
+def parse_history(text: str) -> List[dict]:
+    """서버 스크립트가 남긴 history.log (탭으로 나뉜 시각·계정·명령·대상·패키지·결과) 를 읽는다. 오래된 것부터."""
+    entries = []
+    for line in text.replace("\r\n", "\n").split("\n"):
+        parts = line.rstrip("\r").split("\t")
+        if len(parts) < 5 or not parts[0].strip():
+            continue
+        parts = (parts + [""] * 6)[:6]
+        entries.append(dict(zip(HISTORY_FIELDS, parts)))
+    return entries
+
+
+def current_package(entries: List[dict], target: str) -> Optional[dict]:
+    """대상 경로를 마지막으로 바꾼 이력 (apply 또는 rollback). 없으면 None."""
+    for e in reversed(entries):
+        if e["target"] == target and e["action"] in ("apply", "rollback"):
+            return e
+    return None
+
+
+def fetch_history(conn: Connection, profile: ServerProfile, secrets: Secrets, history_file: str,
+                  output: Output) -> List[dict]:
+    """서버의 배포 이력 파일을 실행 계정으로 읽는다 (이력은 그 계정이 쓴 것이라 '~' 도 같은 집을 가리킨다)."""
+    opts = run_password(profile, secrets)
+    if history_file.startswith("~/"):  # 서버 스크립트와 같은 규칙으로 실행 계정의 집 폴더
+        path = '"$HOME"/' + shlex.quote(history_file[2:])
+    else:
+        path = shlex.quote(history_file)
+    inner = f"cat {path} 2>/dev/null || true"
+    lines: List[str] = []
+    code = _run_sudo_aware(conn, profile, as_runner(profile, inner, opts["password"] is not None),
+                           lines.append, opts)
+    if code:
+        output("".join(lines))
+        raise RemoteError(f"서버 이력을 읽지 못했습니다 (종료 코드 {code}).")
+    return parse_history("".join(lines))

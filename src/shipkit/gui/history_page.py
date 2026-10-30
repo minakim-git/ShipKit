@@ -16,7 +16,11 @@ from PySide6.QtWidgets import (
 from shipkit import history, report
 from shipkit.gui import theme
 from shipkit.gui.context import AppContext
+from shipkit.gui.remote_panel import RemoteClient
 from shipkit.gui.report_view import show_report
+from shipkit.gui.server_status import (
+    ACTION_TEXT, RemoteRunDialog, ServerStatusDialog, _profile_by_name, ask_rollback_hooks,
+)
 from shipkit.gui.widgets import Card, Chip, CommandRow, button, label, open_path
 
 SOURCE_LABEL = {"gitlab-mr": "GitLab MR", "github-pr": "GitHub PR", "git-diff": "git 범위", "manual": "파일 목록",
@@ -70,6 +74,9 @@ class HistoryPage(QWidget):
         self.ctx = ctx
         self.records: List[history.PackageRecord] = []
         self.current: Optional[history.PackageRecord] = None
+        self.client = RemoteClient(ctx)      # 서버 상태 조회·서버에서 되돌리기 (지문·비밀번호는 한 번만 묻게 공유)
+        self.status_dialog: Optional[ServerStatusDialog] = None
+        self.rollback_dialog: Optional[RemoteRunDialog] = None
         self._build_ui()
         ctx.project_listeners.append(self.refresh)
 
@@ -90,6 +97,10 @@ class HistoryPage(QWidget):
         refresh = button("새로 고침", "ghost")
         theme.bind_icon(refresh, "refresh.svg", "PRIMARY", 16)
         refresh.clicked.connect(self.refresh)
+        self.status_btn = button("서버 상태", "ghost")   # 서버 연결을 등록한 프로젝트만
+        self.status_btn.setToolTip("서버의 배포 이력을 읽어, 지금 어떤 패키지가 반영돼 있는지 보여 줍니다.")
+        self.status_btn.clicked.connect(self.show_server_status)
+        head.addWidget(self.status_btn, 0, Qt.AlignmentFlag.AlignBottom)
         head.addWidget(self.open_base_btn, 0, Qt.AlignmentFlag.AlignBottom)
         head.addWidget(refresh, 0, Qt.AlignmentFlag.AlignBottom)
         root.addLayout(head)
@@ -156,6 +167,11 @@ class HistoryPage(QWidget):
         self.command_box.setContentsMargins(0, 4, 0, 0)
         self.command_box.setSpacing(6)
         self.tabs.addTab(commands, "서버 명령")
+        self.deploy_list = QListWidget()   # 화면에서 서버에 올리고 실행한 이력
+        self.deploy_list.setObjectName("fileList")
+        self.deploy_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.deploy_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.tabs.addTab(self.deploy_list, "서버 반영")
         right.body.addWidget(self.tabs, 1)
 
         bar = QHBoxLayout()
@@ -164,11 +180,14 @@ class HistoryPage(QWidget):
         self.open_btn.clicked.connect(lambda: self.current and open_path(self.current.path))
         self.report_btn = button("보고서 열기")
         self.report_btn.clicked.connect(lambda: self.current and show_report(self, self.current.report))
+        self.rollback_btn = button("서버에서 되돌리기", "danger")
+        self.rollback_btn.clicked.connect(self.rollback_on_server)
         self.remake_btn = button("같은 내용으로 다시 만들기", "primary")
         self.remake_btn.setToolTip("배포 화면에 같은 MR·파일을 채워 넣습니다. 지금 로컬 파일로 새 패키지를 만듭니다.")
         self.remake_btn.clicked.connect(lambda: self.current and self.remake_requested.emit(self.current))
         bar.addWidget(self.open_btn)
         bar.addWidget(self.report_btn)
+        bar.addWidget(self.rollback_btn)
         bar.addStretch(1)
         bar.addWidget(self.remake_btn)
         right.body.addLayout(bar)
@@ -181,6 +200,7 @@ class HistoryPage(QWidget):
         selected = self.current.path if self.current else None
         self.records = history.list_records(p) if p else []
         self.subtitle.setText(f"{p.name} 프로젝트로 만든 패키지 (최근 것부터)" if p else "")
+        self.status_btn.setVisible(bool(p and p.servers))
         self.open_base_btn.setVisible(p is not None)
         self.open_base_btn.setToolTip(str(p.output_dir) if p else "")
         if not self.records:
@@ -238,6 +258,14 @@ class HistoryPage(QWidget):
             facts.append((f"압축 {r.archive.name}", "neutral"))
         if not r.has_record:
             facts.append(("예전 패키지 (보고서에서 읽음)", "neutral"))
+        for server, d in r.server_states().items():  # 서버마다 마지막 상태: 반영됨 / 되돌림 / 실패
+            when = str(d.get("at", ""))[5:16].replace("T", " ")
+            if not d.get("ok"):
+                facts.append((f"{server}  {ACTION_TEXT.get(d.get('action'), d.get('action'))} 실패  {when}", "danger"))
+            elif d.get("action") == "apply":
+                facts.append((f"{server}  반영됨  {when}", "success"))
+            else:
+                facts.append((f"{server}  되돌림  {when}", "warning"))
         for text, tone in facts:
             self.chips.addWidget(Chip(text, tone))
         self.chips.addStretch(1)
@@ -279,6 +307,70 @@ class HistoryPage(QWidget):
             self.command_box.addWidget(CommandRow(str(i), cmd, desc))
         self.command_box.addWidget(CommandRow("↺", rollback, rollback_desc))
         self.command_box.addStretch(1)
+        self.deploy_list.clear()
+        for d in reversed(r.deployments):
+            when = str(d.get("at", "")).replace("T", " ")
+            text = (f"{when}  {d.get('server', '')} ({d.get('address', '')})  "
+                    f"{ACTION_TEXT.get(d.get('action'), d.get('action'))}  "
+                    f"{'성공' if d.get('ok') else f'실패 (종료 코드 {d.get('code')})'}")
+            item = QListWidgetItem(text)
+            if not d.get("ok"):
+                item.setForeground(theme.tone_color("danger"))
+            self.deploy_list.addItem(item)
+        self.tabs.setTabText(2, f"서버 반영 {len(r.deployments)}" if r.deployments else "서버 반영")
         can_remake = bool(r.changes or r.requests or r.source_kind == "build")
         self.remake_btn.setEnabled(can_remake)
         self.report_btn.setEnabled(r.report.is_file())
+        targets = self._rollback_targets(r)
+        self.rollback_btn.setVisible(bool(r.deployments))
+        self.rollback_btn.setEnabled(bool(targets))
+        self.rollback_btn.setToolTip("이 패키지가 반영돼 있는 서버에서 shipkit.sh rollback 을 실행합니다: "
+                                     + ", ".join(t[0].name for t in targets) if targets else
+                                     "이 패키지가 지금 반영돼 있는 서버가 없습니다 (또는 서버 연결 설정에서 지워짐).")
+
+    # ------------------------------------------------------------------ 서버
+    def _rollback_targets(self, r: history.PackageRecord) -> List[tuple]:
+        """(서버 연결, 이력): 이 패키지가 반영돼 있고 서버 연결이 아직 설정에 있는 것."""
+        p = self.ctx.project
+        if p is None:
+            return []
+        targets = []
+        for d in r.applied_servers():
+            profile = _profile_by_name(p, str(d.get("server", "")))
+            if profile is not None:
+                targets.append((profile, d))
+        return targets
+
+    def show_server_status(self) -> None:
+        p = self.ctx.project
+        if p is None or not p.servers:
+            return
+        if self.status_dialog is not None and self.status_dialog.isVisible():
+            self.status_dialog.raise_()
+            return
+        self.status_dialog = ServerStatusDialog(self.ctx, p, self, client=self.client)
+        self.status_dialog.show()
+
+    def rollback_on_server(self) -> None:
+        """[서버에서 되돌리기]: 이 패키지가 반영된 서버에서 rollback. 여러 서버면 하나를 고른다."""
+        r, p = self.current, self.ctx.project
+        if r is None or p is None:
+            return
+        targets = self._rollback_targets(r)
+        if not targets:
+            return
+        profile, deployment = targets[0]
+        if len(targets) > 1:
+            names = [t[0].name for t in targets]
+            choice = self.ctx.dialogs.choose("서버 고르기", "어느 서버에서 되돌릴까요?", names)
+            if choice is None:
+                return
+            profile, deployment = targets[names.index(choice)]
+        if not self.ctx.dialogs.ask("서버에서 되돌리기",
+                                   f"{profile.name} 서버({profile.address})의 {deployment.get('target', '')} 를\n"
+                                   f"패키지 {r.name} 을 반영하기 전으로 되돌립니다.\n\n계속할까요?"):
+            return
+        run_hooks = ask_rollback_hooks(self.ctx, r)
+        self.rollback_dialog = RemoteRunDialog(self.ctx, r, p, profile, deployment, self, client=self.client,
+                                               on_finished=self.refresh)
+        self.rollback_dialog.start(run_hooks)
