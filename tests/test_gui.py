@@ -696,14 +696,14 @@ def test_remote_panel_upload_apply_rollback(qapp, tmp_path, maven_project, monke
     # 프로젝트 설정의 서버 연결 탭: 목록·시험
     w.go(PAGE_PROJECTS)
     page = w.projects_page
-    assert page.server_list.count() == 1 and page.srv_host.text() == "127.0.0.1"
-    page.srv_mode.setCurrentIndex(1)                            # 다른 계정으로 실행 -> 칸이 나타남
-    assert page.server_form.isRowVisible(page.srv_run_as)
-    page.srv_mode.setCurrentIndex(0)
-    page.test_server()
+    assert page.servers_tab.server_list.count() == 1 and page.servers_tab.srv_host.text() == "127.0.0.1"
+    page.servers_tab.srv_mode.setCurrentIndex(1)                            # 다른 계정으로 실행 -> 칸이 나타남
+    assert page.servers_tab.server_form.isRowVisible(page.servers_tab.srv_run_as)
+    page.servers_tab.srv_mode.setCurrentIndex(0)
+    page.servers_tab.test_server()
     assert dialogs.messages[-1][:2] == ("info", "연결 시험") and "접속 성공" in dialogs.messages[-1][2], dialogs.messages[-1]
-    page.add_server()
-    page.srv_host.setText("10.0.0.9")
-    page.srv_user.setText("app")
+    page.servers_tab.add_server()
+    page.servers_tab.srv_host.setText("10.0.0.9")
+    page.servers_tab.srv_user.setText("app")
     assert page.save()
     assert [s["name"] for s in config_store.load_raw(path)["projects"]["erp"]["servers"]] == ["개발", "서버 2"]

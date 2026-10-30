@@ -1,39 +1,36 @@
 """프로젝트 설정 화면: 왼쪽 위에서 고른 프로젝트의 설정을 탭별로 편집한다.
 
-기본 · 반영 규칙(경로 시험) · 서버 명령 · 제외·알림. 화면에서 고친 값은 개인 설정에 저장한다.
+기본 · 반영 규칙(경로 시험) · 서버 명령 · 제외·알림 · 서버 연결(servers_tab). 입력 위젯과 새 프로젝트 창은 project_widgets.
+화면에서 고친 값은 개인 설정에 저장한다.
 비워 둔 칸은 저장소의 .shipkit.yml(있으면)·프리셋·기본값을 따르고, 그 값을 흐린 글씨로 보여 준다.
 """
 from __future__ import annotations
 
 import copy
 import posixpath
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QPainter
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QComboBox, QDialog, QFormLayout, QFrame, QHBoxLayout, QHeaderView, QLineEdit,
-    QListWidget, QSpinBox,
-    QPlainTextEdit, QScrollArea, QStackedWidget, QTableWidget, QTableWidgetItem, QTabWidget, QTreeWidget,
-    QTreeWidgetItem, QVBoxLayout, QWidget,
+    QComboBox, QFrame, QHBoxLayout, QLineEdit, QPlainTextEdit, QScrollArea, QStackedWidget, QTabWidget,
+    QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from shipkit import CONFIG_NAME, PROJECT_FILE, config_store, legacy, mapper, project_edit, workflow
 from shipkit.config import (
     _COMMON_EXCLUDE, DEFAULT_ALLOW, DEFAULT_DENY, DEFAULT_HISTORY_FILE, DEFAULT_PACKAGE_NAME, PRESETS, ConfigError,
-    ProjectConfig, ServerProfile, load_project_file, parse_servers,
+    ProjectConfig,
 )
 from shipkit.gui import theme
 from shipkit.gui.context import AppContext
 from shipkit.gui.deploy_page import STATUS_TEXT, STATUS_TONE
-from shipkit.gui.remote_panel import RemoteClient
+from shipkit.gui.project_widgets import INHERIT, LineList, OverrideBox, ProjectDialog, RowTable, form_layout
+from shipkit.gui.servers_tab import ServersTab
 from shipkit.gui.widgets import Card, Chip, PathField, StatusDelegate, button, label, page_header
 from shipkit.models import Status
-from shipkit.projectfile import detect_preset
 from shipkit.workflow import InputError
 
-INHERIT = "(따름)"
 TAB_BASIC, TAB_RULES, TAB_HOOKS, TAB_FILTERS, TAB_SERVERS = range(5)
 # (단계, 제목, 언제 실행되는지, 빈 표에 보여 줄 예시)
 HOOK_STAGES = (("pre_apply", "반영 전", "서버 파일을 바꾸기 전에 실행합니다. 실패하면 파일을 바꾸지 않고 멈춥니다.",
@@ -50,12 +47,7 @@ HOOK_EXAMPLE = ("$ ./shipkit.sh apply\n"
 MODE_TEXT = {"changes": "변경 파일 매핑", "sync": "빌드 결과 동기화"}
 
 
-def _form() -> QFormLayout:
-    form = QFormLayout()
-    form.setHorizontalSpacing(16)
-    form.setVerticalSpacing(10)
-    form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-    return form
+_form = form_layout
 
 
 def _split(text: str) -> List[str]:
@@ -73,276 +65,11 @@ def _server_target(p: ProjectConfig, rel: str) -> str:
     return posixpath.join(p.server_path, rel)
 
 
-# ---------------------------------------------------------------------- 편집용 위젯
-class LineList(QPlainTextEdit):
-    """한 줄에 하나씩 적는 목록."""
-
-    def __init__(self, placeholder: str, height: int = 92):
-        super().__init__()
-        self.setPlaceholderText(placeholder)
-        self.setFixedHeight(height)
-
-    def lines(self) -> List[str]:
-        return [x.strip() for x in self.toPlainText().splitlines() if x.strip()]
-
-    def set_lines(self, values: Sequence[str]) -> None:
-        self.setPlainText("\n".join(str(v) for v in values))
-
-
-class _Table(QTableWidget):
-    """줄이 하나도 없으면 예시 글자(placeholder)를 흐리게 보여 주는 표."""
-
-    def __init__(self, rows: int, columns: int, placeholder: str = ""):
-        super().__init__(rows, columns)
-        self.placeholder = placeholder
-
-    def paintEvent(self, event) -> None:
-        super().paintEvent(event)
-        if self.rowCount() == 0 and self.placeholder:
-            painter = QPainter(self.viewport())
-            painter.setPen(QColor(theme.SUBTLE))
-            painter.drawText(self.viewport().rect().adjusted(12, 0, -12, 0),
-                             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, self.placeholder)
-            painter.end()
-
-
-class RowTable(QWidget):
-    """칸을 직접 고치는 표 + [추가]/[지우기]. rows() 는 칸 이름 -> 값 사전 목록 (모두 빈 행은 뺀다)."""
-    changed = Signal()
-
-    def __init__(self, columns: Sequence[Tuple[str, str]], stretch: int = 0, height: int = 150,
-                 placeholder: str = ""):
-        super().__init__()
-        self.keys = [k for k, _ in columns]
-        self.table = _Table(0, len(columns), placeholder)
-        self.table.setHorizontalHeaderLabels([h for _, h in columns])
-        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.table.setEditTriggers(QAbstractItemView.EditTrigger.DoubleClicked
-                                   | QAbstractItemView.EditTrigger.SelectedClicked
-                                   | QAbstractItemView.EditTrigger.AnyKeyPressed)
-        self.table.setShowGrid(False)
-        self.table.setWordWrap(False)
-        self.table.verticalHeader().setVisible(False)
-        self.table.verticalHeader().setDefaultSectionSize(36)
-        header = self.table.horizontalHeader()
-        header.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        header.setHighlightSections(False)
-        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-        header.setSectionResizeMode(stretch, QHeaderView.ResizeMode.Stretch)
-        for col in range(len(columns)):
-            if col != stretch:
-                self.table.setColumnWidth(col, 200)
-        self.table.setFixedHeight(height)  # 줄이 많으면 표 안에서 스크롤
-        self.table.itemChanged.connect(lambda *_: self.changed.emit())
-        self.add_btn = button("+ 추가", "ghost")
-        self.add_btn.clicked.connect(self.add_row)
-        self.remove_btn = button("고른 줄 지우기", "ghost")
-        self.remove_btn.clicked.connect(self.remove_selected)
-        bar = QHBoxLayout()
-        bar.setContentsMargins(0, 0, 0, 0)
-        bar.addWidget(self.add_btn)
-        bar.addWidget(self.remove_btn)
-        bar.addStretch(1)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
-        layout.addWidget(self.table)
-        layout.addLayout(bar)
-
-    def rows(self) -> List[Dict[str, str]]:
-        result = []
-        for r in range(self.table.rowCount()):
-            row = {k: (self.table.item(r, c).text().strip() if self.table.item(r, c) else "")
-                   for c, k in enumerate(self.keys)}
-            if any(row.values()):
-                result.append(row)
-        return result
-
-    def set_rows(self, rows: Sequence[Dict[str, Any]]) -> None:
-        self.table.blockSignals(True)
-        self.table.setRowCount(0)
-        for row in rows:
-            self._insert(row)
-        self.table.blockSignals(False)
-
-    def _insert(self, row: Dict[str, Any]) -> int:
-        r = self.table.rowCount()
-        self.table.insertRow(r)
-        for c, k in enumerate(self.keys):
-            value = row.get(k)
-            self.table.setItem(r, c, QTableWidgetItem("" if value is None else str(value)))
-        return r
-
-    def add_row(self) -> None:
-        r = self._insert({})
-        self.table.setCurrentCell(r, 0)
-        self.table.editItem(self.table.item(r, 0))
-
-    def remove_selected(self) -> None:
-        for r in sorted({i.row() for i in self.table.selectedIndexes()}, reverse=True):
-            self.table.removeRow(r)
-        self.changed.emit()
-
-    def set_editable(self, editable: bool) -> None:
-        self.table.setEnabled(editable)
-        self.add_btn.setVisible(editable)
-        self.remove_btn.setVisible(editable)
-
-
-class OverrideBox(QFrame):
-    """팀 공유 파일·프리셋에서 오는 값을 따를지, 이 PC 에서 직접 지정할지 고르는 띠.
-
-    물려받는 값이 없으면 띠를 숨기고 항상 직접 지정으로 본다.
-    """
-    toggled = Signal(bool)
-
-    def __init__(self, what: str):
-        super().__init__()
-        self.setObjectName("override")
-        self.what = what
-        self.text = label("", "muted")
-        self.check = QCheckBox("직접 지정")
-        self.check.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.check.toggled.connect(self.toggled.emit)
-        row = QHBoxLayout(self)
-        row.setContentsMargins(12, 6, 12, 6)
-        row.addWidget(self.text, 1)
-        row.addWidget(self.check)
-        self.source: Optional[str] = None
-
-    def set_source(self, source: Optional[str]) -> None:
-        self.source = source
-        self.setVisible(bool(source))
-        if source:
-            self.text.setText(f"{self.what}: <b>{source}</b> 값을 따릅니다. 이 PC 에서 바꾸려면 직접 지정하세요."
-                              if not self.check.isChecked() else
-                              f"{self.what}: 직접 지정한 값을 씁니다 ({source} 값 대신).")
-
-    def overridden(self) -> bool:
-        return self.check.isChecked() or not self.source
-
-    def set_overridden(self, value: bool) -> None:
-        self.check.blockSignals(True)
-        self.check.setChecked(value)
-        self.check.blockSignals(False)
-        self.set_source(self.source)
-
-
-# ---------------------------------------------------------------------- 프로젝트 추가
-class ProjectDialog(QDialog):
-    """프로젝트 추가. 비운 칸은 저장하지 않아서 .shipkit.yml 이나 기본값을 따른다. 자세한 설정은 추가한 뒤 화면에서."""
-
-    def __init__(self, parent: Optional[QWidget], name: str = "", entry: Optional[Dict[str, Any]] = None,
-                 defaults: Optional[Dict[str, Any]] = None):
-        super().__init__(parent)
-        self.setWindowTitle("프로젝트 추가")
-        self.setMinimumWidth(680)
-        entry = entry or {}
-        defaults = defaults or {}
-
-        form = _form()
-        self.name_edit = QLineEdit(name)
-        self.name_edit.setPlaceholderText("예: erp")
-        self.root_field = PathField(placeholder="로컬 git 저장소 최상위 폴더")
-        self.root_field.setText(str(entry.get("root", "")))
-        self.root_field.edit.textChanged.connect(self._show_project_file)
-        self.output_field = PathField(placeholder=f"비우면 기본값: {defaults.get('output_dir', '([앱 설정]에서 지정)')}")
-        self.output_field.setText(str(entry.get("output_dir", "")))
-        self.preset_combo = QComboBox()
-        self.preset_combo.addItem(INHERIT, "")
-        for key, preset in PRESETS.items():
-            self.preset_combo.addItem(f"{key}  -  {preset['description']}", key)
-        self._select(self.preset_combo, entry.get("preset", ""))
-        self.os_combo = QComboBox()
-        self.os_combo.addItem(INHERIT, "")
-        self.os_combo.addItem("리눅스 (shipkit.sh)", "linux")
-        self.os_combo.addItem("Windows (shipkit.ps1)", "windows")
-        self._select(self.os_combo, entry.get("server_os", ""))
-        self.server_edit = QLineEdit(str(entry.get("server_path", "")))
-        self.server_edit.setPlaceholderText("예: /app/tomcat/webapps/ROOT  (Windows: D:/tomcat/webapps/ROOT)")
-        self.gitlab_edit = QLineEdit(str(entry.get("gitlab_project", "")))
-        self.gitlab_edit.setPlaceholderText("GitLab 프로젝트 ID 또는 그룹/프로젝트")
-        self.github_edit = QLineEdit(str(entry.get("github_repo", "")))
-        self.github_edit.setPlaceholderText("owner/name")
-
-        for text, widget in (("이름", self.name_edit), ("로컬 경로", self.root_field),
-                             ("패키지 생성 경로", self.output_field), ("프리셋", self.preset_combo),
-                             ("서버 OS", self.os_combo), ("서버 배포 경로", self.server_edit),
-                             ("GitLab 프로젝트", self.gitlab_edit), ("GitHub 저장소", self.github_edit)):
-            form.addRow(label(text, "fieldLabel", wrap=False), widget)
-
-        self.project_file_label = label("", "muted")
-        card = Card("새 프로젝트", "반영 규칙·서버 명령 같은 자세한 설정은 추가한 뒤 프로젝트 화면에서 바꿉니다.")
-        card.body.addLayout(form)
-        card.body.addWidget(self.project_file_label)
-
-        buttons = QHBoxLayout()
-        buttons.addStretch(1)
-        cancel = button("취소")
-        cancel.clicked.connect(self.reject)
-        save = button("추가", "primary")
-        save.setDefault(True)
-        save.clicked.connect(self.accept)
-        buttons.addWidget(cancel)
-        buttons.addWidget(save)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(14)
-        layout.addWidget(card)
-        layout.addLayout(buttons)
-        self._show_project_file()
-
-    @staticmethod
-    def _select(combo: QComboBox, value: str) -> None:
-        idx = combo.findData(value or "")
-        combo.setCurrentIndex(idx if idx >= 0 else 0)
-
-    def _show_project_file(self) -> None:
-        root = self.root_field.text()
-        path = Path(root) / PROJECT_FILE if root else None
-        if not path or not path.is_file():
-            if root and Path(root).is_dir() and not self.preset_combo.currentData():
-                preset, why = detect_preset(Path(root))
-                self._select(self.preset_combo, preset)
-                self.project_file_label.setText(f"저장소에 {PROJECT_FILE} 가 없습니다. 프리셋은 {why} 를 보고 "
-                                                f"{preset} 으로 골랐습니다. 서버 배포 경로를 입력하세요.")
-            else:
-                self.project_file_label.setText(
-                    f"저장소에 {PROJECT_FILE} 가 없습니다. 프리셋과 서버 배포 경로를 직접 입력하세요.")
-            return
-        try:
-            shared = load_project_file(path)
-        except ConfigError as e:
-            self.project_file_label.setText(f"{PROJECT_FILE} 오류: {e}")
-            return
-        keys = ", ".join(f"{k}: {shared[k]}" for k in ("preset", "server_os", "server_path", "gitlab_project",
-                                                       "github_repo") if k in shared)
-        self.project_file_label.setText(
-            f"{PROJECT_FILE} 을 찾았습니다 ({keys or '값 없음'}). 비워 둔 칸은 이 값을 따르고, 입력한 칸이 우선합니다.")
-
-    def values(self) -> Dict[str, Any]:
-        return {
-            "root": self.root_field.text(),
-            "output_dir": self.output_field.text(),
-            "preset": self.preset_combo.currentData(),
-            "server_os": self.os_combo.currentData(),
-            "server_path": self.server_edit.text().strip(),
-            "gitlab_project": self.gitlab_edit.text().strip(),
-            "github_repo": self.github_edit.text().strip(),
-        }
-
-    def name(self) -> str:
-        return self.name_edit.text().strip()
-
-
-# ---------------------------------------------------------------------- 프로젝트 설정 화면
 class ProjectsPage(QWidget):
     def __init__(self, ctx: AppContext):
         super().__init__()
         self.ctx = ctx
         self.dialog_factory = ProjectDialog  # 테스트에서 바꿔 끼운다
-        self.remote_client = RemoteClient(ctx)  # [연결 시험]
         self.data: Dict[str, Any] = {}
         self.layers: Optional[project_edit.Layers] = None
         self.loaded_name: Optional[str] = None
@@ -382,7 +109,11 @@ class ProjectsPage(QWidget):
         self.tabs.addTab(self._scroll(self._rules_tab()), "반영 규칙")
         self.tabs.addTab(self._scroll(self._hooks_tab()), "서버 명령")
         self.tabs.addTab(self._scroll(self._filters_tab()), "제외·알림")
-        self.tabs.addTab(self._scroll(self._servers_tab()), "서버 연결")
+        self.servers_tab = ServersTab(
+            ctx, project_path=lambda: self.server_edit.text().strip() or self.server_edit.placeholderText().split(": ", 1)[-1],
+            server_os=lambda: self.draft.server_os if self.draft else "linux")
+        self.servers_tab.changed.connect(self._changed)
+        self.tabs.addTab(self._scroll(self.servers_tab), "서버 연결")
         main_layout.addWidget(self.tabs, 1)
         self.body.addWidget(main)
         ctx.project_listeners.append(self._on_project)
@@ -693,239 +424,6 @@ class ProjectsPage(QWidget):
         col.addStretch(1)
         return w
 
-    # ------------------------------------------------------------------ 탭: 서버 연결
-    def _servers_tab(self) -> QWidget:
-        w, col = self._column()
-        card = Card("서버 연결", "배포 완료 화면에서 패키지를 바로 올리고 check·apply 까지 실행할 서버입니다 (SSH/SFTP). "
-                               "개발·운영처럼 여러 대를 등록할 수 있습니다. 비밀번호는 처음 접속할 때 묻고, "
-                               "저장을 고르면 Windows 자격 증명 관리자에 넣어 다음부터 묻지 않습니다.")
-        self.servers_note = label("", "muted")
-        card.body.addWidget(self.servers_note)
-        split = QHBoxLayout()
-        split.setSpacing(16)
-        left = QVBoxLayout()
-        self.server_list = QListWidget()
-        self.server_list.setObjectName("serverList")
-        self.server_list.setFixedWidth(210)
-        self.server_list.currentRowChanged.connect(self._select_server)
-        left.addWidget(self.server_list, 1)
-        row = QHBoxLayout()
-        add = button("+ 서버 추가", "ghost")
-        add.clicked.connect(self.add_server)
-        self.remove_server_btn = button("지우기", "ghost")
-        self.remove_server_btn.clicked.connect(self.remove_server)
-        row.addWidget(add)
-        row.addWidget(self.remove_server_btn)
-        row.addStretch(1)
-        left.addLayout(row)
-        split.addLayout(left)
-
-        self.server_form_box = QWidget()
-        right = QVBoxLayout(self.server_form_box)
-        right.setContentsMargins(0, 0, 0, 0)
-        right.setSpacing(10)
-        form = _form()
-        self.server_form = form
-        self.srv_name = QLineEdit()
-        self.srv_name.setPlaceholderText("예: 개발, 운영")
-        self.srv_host = QLineEdit()
-        self.srv_host.setPlaceholderText("예: 10.0.0.5 또는 dev.example.com")
-        self.srv_port = QSpinBox()
-        self.srv_port.setRange(1, 65535)
-        self.srv_port.setValue(22)
-        self.srv_port.setFixedWidth(110)
-        self.srv_port.lineEdit().setTextMargins(6, 0, 0, 0)
-        self.srv_user = QLineEdit()
-        self.srv_user.setPlaceholderText("SSH 로 접속할 계정")
-        self.srv_auth = QComboBox()
-        self.srv_auth.addItem("비밀번호", "password")
-        self.srv_auth.addItem("SSH 키 파일", "key")
-        self.srv_key = PathField(folder=False, placeholder="개인 키 파일 (예: C:/Users/me/.ssh/id_ed25519)")
-        self.srv_upload = QLineEdit()
-        self.srv_upload.setPlaceholderText("~/deploy   (이 아래에 날짜 폴더로 올립니다)")
-        self.srv_mode = QComboBox()
-        self.srv_mode.addItem("접속한 계정 그대로", "")
-        self.srv_mode.addItem("다른 계정으로 실행", "other")
-        self.srv_run_as = QLineEdit()
-        self.srv_run_as.setPlaceholderText("서버 스크립트를 실행할 계정")
-        self.srv_run_with = QComboBox()
-        self.srv_run_with.addItem("sudo -u 계정", "sudo")
-        self.srv_run_with.addItem("su - 계정", "su")
-        self.srv_run_password = QCheckBox("실행할 때 비밀번호가 필요합니다 (sudo 는 접속 계정, su 는 실행 계정 비밀번호)")
-        self.srv_run_password.setToolTip("끄면 비밀번호 없이 실행합니다. 서버가 비밀번호를 물으면 기다리지 않고 바로 실패합니다.")
-        self.srv_chown = QCheckBox("올린 패키지 폴더의 소유자를 실행 계정으로 바꿉니다 (chown)")
-        self.srv_path = QLineEdit()
-        for text, widget in (("이름", self.srv_name), ("호스트", self.srv_host), ("포트", self.srv_port),
-                             ("접속 계정", self.srv_user), ("인증", self.srv_auth), ("키 파일", self.srv_key),
-                             ("올릴 위치", self.srv_upload), ("실행 계정", self.srv_mode), ("계정 이름", self.srv_run_as),
-                             ("전환 방법", self.srv_run_with), ("", self.srv_run_password), ("", self.srv_chown),
-                             ("서버 배포 경로", self.srv_path)):
-            form.addRow(label(text, "fieldLabel", wrap=False), widget)
-        right.addLayout(form)
-        right.addWidget(label("다른 계정으로 실행: 접속하는 계정과 서버 스크립트를 실행할 계정이 다를 때 고릅니다. "
-                              "이때 올릴 위치는 실행 계정도 들어갈 수 있는 폴더여야 합니다 (예: 실행 계정의 홈 아래).",
-                              "muted"))
-        buttons = QHBoxLayout()
-        self.server_test_btn = button("연결 시험")
-        self.server_test_btn.clicked.connect(self.test_server)
-        forget = button("저장된 비밀번호 지우기", "ghost")
-        forget.clicked.connect(self.forget_server_secrets)
-        buttons.addWidget(self.server_test_btn)
-        buttons.addWidget(forget)
-        buttons.addStretch(1)
-        right.addLayout(buttons)
-        split.addWidget(self.server_form_box, 1)
-        card.body.addLayout(split)
-        col.addWidget(card)
-        col.addStretch(1)
-
-        for edit in (self.srv_name, self.srv_host, self.srv_user, self.srv_upload, self.srv_run_as, self.srv_path,
-                     self.srv_key.edit):
-            edit.textChanged.connect(self._server_edited)
-        for combo in (self.srv_auth, self.srv_mode, self.srv_run_with):
-            combo.currentIndexChanged.connect(self._server_edited)
-        self.srv_port.valueChanged.connect(self._server_edited)
-        self.srv_run_password.toggled.connect(self._server_edited)
-        self.srv_chown.toggled.connect(self._server_edited)
-        self.servers: List[Dict[str, Any]] = []
-        self._server_row = -1
-        return w
-
-    def _load_servers(self, servers: List[Dict[str, Any]]) -> None:
-        self.servers = copy.deepcopy(servers)
-        self.server_list.blockSignals(True)
-        self.server_list.clear()
-        for s in self.servers:
-            self.server_list.addItem(str(s.get("name") or "(이름 없음)"))
-        self.server_list.blockSignals(False)
-        self._server_row = -1
-        self.server_list.setCurrentRow(0 if self.servers else -1)
-        if not self.servers:
-            self._select_server(-1)
-
-    def _select_server(self, row: int) -> None:
-        self._server_row = row
-        has = 0 <= row < len(self.servers)
-        self.server_form_box.setEnabled(has)
-        self.remove_server_btn.setEnabled(has)
-        s = self.servers[row] if has else {}
-        was = self._loading
-        self._loading = True
-        self.srv_name.setText(str(s.get("name", "")))
-        self.srv_host.setText(str(s.get("host", "")))
-        self.srv_port.setValue(int(s.get("port") or 22))
-        self.srv_user.setText(str(s.get("user", "")))
-        self._select(self.srv_auth, s.get("auth") or "password")
-        self.srv_key.setText(str(s.get("key_file", "")))
-        self.srv_upload.setText(str(s.get("upload_dir", "")))
-        self._select(self.srv_mode, "other" if s.get("run_as") else "")
-        self.srv_run_as.setText(str(s.get("run_as", "")))
-        self._select(self.srv_run_with, s.get("run_with") or "sudo")
-        self.srv_run_password.setChecked(bool(s.get("run_password")))
-        self.srv_chown.setChecked(bool(s.get("chown")))
-        self.srv_path.setText(str(s.get("server_path", "")))
-        self._loading = was
-        self._server_rows()
-
-    def _server_rows(self) -> None:
-        """고른 방식에 따라 필요한 칸만 보여 준다."""
-        form = self.server_form
-        form.setRowVisible(self.srv_key, self.srv_auth.currentData() == "key")
-        other = self.srv_mode.currentData() == "other"
-        for widget in (self.srv_run_as, self.srv_run_with, self.srv_run_password, self.srv_chown):
-            form.setRowVisible(widget, other)
-        project_path = self.server_edit.text().strip() or self.server_edit.placeholderText().split(": ", 1)[-1]
-        self.srv_path.setPlaceholderText(f"비우면 프로젝트 값: {project_path}" if project_path else "")
-
-    def _server_form_dict(self) -> Dict[str, Any]:
-        """폼의 값 (기본값과 같은 칸은 저장하지 않는다)."""
-        d: Dict[str, Any] = {"name": self.srv_name.text().strip(), "host": self.srv_host.text().strip(),
-                             "user": self.srv_user.text().strip()}
-        if self.srv_port.value() != 22:
-            d["port"] = self.srv_port.value()
-        if self.srv_auth.currentData() == "key":
-            d["auth"] = "key"
-            d["key_file"] = self.srv_key.text()
-        if self.srv_upload.text().strip():
-            d["upload_dir"] = self.srv_upload.text().strip()
-        if self.srv_mode.currentData() == "other":
-            d["run_as"] = self.srv_run_as.text().strip()
-            d["run_with"] = self.srv_run_with.currentData()
-            if self.srv_run_password.isChecked():
-                d["run_password"] = True
-            if self.srv_chown.isChecked():
-                d["chown"] = True
-        if self.srv_path.text().strip():
-            d["server_path"] = self.srv_path.text().strip()
-        return d
-
-    def _server_edited(self, *_args) -> None:
-        self._server_rows()
-        if self._loading or not (0 <= self._server_row < len(self.servers)):
-            return
-        self.servers[self._server_row] = self._server_form_dict()
-        item = self.server_list.item(self._server_row)
-        if item is not None:
-            item.setText(self.servers[self._server_row]["name"] or "(이름 없음)")
-        self._changed()
-
-    def add_server(self) -> None:
-        self.servers.append({"name": f"서버 {len(self.servers) + 1}", "host": "", "user": ""})
-        self.server_list.addItem(self.servers[-1]["name"])
-        self.server_list.setCurrentRow(len(self.servers) - 1)
-        self.srv_host.setFocus()
-        self._changed()
-
-    def remove_server(self) -> None:
-        row = self._server_row
-        if not (0 <= row < len(self.servers)):
-            return
-        if not self.ctx.dialogs.ask("서버 지우기", f"'{self.servers[row].get('name')}' 서버를 목록에서 지울까요?"):
-            return
-        self.servers.pop(row)
-        self._load_servers(self.servers)
-        self._changed()
-
-    def _current_profile(self) -> Optional[ServerProfile]:
-        """폼의 값으로 만든 서버 (잘못됐으면 알리고 None)."""
-        if not (0 <= self._server_row < len(self.servers)):
-            return None
-        try:
-            server_os = self.draft.server_os if self.draft else "linux"
-            return parse_servers([self.servers[self._server_row]], "서버", server_os)[0]
-        except ConfigError as e:
-            self.ctx.dialogs.error("서버 연결", str(e))
-            return None
-
-    def test_server(self) -> None:
-        profile = self._current_profile()
-        if profile is None:
-            return
-        self.server_test_btn.setEnabled(False)
-        self.server_test_btn.setText("시험 중…")
-
-        def finish() -> None:
-            self.server_test_btn.setEnabled(True)
-            self.server_test_btn.setText("연결 시험")
-
-        def done(text: str) -> None:
-            finish()
-            self.ctx.dialogs.info("연결 시험", text)
-
-        def failed(text: str) -> None:
-            finish()
-            self.ctx.dialogs.error("연결 시험 실패", text)
-
-        self.remote_client.test(profile, done, failed, finish)  # 비밀번호 입력을 취소하면 finish
-
-    def forget_server_secrets(self) -> None:
-        profile = self._current_profile()
-        if profile is None:
-            return
-        removed = self.remote_client.forget(profile)
-        self.ctx.dialogs.info("비밀번호 지우기", f"저장된 비밀번호 {removed}개를 지웠습니다." if removed
-                              else "저장된 비밀번호가 없습니다.")
-
     # ------------------------------------------------------------------ 불러오기
     def _on_project(self) -> None:
         """작업 프로젝트가 바뀌거나 설정을 다시 읽었을 때."""
@@ -991,10 +489,9 @@ class ProjectsPage(QWidget):
         self.allow_list.set_lines(e.get("allow") or [])
         self.notices_table.set_rows(e.get("notices") or [])
         shared_servers = self.layers.inherited("servers")[0] or []
-        self._load_servers(e.get("servers") or shared_servers)
-        self.servers_note.setText("저장소의 .shipkit.yml 에 있는 서버입니다. 고치면 이 PC 의 개인 설정에 저장됩니다."
-                                  if shared_servers and not e.get("servers") else "")
-        self.servers_note.setVisible(bool(self.servers_note.text()))
+        self.servers_tab.load(e.get("servers") or shared_servers,
+                              "저장소의 .shipkit.yml 에 있는 서버입니다. 고치면 이 PC 의 개인 설정에 저장됩니다."
+                              if shared_servers and not e.get("servers") else "")
         self.test_tree.clear()
         self.test_tree.hide()
         self.test_note.hide()
@@ -1060,10 +557,10 @@ class ProjectsPage(QWidget):
         put("allow", self.allow_list.lines())
         put("notices", self.notices_table.rows())
         shared_servers = (self.layers.inherited("servers")[0] if self.layers else None) or []
-        if self.servers == shared_servers and "servers" not in (self.layers.entry if self.layers else {}):
+        if self.servers_tab.servers == shared_servers and "servers" not in (self.layers.entry if self.layers else {}):
             entry.pop("servers", None)   # 저장소 값 그대로면 개인 설정에 따로 두지 않는다
         else:
-            put("servers", copy.deepcopy(self.servers))
+            put("servers", copy.deepcopy(self.servers_tab.servers))
         return entry
 
     def _changed(self, *_) -> None:
