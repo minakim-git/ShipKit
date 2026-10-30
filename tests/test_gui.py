@@ -534,6 +534,23 @@ def test_theme_switch(qapp, tmp_path, maven_project):
     assert not theme.is_dark() and theme.LIGHT["BG"] in qapp.styleSheet()
 
 
+def test_message_dialog_layout_and_buttons(qapp):
+    """확인 창: 한국어 단추, 마지막 단추가 기본, 예/아니요 가 accept/reject 로 이어진다."""
+    from shipkit.gui.widgets import MessageDialog
+    d = MessageDialog(None, "반영하기", "개발 서버에 반영합니다.\n\n계속할까요?", "question", [("아니요", False), ("예", True)])
+    assert [b.text() for b in d.buttons] == ["아니요", "예"] and d.buttons[1].isDefault()
+    assert d.buttons[1].objectName() == "primary" and d.buttons[0].objectName() == ""
+    assert d.text.text().startswith("개발 서버") and d.minimumWidth() >= 440
+    results = []
+    d.accepted.connect(lambda: results.append("accept"))
+    d.rejected.connect(lambda: results.append("reject"))
+    d.buttons[0].click()
+    assert results == ["reject"] and d.clicked == 0
+    d.buttons[1].click()
+    assert results[-1] == "accept" and d.clicked == 1
+    assert MessageDialog(None, "오류", "x", "danger").buttons[0].text() == "확인"
+
+
 def test_remote_panel_cancel(qapp, tmp_path, maven_project, monkeypatch):
     """[취소]는 진행 중일 때만 보이고, 끊긴 작업은 오류 창 없이 이전 상태로 돌아온다."""
     from shipkit import remote

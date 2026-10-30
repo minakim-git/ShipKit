@@ -7,7 +7,7 @@ from typing import Callable, List, Optional, Sequence, Tuple
 from PySide6.QtCore import QRectF, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QFont, QFontMetrics, QGuiApplication, QPainter, QPainterPath
 from PySide6.QtWidgets import (
-    QApplication, QComboBox, QFileDialog, QStyleOptionComboBox, QStylePainter, QFrame, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QSizePolicy, QStyle, QStyledItemDelegate,
+    QApplication, QComboBox, QDialog, QFileDialog, QStyleOptionComboBox, QStylePainter, QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton, QSizePolicy, QStyle, QStyledItemDelegate,
     QStyleOptionViewItem, QVBoxLayout, QWidget,
 )
 
@@ -463,6 +463,63 @@ def open_path(path: Path) -> None:
     QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
 
+_MESSAGE_MARK = {"info": "i", "success": "✓", "warning": "!", "danger": "!", "question": "?"}
+
+
+class MessageDialog(QDialog):
+    """앱 안의 다른 창과 같은 모양의 메시지 창 (Qt 기본 QMessageBox 는 아이콘 칸이 넓고 글이 오른쪽에 몰리며 단추가 영어다).
+
+    왼쪽에 작은 색 동그라미 표시, 오른쪽에 제목과 글. 단추는 오른쪽 아래, 마지막 단추가 기본(Enter). Esc 는 거절.
+    buttons: (글, 받아들임 여부) 목록. 예: [("아니요", False), ("예", True)]
+    """
+
+    def __init__(self, parent: Optional[QWidget], title: str, text: str, tone: str = "info",
+                 buttons: Sequence[Tuple[str, bool]] = (("확인", True),), extra: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setMinimumWidth(480)
+        self.setMaximumWidth(680)
+        self.clicked: Optional[int] = None
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(22, 20, 22, 16)
+        layout.setSpacing(16)
+        body = QHBoxLayout()
+        body.setSpacing(14)
+        mark = QLabel(_MESSAGE_MARK.get(tone, "i"))
+        mark.setFixedSize(30, 30)
+        mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        color = theme.TONES.get("primary" if tone == "question" else tone, theme.TONES["info"])[0]
+        mark.setStyleSheet(f"background: {color}; color: white; border-radius: 15px; font-weight: 700; font-size: 12pt;")
+        body.addWidget(mark, 0, Qt.AlignmentFlag.AlignTop)
+        texts = QVBoxLayout()
+        texts.setSpacing(6)
+        texts.addWidget(label(title, "cardTitle"))
+        self.text = label(text)
+        self.text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        texts.addWidget(self.text)
+        if extra is not None:
+            texts.addWidget(extra)
+        body.addLayout(texts, 1)
+        layout.addLayout(body)
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        row.addStretch(1)
+        self.buttons: List[QPushButton] = []
+        for i, (caption, accept) in enumerate(buttons):
+            b = button(caption, "primary" if accept else "")
+            b.setMinimumWidth(84)
+            b.clicked.connect(lambda _=False, index=i, ok=accept: self._pick(index, ok))
+            row.addWidget(b)
+            self.buttons.append(b)
+        if self.buttons:
+            self.buttons[-1].setDefault(True)
+        layout.addLayout(row)
+
+    def _pick(self, index: int, accept: bool) -> None:
+        self.clicked = index
+        self.accept() if accept else self.reject()
+
+
 class Dialogs:
     """메시지 창. 테스트에서는 창을 띄우지 않는 대역으로 바꿔 끼운다."""
 
@@ -470,51 +527,43 @@ class Dialogs:
         self.parent = parent
 
     def info(self, title: str, text: str) -> None:
-        QMessageBox.information(self.parent, title, text)
+        MessageDialog(self.parent, title, text, "info").exec()
 
     def error(self, title: str, text: str) -> None:
-        QMessageBox.critical(self.parent, title, text)
+        MessageDialog(self.parent, title, text, "danger").exec()
 
     def ask(self, title: str, text: str) -> bool:
-        return QMessageBox.question(self.parent, title, text) == QMessageBox.StandardButton.Yes
+        return bool(MessageDialog(self.parent, title, text, "question", [("아니요", False), ("예", True)]).exec())
 
     def choose(self, title: str, text: str, options: Sequence[str]) -> Optional[str]:
         """목록에서 하나 고르기. 취소하면 None."""
-        from PySide6.QtWidgets import QInputDialog
-        value, ok = QInputDialog.getItem(self.parent, title, text, list(options), 0, False)
-        return value if ok else None
+        combo = QComboBox()
+        combo.addItems(list(options))
+        dialog = MessageDialog(self.parent, title, text, "question", [("취소", False), ("확인", True)], extra=combo)
+        return combo.currentText() if dialog.exec() else None
 
     def ask_secret(self, title: str, text: str) -> Optional[Tuple[str, bool]]:
         """비밀번호 입력 + [이 PC 에 저장]. 반환: (값, 저장 여부) 또는 취소 시 None."""
-        from PySide6.QtWidgets import QCheckBox, QDialog
-        dialog = QDialog(self.parent)
-        dialog.setWindowTitle(title)
-        dialog.setMinimumWidth(460)
+        from PySide6.QtWidgets import QCheckBox
+        extra = QWidget()
+        col = QVBoxLayout(extra)
+        col.setContentsMargins(0, 4, 0, 0)
+        col.setSpacing(8)
         edit = QLineEdit()
         edit.setEchoMode(QLineEdit.EchoMode.Password)
         save = QCheckBox("이 PC 에 저장 (Windows 자격 증명 관리자, 다음부터 묻지 않음)")
         save.setChecked(True)
-        ok = button("확인", "primary")
-        ok.setDefault(True)
-        ok.clicked.connect(dialog.accept)
-        cancel = button("취소")
-        cancel.clicked.connect(dialog.reject)
-        row = QHBoxLayout()
-        row.addStretch(1)
-        row.addWidget(cancel)
-        row.addWidget(ok)
-        layout = QVBoxLayout(dialog)
-        layout.setContentsMargins(20, 18, 20, 16)
-        layout.setSpacing(10)
-        layout.addWidget(label(text))
-        layout.addWidget(edit)
-        layout.addWidget(save)
-        layout.addLayout(row)
+        col.addWidget(edit)
+        col.addWidget(save)
+        dialog = MessageDialog(self.parent, title, text, "question", [("취소", False), ("확인", True)], extra=extra)
+        edit.setFocus()
         if not dialog.exec():
             return None
         return edit.text(), save.isChecked()
 
     def password(self, title: str, text: str) -> Optional[str]:
-        from PySide6.QtWidgets import QInputDialog
-        value, ok = QInputDialog.getText(self.parent, title, text, QLineEdit.EchoMode.Password)
-        return value.strip() if ok else None
+        edit = QLineEdit()
+        edit.setEchoMode(QLineEdit.EchoMode.Password)
+        dialog = MessageDialog(self.parent, title, text, "question", [("취소", False), ("확인", True)], extra=edit)
+        edit.setFocus()
+        return edit.text().strip() if dialog.exec() else None

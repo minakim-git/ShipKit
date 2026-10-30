@@ -421,5 +421,4 @@ QProgressBar::chunk {{ background: {PRIMARY}; border-radius: 3px; }}
 QStatusBar {{ background: {SURFACE}; border-top: 1px solid {BORDER}; color: {MUTED}; }}
 QStatusBar QLabel {{ color: {MUTED}; }}
 QSplitter::handle {{ background: transparent; }}
-QMessageBox QLabel {{ min-width: 280px; }}
 """
