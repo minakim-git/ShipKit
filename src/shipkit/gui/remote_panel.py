@@ -454,7 +454,10 @@ class RemotePanel(Card):
         if not hooks:
             return True
         lines = "\n".join(f"- {HOOK_TEXT.get(s, s)}: {cmd}" for s, cmds in hooks.items() for cmd in cmds)
-        return self.ctx.dialogs.ask("서버 명령", f"이 패키지에는 서버에서 실행할 명령이 있습니다.\n\n{lines}\n\n"
+        prev_name, changed = history.hooks_changed_since(self.project, exclude=self.result.out_dir)
+        warn = ("\n\n⚠ 지난 패키지 " + prev_name + " 때와 서버 명령 설정이 다릅니다. 누가 바꿨는지 확인하세요:\n"
+                + "\n".join(f"  · {c}" for c in changed)) if changed else ""
+        return self.ctx.dialogs.ask("서버 명령", f"이 패키지에는 서버에서 실행할 명령이 있습니다.\n\n{lines}{warn}\n\n"
                                                "함께 실행할까요? ([아니요]를 누르면 파일만 반영합니다)")
 
     def apply(self) -> None:

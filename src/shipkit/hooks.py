@@ -27,6 +27,35 @@ def select_hooks(project: ProjectConfig, changes: List[FileChange]) -> Tuple[Dic
     return selected, notes
 
 
+def config_dict(project: ProjectConfig) -> Dict[str, List[dict]]:
+    """설정된 서버 명령 전체(조건 포함)를 기록 파일에 남길 모양으로. 지난 패키지와 비교하는 데 쓴다."""
+    return {stage: [{"run": h.run, "when": h.when or ""} for h in hooks]
+            for stage, hooks in project.hooks.items() if hooks}
+
+
+def describe_changes(previous: Dict[str, List[dict]], current: Dict[str, List[dict]]) -> List[str]:
+    """지난 패키지의 서버 명령 설정과 지금 설정의 차이를 사람이 읽을 줄로. 같으면 빈 목록.
+
+    저장소에 커밋된 .shipkit.yml 의 hooks 는 쓰기 권한이 있는 누구나 바꿀 수 있는 서버 명령이라,
+    모르는 사이에 바뀐 것을 반영 전에 알아채도록 한다.
+    """
+    lines: List[str] = []
+    for stage in HOOK_STAGES:
+        before = {(h.get("run", ""), h.get("when") or "") for h in previous.get(stage, [])}
+        after = {(h.get("run", ""), h.get("when") or "") for h in current.get(stage, [])}
+        before_runs = {run for run, _ in before}
+        after_runs = {run for run, _ in after}
+        for run, when in sorted(after - before):
+            if run in before_runs:
+                lines.append(f"{stage} 조건 바뀜: {run}" + (f" (when: {when})" if when else " (조건 없음)"))
+            else:
+                lines.append(f"{stage} 추가: {run}" + (f" (when: {when})" if when else ""))
+        for run, when in sorted(before - after):
+            if run not in after_runs:
+                lines.append(f"{stage} 빠짐: {run}")
+    return lines
+
+
 def hook_file_name(stage: str, server_os: str) -> str:
     return f"{stage}.ps1" if server_os == "windows" else f"{stage}.sh"
 

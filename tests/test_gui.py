@@ -660,7 +660,17 @@ def test_remote_panel_upload_apply_rollback(qapp, tmp_path, maven_project, monke
     d.preview()
     d.make_package()
     panel.upload_and_check()
+    # 그 사이 저장소의 서버 명령이 바뀐 상황: 확인 창에 지난 패키지와 다른 점이 붙는다
+    write(maven_project / PROJECT_FILE, "hooks:\n  post_apply: [\"echo restarted\"]\n")
+    w.ctx.reload()
+    d.files_edit.setPlainText("src/main/webapp/WEB-INF/views/user/list.jsp")
+    d.preview()
+    assert any("서버 명령(hooks)이 지난 패키지" in d.messages.item(i).text() for i in range(d.messages.count()))
+    d.make_package()
+    panel.upload_and_check()
     panel.apply()
+    ask = next(m for m in dialogs.messages if m[0] == "ask" and m[1] == "서버 명령")
+    assert "지난 패키지" in ask[2] and "post_apply 추가: echo restarted" in ask[2]
     assert panel.stage == "applied", panel.log.toPlainText()
     w.go(PAGE_HISTORY)
     h.list.setCurrentRow(0)                                     # 가장 최근 패키지 (이전 선택은 유지되므로 직접 고름)
