@@ -15,12 +15,13 @@ from __future__ import annotations
 import base64
 import hashlib
 import posixpath
+import re
 import shlex
 import socket
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, List, Optional, Protocol
+from typing import Callable, Dict, List, Optional, Protocol, Tuple
 
 from shipkit.config import ServerProfile, user_config_path
 
@@ -423,6 +424,53 @@ def backup_and_apply(conn: Connection, profile: ServerProfile, secrets: Secrets,
     if not result.ok:
         return result
     return run_action(conn, profile, secrets, remote_dir, "apply", output, yes=run_hooks, no_hooks=not run_hooks)
+
+
+# ---------------------------------------------------------------------- check 출력 읽기
+# 서버 스크립트 check 가 찍는 줄: "  [신규] path", "  [변경] path", ... 와 요약 "[정보] 신규 N / 변경 N / ..."
+CHECK_KINDS = ("신규", "변경", "동일", "삭제예정", "이미없음", "정리예정")
+CHECK_TEXT = {"신규": "서버에 새로 생기는 파일", "변경": "내용이 달라 바뀌는 파일", "동일": "서버와 같아 건드리지 않는 파일",
+              "삭제예정": "서버에서 지울 파일", "이미없음": "지우려 했지만 서버에 이미 없는 파일",
+              "정리예정": "이번 빌드에 없어 정리 폴더에서 지울 옛 파일"}
+_CHECK_ITEM = re.compile(r"^\s*\[(" + "|".join(CHECK_KINDS) + r")\] (.+?)\s*$")
+_CHECK_SUMMARY = re.compile(r"\[정보\]\s*(신규 \d+(?: / [^/\n]+?\d+)*)\s*$")
+_CHECK_COUNT = re.compile(r"(" + "|".join(CHECK_KINDS) + r") (\d+)")
+
+
+@dataclass
+class CheckResult:
+    """check 결과: 상태별 파일 목록과 개수. 파일이 많으면(100개 초과) '동일' 은 개수만 있고 목록에 없다."""
+    items: List[Tuple[str, str]] = field(default_factory=list)   # (상태, 서버 경로 기준 상대 경로)
+    counts: Dict[str, int] = field(default_factory=dict)
+
+    def paths(self, kind: str) -> List[str]:
+        return [p for k, p in self.items if k == kind]
+
+    @property
+    def changes_server(self) -> int:
+        """apply 때 실제로 서버가 바뀌는 파일 수."""
+        return sum(self.counts.get(k, 0) for k in ("신규", "변경", "삭제예정", "정리예정"))
+
+
+def parse_check(text: str) -> Optional[CheckResult]:
+    """check 출력에서 상태별 파일과 요약 개수를 읽는다. check 출력이 아니면 None."""
+    result = CheckResult()
+    found = False
+    for line in text.replace("\r\n", "\n").split("\n"):
+        m = _CHECK_ITEM.match(line)
+        if m:
+            result.items.append((m.group(1), m.group(2)))
+            found = True
+            continue
+        m = _CHECK_SUMMARY.search(line)
+        if m:
+            result.counts = {k: int(n) for k, n in _CHECK_COUNT.findall(m.group(1))}
+            found = True
+    if not found:
+        return None
+    for kind in CHECK_KINDS:  # 요약이 없으면 목록에서 센다
+        result.counts.setdefault(kind, len(result.paths(kind)))
+    return result
 
 
 # ---------------------------------------------------------------------- 서버 배포 이력 (history.log)

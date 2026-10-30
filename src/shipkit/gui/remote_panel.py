@@ -12,11 +12,12 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QComboBox, QHBoxLayout, QPlainTextEdit, QProgressBar, QVBoxLayout, QWidget,
+    QComboBox, QHBoxLayout, QPlainTextEdit, QProgressBar, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from shipkit import history, remote
 from shipkit.config import ProjectConfig, ServerProfile
+from shipkit.gui import theme
 from shipkit.gui.context import AppContext
 from shipkit.gui.widgets import Card, Chip, button, label
 from shipkit.secrets import SecretError, delete_secret, get_secret, server_secret_key, set_secret
@@ -264,14 +265,33 @@ class RemotePanel(Card):
         buttons.addStretch(1)
         col.addLayout(buttons)
         status = QHBoxLayout()  # 상태 배지와 [취소]는 둘째 줄 (버튼과 한 줄에 두면 좁은 창에서 오른쪽이 잘린다)
+        status.setSpacing(6)
         status.addWidget(self.state_chip, 0, Qt.AlignmentFlag.AlignVCenter)
         status.addWidget(self.cancel_btn)
+        self.check_chips = QHBoxLayout()  # check 결과 개수 배지(신규 N, 변경 N …)도 같은 줄에
+        self.check_chips.setSpacing(6)
+        status.addLayout(self.check_chips)
         status.addStretch(1)
         col.addLayout(status)
         self.progress = QProgressBar()
         self.progress.setTextVisible(False)
         self.progress.hide()
         col.addWidget(self.progress)
+        # check 결과 표: 로그를 읽어 상태별(신규·변경·동일·삭제예정·이미없음·정리예정)로 묶어 보여 준다
+        self.check_result: Optional[remote.CheckResult] = None
+        self.check_box = QWidget()
+        check_col = QVBoxLayout(self.check_box)
+        check_col.setContentsMargins(0, 0, 0, 0)
+        check_col.setSpacing(6)
+        self.check_tree = QTreeWidget()
+        self.check_tree.setObjectName("checkTree")
+        self.check_tree.setHeaderLabels(["상태", "파일 (서버 배포 경로 기준)"])
+        self.check_tree.setRootIsDecorated(True)
+        self.check_tree.setMaximumHeight(240)
+        self.check_tree.header().setStretchLastSection(True)
+        check_col.addWidget(self.check_tree)
+        self.check_box.hide()
+        col.addWidget(self.check_box)
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
         self.log.setObjectName("serverLog")
@@ -311,6 +331,7 @@ class RemotePanel(Card):
 
     def _server_changed(self, *_args) -> None:
         self.remote_dir = None
+        self.show_check(None)
         self._set_stage("ready")
         p = self.profile
         if p is None:
@@ -324,7 +345,11 @@ class RemotePanel(Card):
         self.check_btn.setEnabled(not busy)
         self.apply_btn.setEnabled(not busy and stage == "checked")
         self.rollback_btn.setEnabled(not busy and stage in ("applied", "apply_failed"))
-        text, tone = {"ready": ("아직 올리지 않음", "neutral"), "checked": ("확인 끝 · 반영 대기", "success"),
+        checked = "확인 끝 · 반영 대기"
+        if self.check_result is not None:  # check 결과가 있으면 한 줄에: "확인 끝 · apply 때 바뀌는 파일 3개"
+            n = self.check_result.changes_server
+            checked = f"확인 끝 · apply 때 바뀌는 파일 {n}개" if n else "확인 끝 · 서버와 모두 같아 바뀌는 파일 없음"
+        text, tone = {"ready": ("아직 올리지 않음", "neutral"), "checked": (checked, "success"),
                       "check_failed": ("확인 실패", "danger"), "applied": ("반영 완료", "success"),
                       "apply_failed": ("반영 실패", "danger"), "rolled_back": ("되돌림", "warning")}[stage]
         self.state_chip.set("진행 중…" if busy else text, "info" if busy else tone)
@@ -344,6 +369,37 @@ class RemotePanel(Card):
         self.log.moveCursor(self.log.textCursor().MoveOperation.End)
         self.log.insertPlainText(text.replace("\r\n", "\n"))
         self.log.ensureCursorVisible()
+
+    def show_check(self, result: Optional[remote.CheckResult]) -> None:
+        """check 로그를 표로: 상태 배지 옆의 상태별 개수 배지와, 상태마다 접을 수 있는 파일 목록."""
+        self.check_result = result
+        self.check_tree.clear()
+        while self.check_chips.count():
+            item = self.check_chips.takeAt(0)
+            if item.widget():
+                item.widget().hide()
+                item.widget().deleteLater()
+        if result is None:
+            self.check_box.hide()
+            return
+        tones = {"신규": "success", "변경": "warning", "동일": "neutral", "삭제예정": "danger", "이미없음": "neutral",
+                 "정리예정": "danger"}
+        for kind in remote.CHECK_KINDS:
+            count = result.counts.get(kind, 0)
+            if not count:
+                continue
+            self.check_chips.addWidget(Chip(f"{kind} {count}", tones[kind]))
+            top = QTreeWidgetItem([f"{kind} {count}", remote.CHECK_TEXT[kind]])
+            top.setForeground(0, theme.tone_color(tones[kind]))
+            paths = result.paths(kind)
+            for path in paths:
+                top.addChild(QTreeWidgetItem(["", path]))
+            if count > len(paths):  # 파일이 많으면 서버 스크립트가 '동일' 은 개수만 찍는다
+                top.addChild(QTreeWidgetItem(["", f"(목록 생략: {count - len(paths)}개)"]))
+            self.check_tree.addTopLevelItem(top)
+            top.setExpanded(kind != "동일")
+        self.check_tree.resizeColumnToContents(0)
+        self.check_box.show()
 
     def _record(self, p: ServerProfile, res: remote.StepResult) -> None:
         """서버에서 한 일을 패키지 기록 파일에 남긴다 (기록 화면의 '서버 반영' 탭, 서버에서 되돌리기)."""
@@ -391,13 +447,15 @@ class RemotePanel(Card):
         if p is None:
             return
         self.log.clear()
+        self.show_check(None)
         package = self.result.out_dir
 
         def done(res: remote.StepResult) -> None:
             self.remote_dir = res.remote_dir
             self._record(p, res)
             if res.ok:
-                self._append("\n✓ 확인 끝. 위 내용을 보고 [백업 후 반영]을 누르세요.\n")
+                self.show_check(remote.parse_check(self.log.toPlainText()))
+                self._append("\n✓ 확인 끝. 위 표를 보고 [백업 후 반영]을 누르세요.\n")
                 self._set_stage("checked")
             else:
                 self._append(f"\n✗ {res.action} 실패 (종료 코드 {res.code})\n")

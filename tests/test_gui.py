@@ -611,6 +611,12 @@ def test_remote_panel_upload_apply_rollback(qapp, tmp_path, maven_project, monke
 
     panel.upload_and_check()                                    # 처음: 지문 확인 + 비밀번호 입력(저장)
     assert panel.stage == "checked", panel.log.toPlainText()
+    tree = panel.check_tree                                     # check 로그가 표로: 변경 1 (list.jsp 가 OLD -> 새 내용)
+    assert panel.check_box.isVisibleTo(panel) and tree.topLevelItemCount() == 1
+    assert tree.topLevelItem(0).text(0) == "변경 1" and tree.topLevelItem(0).child(0).text(1) == "WEB-INF/views/user/list.jsp"
+    chips = [panel.check_chips.itemAt(i).widget().text() for i in range(panel.check_chips.count())
+             if panel.check_chips.itemAt(i).widget()]
+    assert chips == ["변경 1"] and panel.state_chip.text() == "확인 끝 · apply 때 바뀌는 파일 1개"  # 상태와 한 줄
     assert [m[1] for m in dialogs.messages if m[0] in ("ask", "secret")] == ["새 서버 확인", "비밀번호 입력"]
     assert keyring.store[("shipkit", f"ssh:login:deployer@127.0.0.1:{sshd.port}")] == LOGIN_PW
     panel.apply()

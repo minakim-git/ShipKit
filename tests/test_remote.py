@@ -232,6 +232,23 @@ def test_pty_output_is_not_lost(sshd, tmp_path):
         conn.close()
 
 
+def test_parse_check_output():
+    text = ("$ check  (deployer 계정)\n[정보] 대상 경로: /srv/app\n== 반영 대상 (manifest.txt) ==\n"
+            "  [신규] WEB-INF/classes/com/acme/New.class\n  [동일] css/a.css\n  [변경] WEB-INF/views/user/list.jsp\r\n"
+            "  (서버와 같은 파일 1개는 apply 때 건드리지 않습니다)\n== 삭제 대상 (delete.txt) ==\n"
+            "  [삭제예정] old.jsp\n  [이미없음] gone.jsp\n== 정리 대상 ==\n  [정리예정] assets/app.old.js\n"
+            "== post_apply 명령 ==\n    sudo systemctl restart tomcat\n"
+            "[정보] 신규 1 / 변경 1 / 동일 1 / 삭제예정 1 / 이미없음 1 / 정리예정 1\n")
+    r = remote.parse_check(text)
+    assert r.counts == {"신규": 1, "변경": 1, "동일": 1, "삭제예정": 1, "이미없음": 1, "정리예정": 1}
+    assert r.paths("변경") == ["WEB-INF/views/user/list.jsp"] and r.changes_server == 4
+    assert remote.parse_check("아무 관계 없는 출력\n") is None
+    many = "  [변경] a\n  (서버와 같은 파일 150개는 apply 때 건드리지 않습니다)\n[정보] 신규 0 / 변경 1 / 동일 150 / 삭제예정 0 / 이미없음 0 / 정리예정 0\n"
+    r = remote.parse_check(many)                                 # 파일이 많으면 '동일' 은 개수만
+    assert r.counts["동일"] == 150 and r.paths("동일") == [] and r.changes_server == 1
+    assert remote.parse_check("  [변경] a\n  [변경] b\n").counts["변경"] == 2   # 요약 줄이 없으면 센다
+
+
 def test_parse_server_history():
     text = ("2026-10-01 10:00:00\tdeployer\tbackup\t/srv/app\t2026-10-01-0900\t보관 2개\n"
             "2026-10-01 10:01:00\tdeployer\tapply\t/srv/app\t2026-10-01-0900\t반영 2개, 동일(건너뜀) 0개\r\n"
