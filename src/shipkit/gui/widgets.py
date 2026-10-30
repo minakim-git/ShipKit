@@ -310,7 +310,8 @@ class CommandRow(QFrame):
 
 
 META_ROLE = Qt.ItemDataRole.UserRole + 1   # 프로젝트 전환기 항목의 두 번째 줄 (프리셋 · 서버)
-_AVATAR_COLORS = ("#4F46E5", "#0E9384", "#C11574", "#B54708", "#175CD3", "#6941C6", "#027A48", "#D92D20")
+# 프로젝트 전환기의 머리글자 동그라미 색: 아이보리 바탕에 맞춰 채도를 낮춘 색들
+_AVATAR_COLORS = ("#8B8468", "#5B7590", "#B4533E", "#A3692B", "#4F7A4A", "#7D6B8E", "#3F7A76", "#9C5A7A")
 
 
 def _avatar_color(name: str) -> QColor:

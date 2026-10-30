@@ -62,7 +62,7 @@ class SetupWizard(QDialog):
         layout.setSpacing(14)
         head = QHBoxLayout()
         logo = QLabel()
-        logo.setPixmap(theme.logo_pixmap(40))
+        theme.bind_logo(logo, 40)  # 테마에 맞는 색 (어두운 테마면 어두운 바탕·밝은 선)
         texts = QVBoxLayout()
         texts.setSpacing(2)
         texts.addWidget(label(f"{__app_name__} 시작하기", "pageTitle"))

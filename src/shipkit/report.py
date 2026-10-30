@@ -229,9 +229,9 @@ def write_report(path: Path, result: "PackageResult") -> None:
 
 # ---------------------------------------------------------------------- 보고서 창 (Qt 서식 HTML)
 # Qt 의 서식 문서가 이해하는 범위(표·글자색·배경·여백)만 쓴다. 모서리 둥글기·flex 는 안 된다.
-_T = {"text": "#101828", "muted": "#667085", "border": "#E4E7EC", "head": "#F9FAFB", "code": "#F2F4F7",
-      "success": ("#027A48", "#ECFDF3"), "warning": ("#B54708", "#FFFAEB"), "danger": ("#B42318", "#FEF3F2"),
-      "neutral": ("#344054", "#F2F4F7"), "primary": ("#4F46E5", "#EEF2FF")}
+_T = {"text": "#2F2C25", "muted": "#7C7668", "border": "#E5E1D5", "head": "#F6F4EC", "code": "#EEEAE0",
+      "success": ("#4F7A4A", "#EAF1E6"), "warning": ("#A3692B", "#F8EEDD"), "danger": ("#B4533E", "#F7E6E1"),
+      "neutral": ("#4E493F", "#EEEAE0"), "primary": ("#7D7660", "#ECE8DB")}  # 화면에서는 theme.report_colors() 가 대신 준다
 _TONE = {"ok": "success", "warn": "warning", "error": "danger", "skipped": "neutral"}
 _MONO = "'Cascadia Mono', Consolas, 'Malgun Gothic'"
 

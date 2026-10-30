@@ -11,7 +11,7 @@ import tempfile
 import weakref
 from importlib import resources
 from pathlib import Path
-from typing import Callable, Dict, List, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 from PySide6.QtCore import QByteArray, QSize, Qt
 from PySide6.QtGui import QColor, QGuiApplication, QIcon, QPainter, QPalette, QPixmap
@@ -20,15 +20,16 @@ from PySide6.QtSvg import QSvgRenderer
 # ---------------------------------------------------------------------- 색 묶음
 # 이름은 쓰임새 기준. HEAD: 표 머리글·옅은 바탕, LINE: 행 구분선, LABEL: 입력 칸 이름·보조 버튼 글자,
 # BTN: 채운 버튼·체크 상자 바탕(어두운 테마에서는 글자용 PRIMARY 보다 진하게)
+# 밝은 테마: 아이보리 바탕에 로고(스패너·망치 선 그림)와 같은 회갈색 포인트. 눈이 편하도록 채도를 낮췄다.
 LIGHT: Dict[str, str] = {
-    "BG": "#F4F6FA", "SURFACE": "#FFFFFF", "BORDER": "#E4E7EC", "BORDER_STRONG": "#D0D5DD", "HOVER": "#F2F4F7",
-    "TEXT": "#101828", "MUTED": "#667085", "SUBTLE": "#98A2B3", "LABEL": "#344054",
-    "HEAD": "#F9FAFB", "LINE": "#F2F4F7", "ALT": "#FAFBFC",
-    "BTN": "#4F46E5", "BTN_HOVER": "#4338CA", "BTN_DISABLED": "#C7D2FE",
-    "PRIMARY": "#4F46E5", "PRIMARY_HOVER": "#4338CA", "PRIMARY_SOFT": "#EEF2FF", "PRIMARY_DISABLED": "#C7D2FE",
-    "TIP_BG": "#101828",
-    "OK_BORDER": "#ABEFC6", "ERR_BORDER": "#FECDCA", "DANGER_HOVER_BORDER": "#FDA29B",
-    "WARN_BORDER": "#FEDF89", "WARN_HOVER": "#FEF0C7", "WARN_HOVER_BORDER": "#FEC84B",
+    "BG": "#F3F1E9", "SURFACE": "#FBFAF6", "BORDER": "#E5E1D5", "BORDER_STRONG": "#D3CDBC", "HOVER": "#EFEBE0",
+    "TEXT": "#2F2C25", "MUTED": "#7C7668", "SUBTLE": "#A39C8C", "LABEL": "#4E493F",
+    "HEAD": "#F6F4EC", "LINE": "#EEEAE0", "ALT": "#F8F6F0",
+    "BTN": "#8B8468", "BTN_HOVER": "#766F56", "BTN_DISABLED": "#D4CEBC",
+    "PRIMARY": "#7D7660", "PRIMARY_HOVER": "#655F4B", "PRIMARY_SOFT": "#ECE8DB", "PRIMARY_DISABLED": "#D4CEBC",
+    "TIP_BG": "#2F2C25",
+    "OK_BORDER": "#BFD6B8", "ERR_BORDER": "#EBC2B6", "DANGER_HOVER_BORDER": "#E0A896",
+    "WARN_BORDER": "#EBD3A3", "WARN_HOVER": "#F7EEDC", "WARN_HOVER_BORDER": "#E2BD7A",
 }
 DARK: Dict[str, str] = {
     "BG": "#111318", "SURFACE": "#1A1D24", "BORDER": "#2A2F3A", "BORDER_STRONG": "#3A4150", "HOVER": "#232833",
@@ -41,9 +42,9 @@ DARK: Dict[str, str] = {
     "WARN_BORDER": "#5A4515", "WARN_HOVER": "#3A2E12", "WARN_HOVER_BORDER": "#7A5D18",
 }
 # 상태 색: (글자색, 배경색)
-LIGHT_TONES: Dict[str, Tuple[str, str]] = {
-    "success": ("#027A48", "#ECFDF3"), "warning": ("#B54708", "#FFFAEB"), "danger": ("#B42318", "#FEF3F2"),
-    "info": ("#175CD3", "#EFF8FF"), "primary": ("#4F46E5", "#EEF2FF"), "neutral": ("#344054", "#F2F4F7"),
+LIGHT_TONES: Dict[str, Tuple[str, str]] = {   # 아이보리 위에서 튀지 않게 채도를 낮춘 초록·황갈·벽돌·회청
+    "success": ("#4F7A4A", "#EAF1E6"), "warning": ("#A3692B", "#F8EEDD"), "danger": ("#B4533E", "#F7E6E1"),
+    "info": ("#5B7590", "#E8EEF3"), "primary": ("#7D7660", "#ECE8DB"), "neutral": ("#4E493F", "#EEEAE0"),
 }
 DARK_TONES: Dict[str, Tuple[str, str]] = {
     "success": ("#4ADE80", "#14291D"), "warning": ("#FBBF24", "#2E2410"), "danger": ("#F87171", "#341A1A"),
@@ -211,8 +212,28 @@ def bind_icon(obj, name: str, color_key: str, size: int = 20, selected_key: str 
     _bound.append((weakref.ref(obj), args))
 
 
-def logo_pixmap(size: int) -> QPixmap:
-    renderer = QSvgRenderer(str(assets_dir() / "logo.svg"))
+# 로고(logo.svg)의 색: 밝은 테마 값이 파일에 적혀 있고, 어두운 테마에서는 바탕을 어둡게·선을 밝은 모래색으로 바꾼다
+LOGO_COLORS = {
+    "light": {"bg": "#EDEBE2", "stroke": "#8B8468", "accent": "#C9B99A"},
+    "dark": {"bg": "#2A2F3A", "stroke": "#D8D1B8", "accent": "#8F8870"},
+}
+
+
+def logo_svg(frame: bool = True, mode: Optional[str] = None) -> str:
+    """로고 SVG 글. frame=False 면 네모 바탕을 빼고 공구만 꽉 차게 (사이드바용). mode 를 주면 그 테마 색."""
+    text = (assets_dir() / "logo.svg").read_text(encoding="utf-8")
+    if not frame:
+        text = re.sub(r"<rect [^>]*?/>", "", text, count=1).replace('viewBox="0 0 64 64"', 'viewBox="5 5 54 54"')
+    mode = mode or MODE
+    if mode == "dark":
+        for key, light in LOGO_COLORS["light"].items():
+            text = text.replace(light, LOGO_COLORS["dark"][key])
+    return text
+
+
+def logo_pixmap(size: int, frame: bool = True, mode: Optional[str] = None) -> QPixmap:
+    """창 아이콘은 mode='light' 로 고정해 쓴다 (작업 표시줄은 앱 테마를 따르지 않으므로)."""
+    renderer = QSvgRenderer(QByteArray(logo_svg(frame, mode).encode("utf-8")))
     pm = QPixmap(QSize(size * 2, size * 2))
     pm.fill(Qt.GlobalColor.transparent)
     painter = QPainter(pm)
@@ -220,6 +241,14 @@ def logo_pixmap(size: int) -> QPixmap:
     painter.end()
     pm.setDevicePixelRatio(2)
     return pm
+
+
+def bind_logo(label, size: int, frame: bool = True) -> None:
+    """label 에 로고를 넣고, 테마가 바뀌면 그 테마 색으로 다시 그린다."""
+    def refresh() -> None:
+        label.setPixmap(logo_pixmap(size, frame))
+    refresh()
+    on_change(refresh)
 
 
 def tone_color(tone: str) -> QColor:

@@ -49,7 +49,7 @@ class MainWindow(QMainWindow):
     def __init__(self, config_path: Optional[Path] = None, runner=None, dialogs: Optional[Dialogs] = None):
         super().__init__()
         self.setWindowTitle(f"{__app_name__} - {__tagline__}")
-        self.setWindowIcon(QIcon(theme.logo_pixmap(32)))
+        self.setWindowIcon(QIcon(theme.logo_pixmap(32, mode="light")))  # 작업 표시줄은 앱 테마와 무관
         self.resize(1240, 840)
         self.setMinimumSize(1000, 660)
         self.ctx = AppContext(config_path=config_path or default_config_path(),
@@ -103,10 +103,10 @@ class MainWindow(QMainWindow):
         side.setSpacing(0)
 
         brand_row = QHBoxLayout()
-        brand_row.setContentsMargins(22, 0, 16, 0)
+        brand_row.setContentsMargins(18, 0, 16, 0)  # 아래 프로젝트 상자(16px) 와 같은 선에 맞춤
         brand_row.setSpacing(10)
         logo = QLabel()
-        logo.setPixmap(theme.logo_pixmap(34))
+        theme.bind_logo(logo, 30, frame=False)  # 사이드바에서는 네모 없이 공구 선만, 테마 색으로
         texts = QVBoxLayout()
         texts.setSpacing(0)
         texts.addWidget(label(__app_name__, "brand", wrap=False))
