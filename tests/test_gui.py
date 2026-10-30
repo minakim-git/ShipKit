@@ -525,6 +525,60 @@ def test_theme_switch(qapp, tmp_path, maven_project):
     assert not theme.is_dark() and theme.LIGHT["BG"] in qapp.styleSheet()
 
 
+def test_remote_panel_cancel(qapp, tmp_path, maven_project, monkeypatch):
+    """[취소]는 진행 중일 때만 보이고, 끊긴 작업은 오류 창 없이 이전 상태로 돌아온다."""
+    from shipkit import remote
+
+    class FakeConn:
+        def __init__(self, profile, secrets):
+            self.cancelled = False
+
+        def cancel(self):
+            self.cancelled = True
+
+        def close(self):
+            pass
+
+    panel_ref = {}
+
+    def step(conn, output, progress):
+        output("올리는 중...\n")
+        panel = panel_ref["panel"]
+        assert panel.cancel_btn.isVisibleTo(panel) and panel.cancel_btn.isEnabled()
+        panel.cancel_btn.click()                                 # 작업 중에 [취소]
+        assert conn.cancelled and panel.cancel_btn.text() == "중단 중…"
+        raise remote.RemoteCancelled("취소했습니다.")
+
+    dialogs = FakeDialogs(password="pw")
+    path = _config(tmp_path, maven_project, servers=[{"name": "개발", "host": "10.0.0.5", "user": "deployer"}])
+    w = make_window(path, dialogs)
+    d = w.deploy_page
+    d.files_edit.setPlainText("src/main/webapp/WEB-INF/views/user/list.jsp")
+    d.preview()
+    d.make_package()
+    panel = d.remote_panel
+    panel_ref["panel"] = panel
+    panel.client.connection_factory = FakeConn
+    panel.client.host_key_checker = lambda profile: remote.HostKeyStatus("known", "ssh-ed25519", "SHA256:x")
+    assert not panel.cancel_btn.isVisibleTo(panel)
+    assert not panel.client.cancel()                             # 진행 중인 작업이 없으면 끊을 것도 없다
+
+    panel.client.stream = _wrap_stream(panel.client, step)
+    panel.upload_and_check()
+    assert panel.stage == "ready" and not panel.cancel_btn.isVisibleTo(panel)
+    assert "[취소] 취소했습니다." in panel.log.toPlainText()
+    assert not [m for m in dialogs.messages if m[0] == "error"]  # 취소는 오류가 아니다
+
+
+def _wrap_stream(client, step):
+    """RemoteClient.stream 에 들어가는 단계를 테스트용 step 으로 바꾼다 (지문·비밀번호 처리는 그대로)."""
+    original = client.stream
+
+    def stream(profile, secrets, _step, *args, **kwargs):
+        return original(profile, secrets, step, *args, **kwargs)
+    return stream
+
+
 def test_remote_panel_upload_apply_rollback(qapp, tmp_path, maven_project, monkeypatch, sshd):
     from sshd import LOGIN_PW
     from test_remote import bash_path

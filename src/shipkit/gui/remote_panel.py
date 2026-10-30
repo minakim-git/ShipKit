@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import shlex
+import threading
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from PySide6.QtCore import Qt, Signal
@@ -50,6 +51,17 @@ class RemoteClient:
         self.connection_factory: Callable[[ServerProfile, remote.Secrets], Any] = remote.SSHConnection
         self.host_key_checker: Callable[[ServerProfile], remote.HostKeyStatus] = remote.check_host_key
         self._trusted: Set[Tuple[str, int]] = set()
+        self._active: Optional[Any] = None   # 지금 작업 중인 연결 (취소용)
+        self._lock = threading.Lock()
+
+    def cancel(self) -> bool:
+        """진행 중인 올리기·실행을 끊는다. 반환: 끊을 작업이 있었는지."""
+        with self._lock:
+            conn = self._active
+        if conn is None:
+            return False
+        conn.cancel()
+        return True
 
     def secrets(self, profile: ServerProfile) -> Optional[remote.Secrets]:
         """필요한 비밀번호를 모은다 (저장돼 있으면 그대로, 없으면 묻는다). 취소하면 None."""
@@ -115,17 +127,25 @@ class RemoteClient:
     def stream(self, profile: ServerProfile, secrets: remote.Secrets,
                step: Callable[[Any, Callable[[str], None], Callable[[int, int], None]], Any],
                on_output: Callable[[str], None], on_progress: Callable[[int, int], None],
-               on_done: Callable[[Any], None], on_failed: Callable[[str], None]) -> None:
-        """접속해서 step(conn, output, progress) 을 백그라운드로 실행한다. 로그인 실패는 ('auth', 글) 로 돌려준다."""
+               on_done: Callable[[Any], None], on_failed: Callable[[str], None],
+               on_cancelled: Optional[Callable[[str], None]] = None) -> None:
+        """접속해서 step(conn, output, progress) 을 백그라운드로 실행한다.
+        로그인 실패는 ('auth', 글), [취소]로 끊은 것은 ('cancelled', 글) 로 돌려받아 각각 처리한다."""
 
         def work(emit):
             try:
                 conn = self.connection_factory(profile, secrets)
             except remote.RemoteAuthError as e:
                 return ("auth", str(e))
+            with self._lock:
+                self._active = conn
             try:
                 return step(conn, lambda text: emit(("out", text)), lambda a, b: emit(("progress", a, b)))
+            except remote.RemoteCancelled as e:
+                return ("cancelled", str(e))
             finally:
+                with self._lock:
+                    self._active = None
                 conn.close()
 
         def progress(item) -> None:
@@ -139,6 +159,10 @@ class RemoteClient:
                 removed = self.forget(profile)
                 on_failed(result[1] + ("\n저장해 둔 비밀번호를 지웠습니다. 다시 시도하면 새로 묻습니다." if removed else ""))
                 return
+            if isinstance(result, tuple) and result and result[0] == "cancelled":
+                on_output(f"\n[취소] {result[1]}\n")
+                (on_cancelled or on_failed)(result[1])
+                return
             on_done(result)
 
         self.ctx.runner.run_stream(work, done, on_failed, progress)
@@ -147,14 +171,16 @@ class RemoteClient:
               on_progress: Callable[[int, int], None], on_done: Callable[[Any], None],
               on_failed: Callable[[str], None], on_cancel: Callable[[], None]) -> None:
         """서버 지문 확인 → 비밀번호 준비(필요하면 묻기) → make_step(secrets) 로 만든 단계를 실행.
-        지문을 먼저 확인해서, 엉뚱한 서버에 비밀번호를 넣는 일이 없게 한다."""
+        지문을 먼저 확인해서, 엉뚱한 서버에 비밀번호를 넣는 일이 없게 한다.
+        on_cancel: 비밀번호 입력을 취소했거나 [취소]로 작업을 끊었을 때."""
 
         def connect() -> None:
             secrets = self.secrets(profile)
             if secrets is None:
                 on_cancel()
                 return
-            self.stream(profile, secrets, make_step(secrets), on_output, on_progress, on_done, on_failed)
+            self.stream(profile, secrets, make_step(secrets), on_output, on_progress, on_done, on_failed,
+                        on_cancelled=lambda _msg: on_cancel())
 
         self.with_host_key(profile, connect, on_failed)
 
@@ -225,10 +251,15 @@ class RemotePanel(Card):
         self.rollback_btn = button("되돌리기 (rollback)", "danger")
         self.rollback_btn.clicked.connect(self.rollback)
         self.state_chip = Chip("", "neutral")
+        self.cancel_btn = button("취소", "ghost")   # 진행 중일 때만 보인다
+        self.cancel_btn.setToolTip("올리기·실행을 중단합니다. 서버에서 이미 시작된 명령은 그대로 끝까지 돌 수 있습니다.")
+        self.cancel_btn.clicked.connect(self.cancel)
+        self.cancel_btn.hide()
         for b in (self.check_btn, self.apply_btn, self.rollback_btn):
             buttons.addWidget(b)
         buttons.addSpacing(6)
         buttons.addWidget(self.state_chip, 0, Qt.AlignmentFlag.AlignVCenter)
+        buttons.addWidget(self.cancel_btn)
         buttons.addStretch(1)
         col.addLayout(buttons)
         self.progress = QProgressBar()
@@ -290,6 +321,17 @@ class RemotePanel(Card):
                       "check_failed": ("확인 실패", "danger"), "applied": ("반영 완료", "success"),
                       "apply_failed": ("반영 실패", "danger"), "rolled_back": ("되돌림", "warning")}[stage]
         self.state_chip.set("진행 중…" if busy else text, "info" if busy else tone)
+        self.cancel_btn.setVisible(busy)
+        self.cancel_btn.setEnabled(True)
+        self.cancel_btn.setText("취소")
+
+    def cancel(self) -> None:
+        """[취소]: 진행 중인 올리기·실행을 끊는다. 결과는 _run 의 취소 처리로 돌아온다."""
+        self.cancel_btn.setEnabled(False)
+        self.cancel_btn.setText("중단 중…")
+        if not self.client.cancel():   # 비밀번호 입력 등 연결 전 단계면 끊을 것이 없다
+            self.cancel_btn.setEnabled(True)
+            self.cancel_btn.setText("취소")
 
     def _append(self, text: str) -> None:
         self.log.moveCursor(self.log.textCursor().MoveOperation.End)
@@ -321,8 +363,11 @@ class RemotePanel(Card):
             self.progress.hide()
             on_done(result)
 
-        self.client.start(p, make_step, self._append, self._progress, done, failed,
-                          lambda: self._set_stage(prev))  # 비밀번호 입력을 취소하면 그대로
+        def cancelled() -> None:  # 비밀번호 입력을 취소했거나 [취소]로 끊었으면 이전 상태 그대로
+            self.progress.hide()
+            self._set_stage(prev)
+
+        self.client.start(p, make_step, self._append, self._progress, done, failed, cancelled)
 
     def upload_and_check(self) -> None:
         p = self.profile

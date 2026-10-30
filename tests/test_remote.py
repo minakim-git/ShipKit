@@ -180,6 +180,43 @@ def test_run_as_other_account_with_passwords(sshd, tmp_path, maven_project):
         conn.close()
 
 
+@needs_bash
+def test_cancel_and_idle_timeout(sshd, tmp_path):
+    """[취소]는 멈춰 있는 명령을 바로 끊고, 서버 출력이 오래 없으면 저절로 중단한다 (영원히 기다리지 않는다)."""
+    import threading
+    import time
+    p = _profile(sshd)
+    conn = _connect(sshd, tmp_path, p, remote.Secrets(login=LOGIN_PW))
+    out, errors = [], []
+
+    def work():
+        try:
+            conn.run("bash -c 'echo started; sleep 30'", out.append)
+        except remote.RemoteError as e:
+            errors.append(e)
+
+    t = threading.Thread(target=work, daemon=True)
+    t.start()
+    started = time.time()
+    while "started" not in "".join(out) and time.time() - started < 10:
+        time.sleep(0.05)
+    conn.cancel()
+    t.join(timeout=10)
+    assert not t.is_alive() and len(errors) == 1 and isinstance(errors[0], remote.RemoteCancelled)
+    with pytest.raises(remote.RemoteCancelled):                     # 끊은 연결은 더 쓰지 않는다
+        conn.run("echo again", out.append)
+    conn.close()
+
+    quick = _connect(sshd, tmp_path, p, remote.Secrets(login=LOGIN_PW))
+    quick.idle_timeout = 1
+    try:
+        assert quick.run("bash -c 'echo a; sleep 0.3; echo b'", out.append) == 0   # 출력이 이어지면 괜찮다
+        with pytest.raises(remote.RemoteError, match="1초 동안 아무 출력이 없어"):
+            quick.run("bash -c 'sleep 5'", out.append)
+    finally:
+        quick.close()
+
+
 def test_login_failure(sshd, tmp_path):
     p = _profile(sshd)
     known = tmp_path / "known_hosts"

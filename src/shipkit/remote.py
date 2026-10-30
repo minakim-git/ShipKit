@@ -17,6 +17,7 @@ import hashlib
 import posixpath
 import shlex
 import socket
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional, Protocol
@@ -27,6 +28,7 @@ Output = Callable[[str], None]
 Progress = Callable[[int, int], None]     # (보낸 바이트, 전체 바이트)
 EXECUTABLES = ("shipkit.sh",)             # 올린 뒤 실행 권한을 줄 파일 (hooks/*.sh 도)
 CONNECT_TIMEOUT = 15
+IDLE_TIMEOUT = 600                        # 명령 실행 중 이만큼(초) 서버 출력이 없으면 끊긴 것으로 보고 중단한다
 PROMPT_WINDOW = 256                       # 가상 터미널 출력이 이만큼 쌓이도록 암호 질문이 없으면 더 지켜보지 않는다
 SUDO_NEEDS_PASSWORD = "a password is required"   # sudo -n 이 비밀번호 없이 실행하지 못할 때 내는 문구
 
@@ -37,6 +39,10 @@ class RemoteError(Exception):
 
 class RemoteAuthError(RemoteError):
     """로그인 실패 (비밀번호·키가 틀림)."""
+
+
+class RemoteCancelled(RemoteError):
+    """사용자가 [취소]를 눌러 올리기·실행을 중단했다."""
 
 
 # ---------------------------------------------------------------------- 서버 지문
@@ -110,6 +116,7 @@ class Connection(Protocol):
     def home(self) -> str: ...
     def upload(self, local_dir: Path, remote_dir: str, progress: Optional[Progress] = None) -> None: ...
     def run(self, command: str, output: Output, password: Optional[str] = None, pty: bool = False) -> int: ...
+    def cancel(self) -> None: ...   # 다른 스레드에서: 진행 중인 올리기·명령을 끊는다 (RemoteCancelled 로 끝남)
     def close(self) -> None: ...
 
 
@@ -127,11 +134,19 @@ def key_needs_passphrase(key_file: str) -> bool:
 
 
 class SSHConnection:
-    """paramiko 로 접속한 서버. 서버 지문은 known_hosts 에 있어야 한다 (check_host_key → remember_host_key)."""
+    """paramiko 로 접속한 서버. 서버 지문은 known_hosts 에 있어야 한다 (check_host_key → remember_host_key).
 
-    def __init__(self, profile: ServerProfile, secrets: Secrets, known_hosts: Optional[Path] = None):
+    idle_timeout: 명령 실행 중 출력이 이만큼(초) 없으면 중단. cancel() 은 화면 스레드에서 불러 진행 중인 작업을 끊는다.
+    """
+
+    def __init__(self, profile: ServerProfile, secrets: Secrets, known_hosts: Optional[Path] = None,
+                 idle_timeout: float = IDLE_TIMEOUT):
         import paramiko
         self.profile = profile
+        self.idle_timeout = idle_timeout
+        self._cancelled = False
+        self._lock = threading.Lock()
+        self._chan = None
         self.client = paramiko.SSHClient()
         path = known_hosts or known_hosts_path()
         if path.is_file():
@@ -180,6 +195,7 @@ class SSHConnection:
         try:
             self._mkdirs(remote_dir)
             for f in files:
+                self._check_cancelled()
                 rel = f.relative_to(local_dir).as_posix()
                 target = posixpath.join(remote_dir, rel)
                 self._mkdirs(posixpath.dirname(target))
@@ -189,19 +205,49 @@ class SSHConnection:
                 sent += f.stat().st_size
                 if progress:
                     progress(sent, total)
-        except IOError as e:
+        except (IOError, EOFError) as e:
+            self._check_cancelled()
             raise RemoteError(f"올리지 못했습니다 ({remote_dir}): {e}") from e
 
     def run(self, command: str, output: Output, password: Optional[str] = None, pty: bool = False) -> int:
         import paramiko
+        self._check_cancelled()
         try:
             return self._run(command, output, password, pty)
-        except (paramiko.SSHException, OSError) as e:
+        except socket.timeout as e:
+            raise RemoteError(f"서버에서 {self.idle_timeout:g}초 동안 아무 출력이 없어 중단했습니다. "
+                              "네트워크가 끊겼거나 명령이 멈춘 것일 수 있습니다. 서버에서 직접 상태를 확인하세요.") from e
+        except (paramiko.SSHException, OSError, EOFError) as e:
+            self._check_cancelled()
             raise RemoteError(f"서버에서 명령을 실행하지 못했습니다: {e}") from e
+        finally:
+            with self._lock:
+                self._chan = None
+
+    def _check_cancelled(self) -> None:
+        if self._cancelled:
+            raise RemoteCancelled("취소했습니다.")
+
+    def cancel(self) -> None:
+        """진행 중인 올리기·명령을 끊는다. 연결 자체를 닫으므로 이 연결은 더 쓸 수 없다."""
+        with self._lock:
+            self._cancelled = True
+            chan = self._chan
+        try:
+            if chan is not None:
+                chan.close()
+            transport = self.client.get_transport()
+            if transport is not None:
+                transport.close()  # 막혀 있는 recv/put 이 바로 깨어난다
+        except Exception:  # noqa: BLE001  끊는 중의 오류는 중요하지 않다
+            pass
 
     def _run(self, command: str, output: Output, password: Optional[str], pty: bool) -> int:
         chan = self.client.get_transport().open_session()
+        with self._lock:
+            self._chan = chan
         try:
+            chan.settimeout(self.idle_timeout)
             if pty:
                 chan.get_pty(width=200)
             chan.set_combine_stderr(True)
@@ -233,6 +279,7 @@ class SSHConnection:
                 output(text)
             if pending:
                 output(pending)
+            self._check_cancelled()  # 취소로 채널이 닫혀 출력이 끝난 경우
             return chan.recv_exit_status()
         finally:
             chan.close()
