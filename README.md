@@ -320,6 +320,7 @@ powershell -ExecutionPolicy Bypass -File .\shipkit.ps1 rollback
 - 메일이나 인터넷으로 받은 파일은 Windows가 실행을 막을 수 있습니다. 그럴 때는 패키지 폴더에서 `Get-ChildItem -Recurse | Unblock-File`을 실행하세요.
 - `shipkit.ps1`은 Windows PowerShell 5.1에서도 한글이 깨지지 않도록 UTF-8(BOM)로 만듭니다.
 - 새 파일 소유자·권한 설정(`server.owner`, `file_mode`, `dir_mode`)은 리눅스 전용이라, Windows 서버에서는 쓸 수 없습니다.
+- 서버에 OpenSSH 서버가 있으면 [서버에 바로 반영](#서버에-바로-반영-sshsftp)도 됩니다. 이때 ShipKit 이 `powershell -EncodedCommand` 로 스크립트를 실행하므로 기본 셸이 cmd 든 PowerShell 이든 상관없습니다.
 
 ## 종료 코드
 
@@ -379,7 +380,7 @@ GUI 테스트는 화면 없이(`QT_QPA_PLATFORM=offscreen`) 실제 위젯을 조
   ```
 
 - 올리고 실행한 결과는 패키지의 `shipkit-record.json`에 남아 **기록** 화면에서 보입니다. 기록 화면의 **서버 상태**는 서버의 `~/.shipkit/history.log`(설정 `server.history_file`)를 실행 계정으로 읽어 지금 반영된 패키지와 최근 이력을 보여 주고, **서버에서 되돌리기**는 그 패키지의 서버 폴더에서 `shipkit.sh rollback`을 실행합니다.
-- 지금은 리눅스 서버만 지원합니다.
+- Windows 서버(`server_os: windows`)도 OpenSSH 서버가 켜져 있으면 됩니다. 패키지를 SFTP 로 올린 뒤 `shipkit.ps1`을 PowerShell 로 실행하며, 올릴 위치는 `~/deploy` 또는 `D:/deploy` 같은 절대 경로입니다. 다른 계정으로 실행(sudo/su)과 소유자 변경은 리눅스 전용이라 Windows 서버에서는 접속 계정으로 바로 실행합니다.
 
 ```yaml
 projects:

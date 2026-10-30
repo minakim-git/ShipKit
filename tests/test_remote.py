@@ -232,6 +232,73 @@ def test_pty_output_is_not_lost(sshd, tmp_path):
         conn.close()
 
 
+def test_windows_server_profile_and_commands():
+    """Windows 서버 연결: 설정 검증과 PowerShell 명령 조립."""
+    base = {"root": "x", "output_dir": "y", "server_os": "windows", "server_path": "D:/tomcat/webapps/ROOT"}
+    p = parse_config({"projects": {"a": dict(base, servers=[
+        {"name": "운영", "host": "10.0.0.7", "user": "deployer", "upload_dir": "D:\\deploy\\", "server_path": "E:/web"}])}}).project("a")
+    s = p.servers[0]
+    assert s.server_os == "windows" and s.upload_dir == "D:/deploy" and s.server_path == "E:\\web"
+    for bad, msg in [({"name": "x", "host": "h", "user": "u", "run_as": "svc"}, "Windows 서버에서는"),
+                     ({"name": "x", "host": "h", "user": "u", "chown": True}, "Windows 서버에서는"),
+                     ({"name": "x", "host": "h", "user": "u", "upload_dir": "deploy"}, "upload_dir"),
+                     ({"name": "x", "host": "h", "user": "u", "upload_dir": "D:/dep$loy"}, "upload_dir")]:
+        with pytest.raises(ConfigError, match=msg):
+            parse_config({"projects": {"a": dict(base, servers=[bad])}})
+
+    assert remote.remote_package_dir(s, "p", "/C:/Users/deployer") == "/D:/deploy/p"
+    home = ServerProfile("a", "h", "u", server_os="windows")                     # upload_dir 기본값 ~/deploy
+    assert remote.remote_package_dir(home, "p", "/C:/Users/deployer") == "/C:/Users/deployer/deploy/p"
+    assert remote.to_windows_path("/C:/Users/deployer/deploy/p") == "C:\\Users\\deployer\\deploy\\p"
+    assert remote.to_windows_path("C:/x/y") == "C:\\x\\y"
+
+    cmd = remote.script_command(s, "/D:/deploy/p", "apply", yes=True, no_hooks=False)
+    assert cmd.startswith("powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ")
+    code = remote.decode_powershell_command(cmd)
+    assert code == ("[Console]::OutputEncoding = [Text.Encoding]::UTF8; & 'D:\\deploy\\p\\shipkit.ps1' 'apply' 'E:\\web' -Yes; "
+                    "exit $LASTEXITCODE")
+    assert remote.chown_command(s, "/D:/deploy/p") is None
+    assert remote.run_password(s, remote.Secrets(run="pw")) == {"password": None, "pty": False}
+    assert remote.secret_slots(s) == [("login", "ssh:login:deployer@10.0.0.7:22", "deployer@10.0.0.7 접속 비밀번호")]
+
+
+@needs_bash
+def test_windows_server_deploy_end_to_end(sshd, tmp_path, maven_project):
+    """Windows 서버 흉내: 테스트 SSH 서버가 받은 powershell 명령을 이 PC 의 PowerShell 로 실제 실행한다."""
+    from test_windows_server import needs_powershell  # noqa: F401
+    import shutil
+    if shutil.which("powershell") is None:
+        pytest.skip("PowerShell 이 없습니다")
+    server = tmp_path / "server root"
+    write(server / "WEB-INF/views/user/list.jsp", "OLD")
+    history_log = tmp_path / "home/.shipkit/history.log"
+    project = make_config(maven_project, tmp_path / "out", server_os="windows", server_path=str(server),
+                          server={"history_file": str(history_log)}).project("erp")
+    changes = [FileChange("src/main/webapp/WEB-INF/views/user/list.jsp", C.MODIFIED, "!1")]
+    result = packager.build_package(project, mapper.plan(project, changes), SourceInfo("manual", "t"),
+                                    source_changes=changes, now=datetime(2026, 10, 30, 9, 0))
+    assert (result.out_dir / "shipkit.ps1").is_file()
+    p = _profile(sshd, server_os="windows")                           # upload_dir 기본값 ~/deploy
+    conn = _connect(sshd, tmp_path, p, remote.Secrets(login=LOGIN_PW))
+    out = []
+    try:
+        res = remote.upload_and_check(conn, p, remote.Secrets(), result.out_dir, out.append)
+        assert res.ok, "".join(out)
+        assert (sshd.home / "deploy" / result.out_dir.name / "shipkit.ps1").is_file()
+        checked = remote.parse_check("".join(out))
+        assert checked is not None and checked.paths("변경") == ["WEB-INF/views/user/list.jsp"], "".join(out)
+        res = remote.backup_and_apply(conn, p, remote.Secrets(), res.remote_dir, out.append, run_hooks=False)
+        assert res.ok and res.action == "apply", "".join(out)
+        assert (server / "WEB-INF/views/user/list.jsp").read_text(encoding="utf-8") == "<%-- jsp --%>"
+        entries = remote.fetch_history(conn, p, remote.Secrets(), str(history_log), out.append)
+        assert [e["action"] for e in entries] == ["backup", "apply"]
+        assert remote.current_package(entries, str(server))["package"] == result.out_dir.name
+        assert remote.run_action(conn, p, remote.Secrets(), res.remote_dir, "rollback", out.append, no_hooks=True).ok
+        assert (server / "WEB-INF/views/user/list.jsp").read_text(encoding="utf-8") == "OLD"
+    finally:
+        conn.close()
+
+
 def test_parse_check_output():
     text = ("$ check  (deployer 계정)\n[정보] 대상 경로: /srv/app\n== 반영 대상 (manifest.txt) ==\n"
             "  [신규] WEB-INF/classes/com/acme/New.class\n  [동일] css/a.css\n  [변경] WEB-INF/views/user/list.jsp\r\n"

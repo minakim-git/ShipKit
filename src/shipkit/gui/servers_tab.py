@@ -177,9 +177,13 @@ class ServersTab(QWidget):
         """고른 방식에 따라 필요한 칸만 보여 준다."""
         form = self.server_form
         form.setRowVisible(self.srv_key, self.srv_auth.currentData() == "key")
-        other = self.srv_mode.currentData() == "other"
+        windows = self.server_os() == "windows"   # Windows OpenSSH 서버: 접속 계정으로만 실행 (sudo/su 없음)
+        form.setRowVisible(self.srv_mode, not windows)
+        other = self.srv_mode.currentData() == "other" and not windows
         for widget in (self.srv_run_as, self.srv_run_with, self.srv_run_password, self.srv_chown):
             form.setRowVisible(widget, other)
+        self.srv_upload.setPlaceholderText("~/deploy 또는 D:/deploy   (이 아래에 날짜 폴더로 올립니다, PowerShell 로 실행)"
+                                           if windows else "~/deploy   (이 아래에 날짜 폴더로 올립니다)")
         project_path = self.project_path()
         self.srv_path.setPlaceholderText(f"비우면 프로젝트 값: {project_path}" if project_path else "")
 

@@ -231,13 +231,13 @@ class RemotePanel(Card):
         buttons = QHBoxLayout()
         # 글자가 길면 세 버튼이 좁은 창(1000px)에 들어가지 않아서, 스크립트 명령 이름은 말풍선으로 뺐다
         self.check_btn = button("올리고 확인", "primary")
-        self.check_btn.setToolTip("패키지를 서버에 올린 뒤 shipkit.sh check 를 실행합니다 (서버는 바뀌지 않음)")
+        self.check_btn.setToolTip("패키지를 서버에 올린 뒤 서버 스크립트의 check 를 실행합니다 (서버는 바뀌지 않음)")
         self.check_btn.clicked.connect(self.upload_and_check)
         self.apply_btn = button("백업 후 반영")
-        self.apply_btn.setToolTip("shipkit.sh backup → apply: 바뀌거나 지워질 파일을 먼저 백업하고 반영합니다")
+        self.apply_btn.setToolTip("backup → apply: 바뀌거나 지워질 파일을 먼저 백업하고 반영합니다")
         self.apply_btn.clicked.connect(self.apply)
         self.rollback_btn = button("되돌리기", "danger")
-        self.rollback_btn.setToolTip("shipkit.sh rollback: 백업 기준으로 반영 전 상태로 복구합니다")
+        self.rollback_btn.setToolTip("rollback: 백업 기준으로 반영 전 상태로 복구합니다")
         self.rollback_btn.clicked.connect(self.rollback)
         self.state_chip = Chip("", "neutral")
         self.cancel_btn = button("취소", "ghost")   # 진행 중일 때만 보인다

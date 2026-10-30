@@ -190,6 +190,7 @@ class ServerProfile:
     run_password: bool = False          # 다른 계정으로 실행할 때 비밀번호가 필요한지 (sudo·su 비밀번호)
     chown: bool = False                 # 올린 패키지 폴더 소유자를 실행 계정으로 바꾼다
     server_path: Optional[str] = None   # 이 서버만 배포 경로가 다르면 (비우면 프로젝트 server_path)
+    server_os: str = "linux"            # linux: bash 로 shipkit.sh / windows: OpenSSH 서버에서 PowerShell 로 shipkit.ps1
 
     @property
     def address(self) -> str:
@@ -635,8 +636,7 @@ def parse_servers(raw: Any, where: str, server_os: str) -> List[ServerProfile]:
         return []
     if not isinstance(raw, list):
         raise ConfigError(f"{where}.servers 는 목록이어야 합니다.")
-    if server_os == "windows":
-        raise ConfigError(f"{where}.servers (바로 올리기)는 아직 리눅스 서버에서만 쓸 수 있습니다.")
+    windows = server_os == "windows"
     servers: List[ServerProfile] = []
     for i, item in enumerate(raw):
         at = f"{where}.servers[{i}]"
@@ -665,9 +665,18 @@ def parse_servers(raw: Any, where: str, server_os: str) -> List[ServerProfile]:
         key_file = _opt_str(item.get("key_file"))
         if auth == "key" and not key_file:
             raise ConfigError(f"{at}.key_file (SSH 개인 키 파일)이 필요합니다.")
-        upload_dir = str(item.get("upload_dir") or "~/deploy").strip().rstrip("/") or "/"
-        if _UNSAFE_SHELL_CHARS.search(upload_dir) or not (upload_dir.startswith("/") or upload_dir.startswith("~")):
-            raise ConfigError(f"{at}.upload_dir 는 '/' 나 '~' 로 시작하는 경로여야 합니다: {upload_dir}")
+        upload_dir = str(item.get("upload_dir") or "~/deploy").strip()
+        if windows:  # Windows OpenSSH 서버: '~/...' 또는 'D:/...' (SFTP 가 쓰는 / 구분자로 맞춘다)
+            upload_dir = upload_dir.replace("\\", "/").rstrip("/")
+            if _UNSAFE_PS_CHARS.search(upload_dir) or not (upload_dir.startswith("~") or _WIN_ABS_PATH.match(upload_dir)):
+                raise ConfigError(f"{at}.upload_dir 는 '~/' 또는 'D:/...' 같은 Windows 절대 경로여야 합니다: {upload_dir}")
+            if item.get("run_as") not in (None, "") or item.get("chown"):
+                raise ConfigError(f"{at}: Windows 서버에서는 다른 계정으로 실행(run_as)·소유자 변경(chown)을 쓸 수 없습니다. "
+                                  "접속 계정으로 바로 실행합니다.")
+        else:
+            upload_dir = upload_dir.rstrip("/") or "/"
+            if _UNSAFE_SHELL_CHARS.search(upload_dir) or not (upload_dir.startswith("/") or upload_dir.startswith("~")):
+                raise ConfigError(f"{at}.upload_dir 는 '/' 나 '~' 로 시작하는 경로여야 합니다: {upload_dir}")
         run_as = _opt_str(item.get("run_as"))
         if run_as and not _ACCOUNT_RE.match(run_as):
             raise ConfigError(f"{at}.run_as (실행 계정)가 올바르지 않습니다: {run_as}")
@@ -679,7 +688,7 @@ def parse_servers(raw: Any, where: str, server_os: str) -> List[ServerProfile]:
             name=name, host=host, user=user, port=port, auth=auth, key_file=key_file, upload_dir=upload_dir,
             run_as=None if run_as == user else run_as, run_with=run_with,
             run_password=bool(item.get("run_password", False)), chown=bool(item.get("chown", False)),
-            server_path=_parse_server_path(path, at, server_os) if path else None,
+            server_path=_parse_server_path(path, at, server_os) if path else None, server_os=server_os,
         ))
     return servers
 

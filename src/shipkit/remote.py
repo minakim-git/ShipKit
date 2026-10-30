@@ -23,11 +23,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Protocol, Tuple
 
+from shipkit import SCRIPT_NAME, SCRIPT_NAME_PS
 from shipkit.config import ServerProfile, user_config_path
 
 Output = Callable[[str], None]
 Progress = Callable[[int, int], None]     # (보낸 바이트, 전체 바이트)
-EXECUTABLES = ("shipkit.sh",)             # 올린 뒤 실행 권한을 줄 파일 (hooks/*.sh 도)
+EXECUTABLES = (SCRIPT_NAME,)              # 올린 뒤 실행 권한을 줄 파일 (hooks/*.sh 도) - 리눅스 서버만
+_DRIVE_ROOT = re.compile(r"^/?[A-Za-z]:$")  # Windows OpenSSH 의 SFTP 경로 (/C:/Users/x 또는 C:/Users/x) 의 드라이브 루트
 CONNECT_TIMEOUT = 15
 IDLE_TIMEOUT = 600                        # 명령 실행 중 이만큼(초) 서버 출력이 없으면 끊긴 것으로 보고 중단한다
 PROMPT_WINDOW = 256                       # 가상 터미널 출력이 이만큼 쌓이도록 암호 질문이 없으면 더 지켜보지 않는다
@@ -199,7 +201,7 @@ class SSHConnection:
 
     def _mkdirs(self, path: str) -> None:
         parts = []
-        while path not in ("", "/"):
+        while path not in ("", "/") and not _DRIVE_ROOT.match(path):
             try:
                 self.sftp.stat(path)
                 break
@@ -221,7 +223,8 @@ class SSHConnection:
                 target = posixpath.join(remote_dir, rel)
                 self._mkdirs(posixpath.dirname(target))
                 self.sftp.put(str(f), target)
-                if rel in EXECUTABLES or (rel.startswith("hooks/") and rel.endswith(".sh")):
+                if self.profile.server_os != "windows" and (
+                        rel in EXECUTABLES or (rel.startswith("hooks/") and rel.endswith(".sh"))):
                     self.sftp.chmod(target, 0o755)
                 sent += f.stat().st_size
                 if progress:
@@ -326,7 +329,35 @@ def expand_dir(path: str, home: str) -> str:
 
 
 def remote_package_dir(profile: ServerProfile, package_name: str, home: str) -> str:
-    return posixpath.join(expand_dir(profile.upload_dir, home), package_name)
+    """패키지를 올릴 서버 폴더 (SFTP 가 쓰는 / 구분자). Windows 서버의 'D:/deploy' 는 SFTP 형식 '/D:/deploy' 로."""
+    base = expand_dir(profile.upload_dir, home)
+    if profile.server_os == "windows" and re.match(r"^[A-Za-z]:", base):
+        base = "/" + base
+    return posixpath.join(base, package_name)
+
+
+def to_windows_path(path: str) -> str:
+    """SFTP 형식 경로(/C:/Users/x 또는 C:/Users/x) 를 PowerShell 에 줄 Windows 경로(C:\\Users\\x) 로."""
+    if re.match(r"^/[A-Za-z]:", path):
+        path = path[1:]
+    return path.replace("/", "\\")
+
+
+def _ps_quote(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def powershell_command(script: str) -> str:
+    """Windows OpenSSH 서버에서 기본 셸(cmd 또는 PowerShell)에 상관없이 PowerShell 코드를 돌리는 명령.
+    -EncodedCommand 라 따옴표·공백·한글이 셸을 거치지 않는다. 출력은 UTF-8 로 받는다."""
+    body = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; " + script
+    encoded = base64.b64encode(body.encode("utf-16-le")).decode("ascii")
+    return f"powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand {encoded}"
+
+
+def decode_powershell_command(command: str) -> str:
+    """powershell_command 가 만든 명령에서 PowerShell 코드를 되돌린다 (테스트·보기용)."""
+    return base64.b64decode(command.rsplit(" ", 1)[-1]).decode("utf-16-le")
 
 
 def _sudo(password: bool) -> str:
@@ -346,8 +377,18 @@ def as_runner(profile: ServerProfile, inner: str, password: Optional[bool] = Non
 
 
 def script_command(profile: ServerProfile, package_dir: str, action: str, yes: bool = False,
-                   no_hooks: bool = False, script: str = "shipkit.sh", password: Optional[bool] = None) -> str:
-    """패키지 폴더에서 서버 스크립트를 실행하는 명령 (실행 계정으로)."""
+                   no_hooks: bool = False, script: Optional[str] = None, password: Optional[bool] = None) -> str:
+    """패키지 폴더에서 서버 스크립트를 실행하는 명령 (리눅스: 실행 계정으로 bash, Windows: PowerShell)."""
+    if profile.server_os == "windows":
+        ps_script = to_windows_path(posixpath.join(package_dir, script or SCRIPT_NAME_PS))
+        args = [_ps_quote(action)]
+        if profile.server_path:
+            args.append(_ps_quote(profile.server_path))
+        if yes:
+            args.append("-Yes")
+        if no_hooks:
+            args.append("-NoHooks")
+        return powershell_command(f"& {_ps_quote(ps_script)} " + " ".join(args) + "; exit $LASTEXITCODE")
     args = [action]
     if profile.server_path:
         args.append(profile.server_path)
@@ -355,14 +396,14 @@ def script_command(profile: ServerProfile, package_dir: str, action: str, yes: b
         args.append("-y")
     if no_hooks:
         args.append("--no-hooks")
-    inner = f"cd {shlex.quote(package_dir)} && bash {script} " + " ".join(shlex.quote(a) for a in args)
+    inner = f"cd {shlex.quote(package_dir)} && bash {script or SCRIPT_NAME} " + " ".join(shlex.quote(a) for a in args)
     return as_runner(profile, inner, password)
 
 
 def chown_command(profile: ServerProfile, package_dir: str, password: Optional[bool] = None) -> Optional[str]:
     """올린 패키지 폴더를 실행 계정 소유로 (접속 계정이 root 가 아니면 sudo).
     password: sudo 비밀번호를 보내는지 (None = 설정의 run_password)."""
-    if not (profile.chown and profile.run_as):
+    if not (profile.chown and profile.run_as) or profile.server_os == "windows":
         return None
     cmd = f"chown -R {shlex.quote(profile.run_as)}: {shlex.quote(package_dir)}"
     if profile.user == "root":
@@ -377,7 +418,7 @@ def run_password(profile: ServerProfile, secrets: Secrets, command_kind: str = "
     if command_kind == "chown":
         needs = profile.user != "root"
         return {"password": secrets.run if needs and secrets.run else None, "pty": False}
-    if not profile.run_as:
+    if not profile.run_as or profile.server_os == "windows":
         return {"password": None, "pty": False}
     if profile.run_with == "su":
         return {"password": (secrets.run or "") if profile.run_password else None, "pty": True}
@@ -521,14 +562,21 @@ def fetch_history(conn: Connection, profile: ServerProfile, secrets: Secrets, hi
                   output: Output) -> List[dict]:
     """서버의 배포 이력 파일을 실행 계정으로 읽는다 (이력은 그 계정이 쓴 것이라 '~' 도 같은 집을 가리킨다)."""
     opts = run_password(profile, secrets)
-    if history_file.startswith("~/"):  # 서버 스크립트와 같은 규칙으로 실행 계정의 집 폴더
-        path = '"$HOME"/' + shlex.quote(history_file[2:])
+    if profile.server_os == "windows":  # 서버 스크립트(shipkit.ps1)와 같은 규칙: '~/' 는 $HOME 아래
+        if history_file.startswith("~/"):
+            expr = f"(Join-Path $HOME {_ps_quote(history_file[2:].replace('/', chr(92)))})"
+        else:
+            expr = _ps_quote(to_windows_path(history_file))
+        command = powershell_command(f"$p = {expr}; if (Test-Path -LiteralPath $p) "
+                                     "{ Get-Content -LiteralPath $p -Encoding UTF8 }; exit 0")
     else:
-        path = shlex.quote(history_file)
-    inner = f"cat {path} 2>/dev/null || true"
+        if history_file.startswith("~/"):  # 서버 스크립트와 같은 규칙으로 실행 계정의 집 폴더
+            path = '"$HOME"/' + shlex.quote(history_file[2:])
+        else:
+            path = shlex.quote(history_file)
+        command = as_runner(profile, f"cat {path} 2>/dev/null || true", opts["password"] is not None)
     lines: List[str] = []
-    code = _run_sudo_aware(conn, profile, as_runner(profile, inner, opts["password"] is not None),
-                           lines.append, opts)
+    code = _run_sudo_aware(conn, profile, command, lines.append, opts)
     if code:
         output("".join(lines))
         raise RemoteError(f"서버 이력을 읽지 못했습니다 (종료 코드 {code}).")

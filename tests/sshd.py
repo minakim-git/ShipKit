@@ -36,6 +36,11 @@ class _Handle(SFTPHandle):
 class _SFTP(SFTPServerInterface):
     home = "/"
 
+    @staticmethod
+    def _local(path: str) -> str:
+        """Windows OpenSSH 의 SFTP 처럼 '/C:/Users/x' 형식도 받아 로컬 경로로 쓴다."""
+        return path[1:] if len(path) > 2 and path[0] == "/" and path[2] == ":" else path
+
     def _err(self, e):
         return SFTPServer.convert_errno(e.errno)
 
@@ -43,6 +48,7 @@ class _SFTP(SFTPServerInterface):
         return self.home if path in (".", "") else path
 
     def stat(self, path):
+        path = self._local(path)
         try:
             return SFTPAttributes.from_stat(os.stat(path))
         except OSError as e:
@@ -51,12 +57,14 @@ class _SFTP(SFTPServerInterface):
     lstat = stat
 
     def list_folder(self, path):
+        path = self._local(path)
         try:
             return [SFTPAttributes.from_stat(os.stat(os.path.join(path, n)), n) for n in os.listdir(path)]
         except OSError as e:
             return self._err(e)
 
     def open(self, path, flags, attr):
+        path = self._local(path)
         try:
             mode = "wb" if flags & (os.O_WRONLY | os.O_RDWR) else "rb"
             f = open(path, mode)
@@ -70,6 +78,7 @@ class _SFTP(SFTPServerInterface):
         return h
 
     def mkdir(self, path, attr):
+        path = self._local(path)
         try:
             os.mkdir(path)
         except OSError as e:
@@ -77,9 +86,11 @@ class _SFTP(SFTPServerInterface):
         return SFTP_OK
 
     def chattr(self, path, attr):
+        path = self._local(path)
         return SFTP_OK if os.path.exists(path) else SFTP_NO_SUCH_FILE
 
     def remove(self, path):
+        path = self._local(path)
         try:
             os.remove(path)
         except OSError:
