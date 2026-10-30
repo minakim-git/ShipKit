@@ -1,4 +1,4 @@
-"""서버에 바로 반영 (SSH/SFTP): 배포 완료 화면의 [올리고 확인] → [반영하기] → [되돌리기], 프로젝트 설정의 [연결 시험].
+"""서버에 바로 반영 (SSH/SFTP): 배포 완료 화면의 [올리고 확인] → [백업 후 반영] → [되돌리기], 프로젝트 설정의 [연결 시험].
 
 비밀번호는 필요할 때 묻고, [이 PC 에 저장]을 고르면 Windows 자격 증명 관리자에 넣어 다음부터 묻지 않는다.
 로그인에 실패하면 저장해 둔 비밀번호를 지워서 다음에 다시 묻게 한다.
@@ -220,7 +220,7 @@ class RemotePanel(Card):
         self.server_combo = QComboBox()
         self.server_combo.setMinimumWidth(220)
         super().__init__("서버에 바로 반영", "패키지를 서버에 올리고 check → backup·apply 까지 여기서 실행합니다.",
-                         right=self.server_combo)
+                         right=self.server_combo, collapsible=True)
         self.ctx = ctx
         self.client = RemoteClient(ctx)
         self.result = None                 # 방금 만든 패키지 (PackageResult)
@@ -244,11 +244,15 @@ class RemotePanel(Card):
         self.target_label = label("", "muted")
         col.addWidget(self.target_label)
         buttons = QHBoxLayout()
-        self.check_btn = button("올리고 확인 (check)", "primary")
+        # 글자가 길면 세 버튼이 좁은 창(1000px)에 들어가지 않아서, 스크립트 명령 이름은 말풍선으로 뺐다
+        self.check_btn = button("올리고 확인", "primary")
+        self.check_btn.setToolTip("패키지를 서버에 올린 뒤 shipkit.sh check 를 실행합니다 (서버는 바뀌지 않음)")
         self.check_btn.clicked.connect(self.upload_and_check)
-        self.apply_btn = button("반영하기 (backup → apply)")
+        self.apply_btn = button("백업 후 반영")
+        self.apply_btn.setToolTip("shipkit.sh backup → apply: 바뀌거나 지워질 파일을 먼저 백업하고 반영합니다")
         self.apply_btn.clicked.connect(self.apply)
-        self.rollback_btn = button("되돌리기 (rollback)", "danger")
+        self.rollback_btn = button("되돌리기", "danger")
+        self.rollback_btn.setToolTip("shipkit.sh rollback: 백업 기준으로 반영 전 상태로 복구합니다")
         self.rollback_btn.clicked.connect(self.rollback)
         self.state_chip = Chip("", "neutral")
         self.cancel_btn = button("취소", "ghost")   # 진행 중일 때만 보인다
@@ -257,11 +261,13 @@ class RemotePanel(Card):
         self.cancel_btn.hide()
         for b in (self.check_btn, self.apply_btn, self.rollback_btn):
             buttons.addWidget(b)
-        buttons.addSpacing(6)
-        buttons.addWidget(self.state_chip, 0, Qt.AlignmentFlag.AlignVCenter)
-        buttons.addWidget(self.cancel_btn)
         buttons.addStretch(1)
         col.addLayout(buttons)
+        status = QHBoxLayout()  # 상태 배지와 [취소]는 둘째 줄 (버튼과 한 줄에 두면 좁은 창에서 오른쪽이 잘린다)
+        status.addWidget(self.state_chip, 0, Qt.AlignmentFlag.AlignVCenter)
+        status.addWidget(self.cancel_btn)
+        status.addStretch(1)
+        col.addLayout(status)
         self.progress = QProgressBar()
         self.progress.setTextVisible(False)
         self.progress.hide()
@@ -298,6 +304,7 @@ class RemotePanel(Card):
         self.server_combo.setVisible(bool(servers))
         self.empty_row.setVisible(not servers)
         self.main.setVisible(bool(servers))
+        self.set_collapsed(not servers)  # 서버가 없으면 접어 두고, 펼치면 등록 안내가 보인다
         self.log.clear()
         self.log.hide()
         self._server_changed()
@@ -379,7 +386,7 @@ class RemotePanel(Card):
         def done(res: remote.StepResult) -> None:
             self.remote_dir = res.remote_dir
             if res.ok:
-                self._append("\n✓ 확인 끝. 위 내용을 보고 [반영하기]를 누르세요.\n")
+                self._append("\n✓ 확인 끝. 위 내용을 보고 [백업 후 반영]을 누르세요.\n")
                 self._set_stage("checked")
             else:
                 self._append(f"\n✗ {res.action} 실패 (종료 코드 {res.code})\n")

@@ -371,9 +371,14 @@ def test_deploy_files_preview_and_make(qapp, tmp_path, maven_project):
     d.make_package()
     pkg = d.last_result.out_dir
     assert d.step == STEP_DONE and (pkg / "files/WEB-INF/classes/com/acme/User.class").is_file()
-    assert str(pkg) in d.done_label.text()
+    assert str(pkg) in d.done_label.full_text and d.done_label.toolTip() == d.done_label.full_text
     assert d.done_commands == [f"cd ~/deploy/{pkg.name}", "chmod +x shipkit.sh", "./shipkit.sh check",
                                "./shipkit.sh backup", "./shipkit.sh apply", "./shipkit.sh rollback"]
+    # 서버 연결이 없는 프로젝트: 바로 반영 카드는 접히고 직접 반영 명령이 펼쳐진다 (펼치면 등록 안내가 보임)
+    assert d.remote_panel.collapsed and not d.manual_card.collapsed
+    assert not d.remote_panel.content.isVisibleTo(d.remote_panel)
+    d.remote_panel.toggle_btn.click()
+    assert not d.remote_panel.collapsed and d.remote_panel.empty_row.isVisibleTo(d.remote_panel)
     d.start_over()
     assert d.step == STEP_PICK and d.files_edit.toPlainText() == ""
 
@@ -558,6 +563,7 @@ def test_remote_panel_cancel(qapp, tmp_path, maven_project, monkeypatch):
     d.make_package()
     panel = d.remote_panel
     panel_ref["panel"] = panel
+    assert not panel.collapsed and d.manual_card.collapsed      # 서버가 있으면 바로 반영이 펼쳐지고 명령은 접힘
     panel.client.connection_factory = FakeConn
     panel.client.host_key_checker = lambda profile: remote.HostKeyStatus("known", "ssh-ed25519", "SHA256:x")
     assert not panel.cancel_btn.isVisibleTo(panel)

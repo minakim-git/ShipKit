@@ -2,12 +2,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple
+from typing import Callable, List, Optional, Sequence, Tuple
 
-from PySide6.QtCore import QRectF, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QRectF, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QFont, QFontMetrics, QGuiApplication, QPainter, QPainterPath
 from PySide6.QtWidgets import (
-    QApplication, QComboBox, QFileDialog, QStyleOptionComboBox, QStylePainter, QFrame, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QStyle, QStyledItemDelegate,
+    QApplication, QComboBox, QFileDialog, QStyleOptionComboBox, QStylePainter, QFrame, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QSizePolicy, QStyle, QStyledItemDelegate,
     QStyleOptionViewItem, QVBoxLayout, QWidget,
 )
 
@@ -20,6 +20,41 @@ def label(text: str, name: str = "", wrap: bool = True) -> QLabel:
     if name:
         w.setObjectName(name)
     return w
+
+
+class ElidedLabel(QLabel):
+    """경로처럼 띄어쓰기가 없어 줄바꿈이 안 되는 글. 칸이 좁으면 가운데를 … 으로 줄이고, 전체 글은 말풍선으로 보여 준다.
+    (줄바꿈이 안 되는 긴 글은 카드의 최소 폭을 밀어 올려 창 오른쪽이 잘리게 만든다.)"""
+
+    def __init__(self, name: str = ""):
+        super().__init__()
+        if name:
+            self.setObjectName(name)
+        self.full_text = ""
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+
+    def setText(self, text: str) -> None:  # noqa: N802  (QLabel 이름 그대로)
+        self.full_text = text
+        self.setToolTip(text)
+        self._update()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._update()
+
+    def _update(self) -> None:
+        fm = self.fontMetrics()
+        width = max(self.width() - 4, 60)
+        super().setText("\n".join(fm.elidedText(line, Qt.TextElideMode.ElideMiddle, width)
+                                  for line in self.full_text.split("\n")))
+
+    def minimumSizeHint(self):  # noqa: N802
+        return QSize(80, super().minimumSizeHint().height())
+
+    def sizeHint(self):  # noqa: N802
+        fm = self.fontMetrics()
+        widest = max((fm.horizontalAdvance(line) for line in self.full_text.split("\n")), default=0)
+        return QSize(widest + 4, super().sizeHint().height())
 
 
 def button(text: str, kind: str = "") -> QPushButton:
@@ -58,17 +93,42 @@ class Chip(QLabel):
         self.set_tone(tone)
 
 
-class Card(QFrame):
-    """흰 카드. title 을 주면 위에 제목(과 오른쪽 위젯)을 놓는다. 내용은 card.body 에 넣는다."""
+class _ClickableHead(QWidget):
+    """카드 머리: 접을 수 있는 카드에서는 어디를 눌러도 접고 편다."""
 
-    def __init__(self, title: str = "", subtitle: str = "", right: Optional[QWidget] = None, padding: int = 18):
+    def __init__(self, on_click: Optional[Callable[[], None]] = None):
+        super().__init__()
+        self.on_click = on_click
+        if on_click:
+            self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def mousePressEvent(self, event) -> None:
+        if self.on_click and event.button() == Qt.MouseButton.LeftButton:
+            self.on_click()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+
+class Card(QFrame):
+    """흰 카드. title 을 주면 위에 제목(과 오른쪽 위젯)을 놓는다. 내용은 card.body 에 넣는다.
+
+    collapsible=True 면 머리에 접기 단추가 생기고, set_collapsed() 로 내용(card.content)을 숨길 수 있다.
+    """
+
+    def __init__(self, title: str = "", subtitle: str = "", right: Optional[QWidget] = None, padding: int = 18,
+                 collapsible: bool = False):
         super().__init__()
         self.setObjectName("card")
+        self.collapsed = False
+        self.toggle_btn: Optional[QPushButton] = None
         outer = QVBoxLayout(self)
         outer.setContentsMargins(padding, padding - 2, padding, padding)
         outer.setSpacing(10)
-        if title or right:
-            head = QHBoxLayout()
+        if title or right or collapsible:
+            head_widget = _ClickableHead(self.toggle if collapsible else None)
+            head = QHBoxLayout(head_widget)
+            head.setContentsMargins(0, 0, 0, 0)
             texts = QVBoxLayout()
             texts.setSpacing(2)
             if title:
@@ -78,10 +138,33 @@ class Card(QFrame):
             head.addLayout(texts, 1)
             if right is not None:
                 head.addWidget(right, 0, Qt.AlignmentFlag.AlignTop)
-            outer.addLayout(head)
-        self.body = QVBoxLayout()
+            if collapsible:
+                self.toggle_btn = button("", "ghost")
+                self.toggle_btn.setFixedSize(28, 28)
+                self.toggle_btn.setToolTip("접기 / 펼치기")
+                self.toggle_btn.clicked.connect(self.toggle)
+                head.addWidget(self.toggle_btn, 0, Qt.AlignmentFlag.AlignTop)
+                theme.on_change(self._refresh_toggle_icon)
+                self._refresh_toggle_icon()
+            outer.addWidget(head_widget)
+        self.content = QWidget()
+        self.body = QVBoxLayout(self.content)
+        self.body.setContentsMargins(0, 0, 0, 0)
         self.body.setSpacing(10)
-        outer.addLayout(self.body, 1)
+        outer.addWidget(self.content, 1)
+
+    def set_collapsed(self, collapsed: bool) -> None:
+        self.collapsed = collapsed
+        self.content.setVisible(not collapsed)
+        self._refresh_toggle_icon()
+
+    def toggle(self) -> None:
+        self.set_collapsed(not self.collapsed)
+
+    def _refresh_toggle_icon(self) -> None:
+        if self.toggle_btn is not None:
+            name = "chevron-right.svg" if self.collapsed else "chevron-down.svg"
+            self.toggle_btn.setIcon(theme.svg_icon(name, "MUTED", 16))
 
 
 class Banner(QFrame):
@@ -209,14 +292,15 @@ class CommandRow(QFrame):
         num.setFixedSize(24, 24)
         code = QLabel(command)
         code.setObjectName("code")
+        code.setWordWrap(True)  # 긴 명령·설명이 줄바꿈되지 않으면 카드가 창보다 넓어져 오른쪽이 잘린다
         code.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.copy_btn = button("복사", "ghost")
         theme.bind_icon(self.copy_btn, "copy.svg", "PRIMARY", 16)
         self.copy_btn.clicked.connect(self.copy)
         row.addWidget(num)
-        row.addWidget(code)
+        row.addWidget(code, 2)
         row.addSpacing(8)
-        row.addWidget(label(description, "muted", wrap=False), 1)
+        row.addWidget(label(description, "muted"), 1)
         row.addWidget(self.copy_btn)
 
     def copy(self) -> None:

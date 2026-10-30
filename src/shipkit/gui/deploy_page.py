@@ -21,7 +21,9 @@ from shipkit.gui import theme
 from shipkit.gui.context import AppContext
 from shipkit.gui.remote_panel import RemotePanel
 from shipkit.gui.report_view import show_report
-from shipkit.gui.widgets import Card, Chip, CommandRow, StatusDelegate, Stepper, button, label, open_path
+from shipkit.gui.widgets import (
+    Card, Chip, CommandRow, ElidedLabel, StatusDelegate, Stepper, button, label, open_path,
+)
 from shipkit.models import FileChange, SourceInfo, Status
 from shipkit.sources import git_local, providers
 
@@ -347,8 +349,7 @@ class DeployPage(QWidget):
         texts = QVBoxLayout()
         texts.setSpacing(6)
         texts.addWidget(label("패키지를 만들었습니다", "doneTitle"))
-        self.done_label = label("", "code")
-        self.done_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.done_label = ElidedLabel("code")  # 경로가 길면 가운데를 줄이고, 전체는 말풍선과 [폴더 열기]로
         texts.addWidget(self.done_label)
         self.done_chips = QHBoxLayout()
         self.done_chips.setSpacing(6)
@@ -359,7 +360,9 @@ class DeployPage(QWidget):
         # 서버에 바로 올리고 반영 (서버 연결을 등록한 프로젝트)
         self.remote_panel = RemotePanel(self.ctx)
 
-        manual = Card("직접 반영할 때 (서버에서 실행할 명령)")
+        # 서버 연결을 등록했으면 이 카드는 접어 두고, 없으면 바로 반영 카드를 접어 둔다 (한 화면에 들어오게)
+        manual = Card("직접 반영할 때 (서버에서 실행할 명령)", collapsible=True)
+        self.manual_card = manual
         self.upload_label = label("", "muted")
         manual.body.addWidget(self.upload_label)
         self.command_box = QVBoxLayout()
@@ -834,6 +837,7 @@ class DeployPage(QWidget):
     def _show_created(self, result: packager.PackageResult) -> None:
         self.last_result = result
         self.remote_panel.set_package(result)
+        self.manual_card.set_collapsed(bool(result.project.servers))
         self.prepared = None
         self.make_btn.setEnabled(False)
         self.done_label.setText(str(result.out_dir) + (f"\n{result.archive}" if result.archive else ""))
