@@ -5,15 +5,14 @@ import re
 from importlib import resources
 from typing import Optional
 
-from PySide6.QtCore import Qt, QUrl
-from PySide6.QtGui import QDesktopServices, QTextCursor
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import QDialog, QHBoxLayout, QTextBrowser, QVBoxLayout, QWidget
 
 from shipkit.gui import theme
 from shipkit.gui.report_view import _decorate
 from shipkit.gui.widgets import button, label
 
-GUIDE_URL = "https://github.com/minakim-git/ShipKit/blob/main/src/shipkit/docs/user-guide.md"
 _open: Optional["GuideDialog"] = None
 
 
@@ -21,7 +20,7 @@ def guide_markdown() -> str:
     try:
         return (resources.files("shipkit") / "docs" / "user-guide.md").read_text(encoding="utf-8")
     except (OSError, TypeError) as e:
-        return f"# 사용자 가이드\n\n가이드 파일을 찾지 못했습니다 ({e}).\n\n{GUIDE_URL}"
+        return f"# 사용자 가이드\n\n가이드 파일을 찾지 못했습니다 ({e})."
 
 
 def _slug(heading: str) -> str:
@@ -57,17 +56,14 @@ class GuideDialog(QDialog):
 
         self.browser = QTextBrowser()
         self.browser.setObjectName("report")
-        self.browser.setOpenExternalLinks(True)  # README 같은 바깥 링크는 브라우저로, #목차 링크는 창 안에서
+        self.browser.setOpenExternalLinks(True)  # #목차 링크는 창 안에서 이동
         self._render()
         theme.on_change(self._render)
 
         bar = QHBoxLayout()
         bar.addWidget(label("", "muted"), 1)
-        web = button("GitHub 에서 보기", "ghost")
-        web.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(GUIDE_URL)))
         close = button("닫기", "primary")
         close.clicked.connect(self.close)
-        bar.addWidget(web)
         bar.addWidget(close)
 
         layout = QVBoxLayout(self)
