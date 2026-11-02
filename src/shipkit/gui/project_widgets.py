@@ -173,7 +173,7 @@ class OverrideBox(QFrame):
         self.source = source
         self.setVisible(bool(source))
         if source:
-            self.text.setText(f"{self.what}: <b>{source}</b> 값을 따릅니다. 이 PC 에서 바꾸려면 직접 지정하세요."
+            self.text.setText(f"{self.what}: <b>{source}</b> 값을 따릅니다."
                               if not self.check.isChecked() else
                               f"{self.what}: 직접 지정한 값을 씁니다 ({source} 값 대신).")
 

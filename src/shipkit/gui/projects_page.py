@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
     QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
-from shipkit import CONFIG_NAME, PROJECT_FILE, config_store, legacy, mapper, project_edit, workflow
+from shipkit import PROJECT_FILE, config_store, legacy, mapper, project_edit, workflow
 from shipkit.config import (
     _COMMON_EXCLUDE, DEFAULT_ALLOW, DEFAULT_DENY, DEFAULT_HISTORY_FILE, DEFAULT_PACKAGE_NAME, PRESETS, ConfigError,
     ProjectConfig,
@@ -33,17 +33,9 @@ from shipkit.workflow import InputError
 
 TAB_BASIC, TAB_RULES, TAB_HOOKS, TAB_FILTERS, TAB_SERVERS = range(5)
 # (단계, 제목, 언제 실행되는지, 빈 표에 보여 줄 예시)
-HOOK_STAGES = (("pre_apply", "반영 전", "서버 파일을 바꾸기 전에 실행합니다. 실패하면 파일을 바꾸지 않고 멈춥니다.",
-                "예: sudo systemctl stop tomcat   (서비스를 멈춘 뒤 반영해야 할 때)"),
-               ("post_apply", "반영 후", "파일을 모두 바꾼 뒤 실행합니다. 가장 많이 쓰는 단계입니다.",
-                "예: sudo systemctl restart tomcat"),
-               ("post_rollback", "되돌린 후", "rollback 으로 이전 파일로 되돌린 뒤 실행합니다. 보통 '반영 후'와 같은 재시작 명령.",
-                "예: sudo systemctl restart tomcat"))
-HOOK_EXAMPLE = ("$ ./shipkit.sh apply\n"
-                "[정보] 반영 12개, 동일(건너뜀) 3개, 삭제 0개, 정리 0개, 실패 0개\n"
-                "== post_apply 명령 ==\n"
-                "    sudo systemctl restart tomcat\n"
-                "위 명령을 실행할까요? [y/N] y")
+HOOK_STAGES = (("pre_apply", "반영 전", "예: sudo systemctl stop tomcat   (서비스를 멈춘 뒤 반영해야 할 때)"),
+               ("post_apply", "반영 후", "예: sudo systemctl restart tomcat"),
+               ("post_rollback", "되돌린 후", "예: sudo systemctl restart tomcat"))
 MODE_TEXT = {"changes": "변경 파일 매핑", "sync": "빌드 결과 동기화"}
 
 
@@ -188,7 +180,7 @@ class ProjectsPage(QWidget):
     # ------------------------------------------------------------------ 탭: 기본
     def _basic_tab(self) -> QWidget:
         w, col = self._column()
-        card = Card("기본", "비워 둔 칸은 기본값을 따릅니다. 흐린 글씨가 지금 쓰이는 값입니다.")
+        card = Card("기본")
         form = _form()
         self.name_edit = QLineEdit()
         self.root_field = PathField(placeholder="로컬 git 저장소 최상위 폴더")
@@ -213,7 +205,7 @@ class ProjectsPage(QWidget):
         self._watch(self.name_edit, self.root_field, self.output_field, self.os_combo, self.server_edit,
                     self.gitlab_edit, self.github_edit, self.package_name_edit)
 
-        danger = Card("프로젝트 지우기", "목록에서만 지웁니다. 로컬 저장소와 만든 패키지는 그대로 둡니다.")
+        danger = Card("프로젝트 지우기")
         delete = button("이 프로젝트 지우기", "danger")
         delete.clicked.connect(self.delete_project)
         row = QHBoxLayout()
@@ -227,7 +219,7 @@ class ProjectsPage(QWidget):
     # ------------------------------------------------------------------ 탭: 반영 규칙
     def _rules_tab(self) -> QWidget:
         w, col = self._column()
-        card = Card("배포 방식", "프리셋은 언어·빌드 도구별로 미리 정한 규칙 묶음입니다.")
+        card = Card("배포 방식")
         form = _form()
         self.preset_combo = QComboBox()
         self.preset_combo.addItem(INHERIT, "")
@@ -245,8 +237,7 @@ class ProjectsPage(QWidget):
 
         self.mode_stack = QStackedWidget()
         # changes: 규칙 표
-        changes = Card("반영 규칙", "저장소의 소스 폴더를 서버 배포 경로 아래 어디에 둘지 정합니다. "
-                                 "빌드 결과 폴더를 적으면 .java 대신 그 폴더의 .class 를 넣습니다. ( . = 전체 )")
+        changes = Card("반영 규칙")
         self.rules_override = OverrideBox("반영 규칙")
         self.rules_override.toggled.connect(self._rules_toggled)
         self.rules_table = RowTable([("src", "소스 폴더"), ("dest", "서버 위치"), ("build_dir", "빌드 결과 폴더")],
@@ -260,7 +251,7 @@ class ProjectsPage(QWidget):
         changes.body.addLayout(mod_form)
         self._watch(self.rules_table, self.modules_edit)
         # sync: 빌드 폴더
-        sync = Card("빌드 결과 동기화", "빌드 결과 폴더 전체를 패키지에 담고, 서버에서는 내용이 다른 파일만 바꿉니다.")
+        sync = Card("빌드 결과 동기화")
         sync_form = _form()
         self.build_dir_edit = QLineEdit()
         self.dest_edit = QLineEdit()
@@ -269,15 +260,13 @@ class ProjectsPage(QWidget):
                              ("옛 파일 정리 폴더", self.prune_edit)):
             sync_form.addRow(label(text, "fieldLabel", wrap=False), widget)
         sync.body.addLayout(sync_form)
-        sync.body.addWidget(label("옛 파일 정리 폴더: 이번 빌드에 없는 파일을 서버에서 지울 폴더 (쉼표로 여러 개). "
-                                  "파일 이름이 빌드마다 바뀌는 assets/ 같은 폴더에 씁니다.", "muted"))
         self._watch(self.build_dir_edit, self.dest_edit, self.prune_edit)
         self.mode_stack.addWidget(changes)
         self.mode_stack.addWidget(sync)
         col.addWidget(self.mode_stack)
 
         # 경로 시험
-        test = Card("경로 시험", "파일 경로를 넣으면 지금 규칙으로 서버 어디에 들어가는지 보여 줍니다. (저장하지 않은 값으로 시험)")
+        test = Card("경로 시험")
         self.test_input = LineList("예: src/main/java/com/acme/UserController.java\n"
                                    "    src/main/webapp/WEB-INF/jsp/user/list.jsp\n"
                                    "    D\tsrc/main/webapp/old.jsp   (앞에 D 와 탭이면 삭제)", height=84)
@@ -318,30 +307,16 @@ class ProjectsPage(QWidget):
     # ------------------------------------------------------------------ 탭: 서버 명령
     def _hooks_tab(self) -> QWidget:
         w, col = self._column()
-        card = Card("서버 명령 (선택)",
-                    "배포할 때마다 서버에서 손으로 치던 명령(톰캣 재시작 등)이 있으면 적어 두세요. 서버에서 "
-                    "./shipkit.sh apply 를 실행하면 파일 반영에 이어 이 명령도 실행합니다. 없으면 비워 두면 됩니다.")
-        example = QFrame()
-        example.setObjectName("detail")
-        ex = QVBoxLayout(example)
-        ex.setContentsMargins(14, 10, 14, 10)
-        ex.setSpacing(6)
-        ex.addWidget(label("예: '반영 후'에 sudo systemctl restart tomcat 을 적으면 서버에서 이렇게 동작합니다. "
-                           "실행 전에 꼭 묻고, y 를 눌러야 실행합니다.", "muted"))
-        ex.addWidget(label(HOOK_EXAMPLE, "code", wrap=False))
-        card.body.addWidget(example)
-        card.body.addWidget(label("조건 칸 (선택): 이 패턴에 맞는 파일이 바뀐 배포에만 명령을 넣습니다. 예를 들어 **/*.java 를 "
-                                  "적으면 Java 소스가 바뀐 배포에서만 재시작하고, JSP·JS 만 바뀐 배포에서는 재시작하지 않습니다. "
-                                  "비워 두면 매번 넣습니다.", "muted"))
+        card = Card("서버 명령 (선택)")
         self.hooks_override = OverrideBox("서버 명령")
         self.hooks_override.toggled.connect(self._hooks_toggled)
         card.body.addWidget(self.hooks_override)
         self.hook_tables: Dict[str, RowTable] = {}
-        for stage, title, hint, placeholder in HOOK_STAGES:
+        for stage, title, placeholder in HOOK_STAGES:
             head = QHBoxLayout()
             head.setSpacing(10)
             head.addWidget(label(title, "fieldLabel", wrap=False))
-            head.addWidget(label(hint, "muted", wrap=False), 1)
+            head.addStretch(1)
             card.body.addSpacing(4)
             card.body.addLayout(head)
             table = RowTable([("run", "명령"), ("when", "조건 (선택)")], stretch=0, height=112,
@@ -352,9 +327,7 @@ class ProjectsPage(QWidget):
             self._watch(table)
         col.addWidget(card)
 
-        self.server_card = Card("새로 생기는 파일의 소유자·권한 (선택, 리눅스 서버)",
-                                "배포로 서버에 처음 생기는 파일·폴더(새 JSP 등)에만 적용합니다. 이미 있던 파일은 원래 "
-                                "소유자·권한을 그대로 둡니다. 비워 두면 apply 를 실행한 계정 소유가 되고 권한은 서버 기본값을 따릅니다.")
+        self.server_card = Card("새로 생기는 파일의 소유자·권한 (선택, 리눅스 서버)")
         form = _form()
         self.owner_edit = QLineEdit()
         self.file_mode_edit = QLineEdit()
@@ -390,14 +363,14 @@ class ProjectsPage(QWidget):
     # ------------------------------------------------------------------ 탭: 제외·알림
     def _filters_tab(self) -> QWidget:
         w, col = self._column()
-        exclude = Card("배포에서 뺄 파일", "아래 이미 빼는 파일에 더해집니다. 한 줄에 하나씩 적습니다 (예: docs/**, **/*.bak).")
+        exclude = Card("배포에서 뺄 파일")
         self.exclude_inherited = label("", "muted")
         self.exclude_list = LineList("docs/**")
         exclude.body.addWidget(self.exclude_inherited)
         exclude.body.addWidget(self.exclude_list)
         col.addWidget(exclude)
 
-        sensitive = Card("민감 파일", "실수로 배포되면 안 되는 파일은 막습니다. 꼭 배포해야 하는 파일은 예외로 허용하세요.")
+        sensitive = Card("민감 파일")
         self.deny_inherited = label("", "muted")
         sensitive.body.addWidget(self.deny_inherited)
         lists = QHBoxLayout()
@@ -413,7 +386,7 @@ class ProjectsPage(QWidget):
         sensitive.body.addLayout(lists)
         col.addWidget(sensitive)
 
-        notices = Card("알림", "이 패턴의 파일이 바뀌면 미리보기와 보고서에 알림을 띄웁니다 (예: DB 반영, 라이브러리 추가).")
+        notices = Card("알림")
         self.notices_inherited = label("", "muted")
         self.notices_table = RowTable([("pattern", "파일 패턴"), ("message", "알림 내용")], stretch=1, height=112)
         self.notices_table.table.setColumnWidth(0, 220)
@@ -460,7 +433,8 @@ class ProjectsPage(QWidget):
         self.layers = project_edit.load_layers(self.data, name, self.ctx.config_path)
         e = self.layers.entry
         self._loading = True
-        self.subtitle.setText(f"{name}  ·  화면에서 바꾼 값은 이 PC 의 개인 설정({CONFIG_NAME})에 저장됩니다")
+        self.subtitle.setText(name)
+        self.subtitle.setVisible(True)
         self.name_edit.setText(name)
         self.root_field.setText(str(e.get("root", "")))
         self.output_field.setText(str(e.get("output_dir", "")))
@@ -652,9 +626,9 @@ class ProjectsPage(QWidget):
         windows = (self.os_combo.currentData() or os_value) == "windows"
         for edit in (self.owner_edit, self.file_mode_edit, self.dir_mode_edit):
             edit.setEnabled(not windows)
-        self.server_note.setText("Windows 서버는 소유자·권한을 지정하지 않습니다 (위 폴더 권한을 따름). 배포 이력 파일만 바꿀 수 있습니다."
-                                 if windows else
-                                 "소유자를 바꾸려면 apply 를 실행하는 계정에 그 권한(sudo 등)이 있어야 합니다.")
+        self.server_note.setText("Windows 서버는 소유자·권한을 지정하지 않습니다. 배포 이력 파일만 바꿀 수 있습니다."
+                                 if windows else "")
+        self.server_note.setVisible(windows)
 
         # 제외·알림 (합쳐지는 값)
         base = list(_COMMON_EXCLUDE) + list(preset.get("exclude", []))

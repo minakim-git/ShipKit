@@ -42,9 +42,7 @@ class ServersTab(QWidget):
         col = QVBoxLayout(self)
         col.setContentsMargins(0, 4, 6, 4)
         col.setSpacing(14)
-        card = Card("서버 연결", "배포 완료 화면에서 패키지를 바로 올리고 check·apply 까지 실행할 서버입니다 (SSH/SFTP). "
-                               "개발·운영처럼 여러 대를 등록할 수 있습니다. 비밀번호는 처음 접속할 때 묻고, "
-                               "저장을 고르면 Windows 자격 증명 관리자에 넣어 다음부터 묻지 않습니다.")
+        card = Card("서버 연결")
         self.note = label("", "muted")
         card.body.addWidget(self.note)
         split = QHBoxLayout()
@@ -108,9 +106,6 @@ class ServersTab(QWidget):
                              ("서버 배포 경로", self.srv_path)):
             form.addRow(label(text, "fieldLabel", wrap=False), widget)
         right.addLayout(form)
-        right.addWidget(label("다른 계정으로 실행: 접속하는 계정과 서버 스크립트를 실행할 계정이 다를 때 고릅니다. "
-                              "이때 올릴 위치는 실행 계정도 들어갈 수 있는 폴더여야 합니다 (예: 실행 계정의 홈 아래).",
-                              "muted"))
         buttons = QHBoxLayout()
         self.server_test_btn = button("연결 시험")
         self.server_test_btn.clicked.connect(self.test_server)

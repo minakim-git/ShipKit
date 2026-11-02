@@ -707,3 +707,26 @@ def test_remote_panel_upload_apply_rollback(qapp, tmp_path, maven_project, monke
     page.servers_tab.srv_user.setText("app")
     assert page.save()
     assert [s["name"] for s in config_store.load_raw(path)["projects"]["erp"]["servers"]] == ["개발", "서버 2"]
+
+
+def test_user_guide_dialog(qapp, tmp_path, maven_project):
+    """화면 설명글 대신 여는 사용자 가이드: 패키지에 든 문서를 보여 주고, 목차 링크로 그 자리로 가며, 한 창만 연다."""
+    from PySide6.QtCore import QUrl
+    from shipkit.gui import guide_view
+
+    w = make_window(_config(tmp_path, maven_project))
+    g = guide_view.show_guide(w)
+    assert g.isVisible() and g.windowTitle() == "사용자 가이드"
+    text = g.browser.toPlainText()
+    assert "서버에 바로 반영" in text and "문제가 생겼을 때" in text
+    bar = g.browser.verticalScrollBar()
+    g.browser.setSource(QUrl("#4-서버에-바로-반영"))
+    assert bar.value() > 0, "목차 앵커로 스크롤"
+    assert guide_view.show_guide(w) is g
+    from PySide6.QtWidgets import QPushButton
+    assert w.guide_btn.text() == "사용자 가이드"  # 사이드바
+    assert any(b.text() == "사용자 가이드" for b in w.settings_page.findChildren(QPushButton))  # 앱 설정 → 정보
+    g.close()
+    qapp.processEvents()
+    assert guide_view._open is None
+    w.close()

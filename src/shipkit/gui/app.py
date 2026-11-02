@@ -18,12 +18,13 @@ from shipkit.gui import theme
 from shipkit.gui.connections_page import ConnectionsPage
 from shipkit.gui.context import AppContext
 from shipkit.gui.deploy_page import DeployPage
+from shipkit.gui.guide_view import show_guide
 from shipkit.gui.history_page import HistoryPage
 from shipkit.gui.projects_page import TAB_SERVERS, ProjectsPage
 from shipkit.gui.settings_page import SettingsPage
 from shipkit.gui.setup_wizard import SetupWizard
 from shipkit.gui.tasks import TaskRunner
-from shipkit.gui.widgets import Dialogs, ProjectSwitcher, label
+from shipkit.gui.widgets import Dialogs, ProjectSwitcher, button, label
 from shipkit.secrets import token_source
 
 PAGES = (("배포", "nav-deploy.svg"), ("기록", "nav-history.svg"), ("프로젝트", "nav-projects.svg"),
@@ -140,6 +141,17 @@ class MainWindow(QMainWindow):
         self.nav.currentRowChanged.connect(self.stack.setCurrentIndex)
         self.nav.currentRowChanged.connect(self._on_page)
         side.addWidget(self.nav, 1)
+
+        # 사용자 가이드: 화면에는 설명글을 두지 않고, 궁금하면 여기서 연다
+        self.guide_btn = button("사용자 가이드", "sideLink")
+        theme.bind_icon(self.guide_btn, "help.svg", "MUTED", 16)
+        self.guide_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.guide_btn.clicked.connect(lambda: show_guide(self))
+        guide_row = QHBoxLayout()
+        guide_row.setContentsMargins(16, 0, 16, 10)
+        guide_row.addWidget(self.guide_btn)
+        guide_row.addStretch(1)
+        side.addLayout(guide_row)
 
         # 연결 상태 (연결 화면에서 바꾼 내용이 바로 반영된다)
         self.status_box = QVBoxLayout()

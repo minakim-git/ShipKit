@@ -204,8 +204,7 @@ class RemotePanel(Card):
     def __init__(self, ctx: AppContext):
         self.server_combo = QComboBox()
         self.server_combo.setMinimumWidth(220)
-        super().__init__("서버에 바로 반영", "패키지를 서버에 올리고 check → backup·apply 까지 여기서 실행합니다.",
-                         right=self.server_combo, collapsible=True)
+        super().__init__("서버에 바로 반영", right=self.server_combo, collapsible=True)
         self.ctx = ctx
         self.client = RemoteClient(ctx)
         self.result = None                 # 방금 만든 패키지 (PackageResult)

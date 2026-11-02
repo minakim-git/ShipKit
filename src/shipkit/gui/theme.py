@@ -347,6 +347,8 @@ QPushButton#primary:hover {{ background: {BTN_HOVER}; border-color: {BTN_HOVER};
 QPushButton#primary:disabled {{ background: {BTN_DISABLED}; border-color: {BTN_DISABLED}; color: {MUTED if MODE == 'dark' else 'white'}; }}
 QPushButton#ghost {{ background: transparent; border: none; color: {PRIMARY}; font-weight: 600; padding: 0 8px; }}
 QPushButton#ghost:hover {{ background: {PRIMARY_SOFT}; }}
+QPushButton#sideLink {{ background: transparent; border: none; color: {MUTED}; font-size: 9.5pt; padding: 4px 6px; text-align: left; }}
+QPushButton#sideLink:hover {{ color: {PRIMARY}; background: {HOVER}; border-radius: 6px; }}
 QPushButton#danger {{ color: {TONES['danger'][0]}; }}
 QPushButton#danger:hover {{ background: {TONES['danger'][1]}; border-color: {DANGER_HOVER_BORDER}; }}
 

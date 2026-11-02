@@ -8,10 +8,11 @@ from PySide6.QtWidgets import (
     QApplication, QButtonGroup, QFormLayout, QHBoxLayout, QLineEdit, QPushButton, QScrollArea, QVBoxLayout, QWidget,
 )
 
-from shipkit import CONFIG_NAME, __app_name__, __tagline__, __version__, config_store
+from shipkit import __app_name__, __tagline__, __version__, config_store
 from shipkit.config import ConfigError
 from shipkit.gui import theme
 from shipkit.gui.context import AppContext
+from shipkit.gui.guide_view import show_guide
 from shipkit.gui.widgets import Card, Chip, PathField, button, label, open_path, page_header
 
 
@@ -36,14 +37,14 @@ class SettingsPage(QWidget):
         self.save_btn = button("저장", "primary")
         self.save_btn.setMinimumWidth(110)
         self.save_btn.clicked.connect(self.save)
-        outer.addWidget(page_header("앱 설정", "모든 프로젝트에 공통으로 쓰는 값과 설정 파일을 관리합니다.", self.save_btn))
+        outer.addWidget(page_header("앱 설정", "", self.save_btn))
 
         content = QWidget()
         layout = QVBoxLayout(content)
         layout.setContentsMargins(0, 0, 6, 0)
         layout.setSpacing(14)
 
-        look = Card("화면", "이 PC 에만 저장됩니다. '시스템 설정 따르기'는 Windows 의 밝게/어둡게 설정을 바로 따라갑니다.")
+        look = Card("화면")
         row = QHBoxLayout()
         row.setSpacing(6)
         self.theme_group = QButtonGroup(self)
@@ -61,7 +62,7 @@ class SettingsPage(QWidget):
         look.body.addLayout(row)
         layout.addWidget(look)
 
-        defaults = Card("패키지 기본값", "프로젝트 설정에서 따로 정하지 않으면 이 값을 씁니다.")
+        defaults = Card("패키지 기본값")
         form = _form()
         self.output_field = PathField(placeholder="예: D:/deploy/{project}   ({project} = 프로젝트 이름)")
         self.package_name = QLineEdit()
@@ -69,13 +70,10 @@ class SettingsPage(QWidget):
         form.addRow(label("패키지 생성 경로", "fieldLabel", wrap=False), self.output_field)
         form.addRow(label("날짜 폴더 이름", "fieldLabel", wrap=False), self.package_name)
         defaults.body.addLayout(form)
-        defaults.body.addWidget(label("배포할 때마다 [패키지 생성 경로]/[날짜 폴더] 에 패키지를 만듭니다. "
-                                      "예: D:/deploy/erp/2026-10-29-1140", "muted"))
         layout.addWidget(defaults)
 
         self.file_chip = Chip("", "neutral")
-        files = Card("설정 파일", f"화면에서 저장한 값은 이 파일({CONFIG_NAME})에 들어갑니다. "
-                                  "토큰은 이 파일이 아니라 Windows 자격 증명 관리자에 저장합니다.", right=self.file_chip)
+        files = Card("설정 파일", right=self.file_chip)
         self.path_label = label("", "code")
         self.path_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         files.body.addWidget(self.path_label)
@@ -90,7 +88,7 @@ class SettingsPage(QWidget):
         files.body.addLayout(row)
         layout.addWidget(files)
 
-        start = Card("시작하기", "처음 쓰는 PC 라면 안내를 따라 연결·패키지 위치·프로젝트를 한 번에 정할 수 있습니다.")
+        start = Card("시작하기")
         row = QHBoxLayout()
         setup = button("처음 실행 안내 다시 보기")
         setup.clicked.connect(self.setup_requested.emit)
@@ -104,6 +102,12 @@ class SettingsPage(QWidget):
 
         about = Card("정보")
         about.body.addWidget(label(f"<b>{__app_name__}</b>  v{__version__}  ·  {__tagline__}", "muted"))
+        row = QHBoxLayout()
+        guide = button("사용자 가이드")
+        guide.clicked.connect(lambda: show_guide(self))
+        row.addWidget(guide)
+        row.addStretch(1)
+        about.body.addLayout(row)
         layout.addWidget(about)
         layout.addStretch(1)
 

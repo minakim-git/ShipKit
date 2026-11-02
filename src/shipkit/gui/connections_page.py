@@ -27,12 +27,11 @@ def _form() -> QFormLayout:
 class ServiceBox(Card):
     """GitLab 또는 GitHub 연결 설정 카드."""
 
-    def __init__(self, page: "ConnectionsPage", key: str, title: str, subtitle: str, url_hint: str,
-                 default_url: str = ""):
+    def __init__(self, page: "ConnectionsPage", key: str, title: str, url_hint: str, default_url: str = ""):
         self.enabled = QCheckBox("사용")
         self.enabled.setObjectName("switch")
         self.enabled.setCursor(Qt.CursorShape.PointingHandCursor)
-        super().__init__(title, subtitle, right=self.enabled)
+        super().__init__(title, right=self.enabled)
         self.page, self.key, self.default_url = page, key, default_url
         self.url = QLineEdit()
         self.url.setPlaceholderText(url_hint)
@@ -184,21 +183,17 @@ class ConnectionsPage(QWidget):
         self.save_btn = button("연결 저장", "primary")
         self.save_btn.setMinimumWidth(120)
         self.save_btn.clicked.connect(self.save)
-        outer.addWidget(page_header(
-            "연결", "MR·PR 목록을 불러올 GitLab·GitHub 를 연결합니다. 토큰은 설정 파일이 아니라 "
-                   "Windows 자격 증명 관리자에 저장합니다.", self.save_btn))
+        outer.addWidget(page_header("연결", "", self.save_btn))
 
         content = QWidget()
         layout = QVBoxLayout(content)
         layout.setContentsMargins(0, 0, 6, 0)
         layout.setSpacing(14)
-        self.gitlab = ServiceBox(self, "gitlab", "GitLab", "MR 로 패키지를 만들 때 씁니다. 토큰은 read_api 권한이면 됩니다.",
-                                 "예: https://gitlab.example.com")
-        self.github = ServiceBox(self, "github", "GitHub", "PR 로 패키지를 만들 때 씁니다.",
+        self.gitlab = ServiceBox(self, "gitlab", "GitLab", "예: https://gitlab.example.com")
+        self.github = ServiceBox(self, "github", "GitHub",
                                  f"비우면 {GITHUB_API_URL}  (Enterprise 는 https://<호스트>/api/v3)", GITHUB_API_URL)
         layout.addWidget(self.gitlab)
         layout.addWidget(self.github)
-        layout.addWidget(label("주소를 바꾸면 [연결 저장]을 누른 뒤 토큰을 저장하세요. 토큰은 주소별로 저장됩니다.", "muted"))
         layout.addStretch(1)
 
         scroll = QScrollArea()

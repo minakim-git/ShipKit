@@ -190,7 +190,9 @@ def page_header(title: str, subtitle: str, right: Optional[QWidget] = None) -> Q
     texts = QVBoxLayout()
     texts.setSpacing(2)
     texts.addWidget(label(title, "pageTitle"))
-    texts.addWidget(label(subtitle, "pageSubtitle"))
+    sub = label(subtitle, "pageSubtitle")
+    sub.setVisible(bool(subtitle))  # 설명글 없는 화면은 제목만 (채워 넣는 화면은 setVisible 로 다시 켠다)
+    texts.addWidget(sub)
     layout.addLayout(texts, 1)
     if right is not None:
         layout.addWidget(right, 0, Qt.AlignmentFlag.AlignBottom)

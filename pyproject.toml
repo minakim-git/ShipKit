@@ -29,7 +29,7 @@ shipkit-gui = "shipkit.gui.app:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-shipkit = ["templates/*", "gui/assets/*"]
+shipkit = ["templates/*", "gui/assets/*", "docs/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

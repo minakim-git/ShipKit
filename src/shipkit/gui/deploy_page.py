@@ -232,8 +232,6 @@ class DeployPage(QWidget):
         self.range_edit.textChanged.connect(self._invalidate)
         row.addWidget(self.range_edit, 1)
         layout.addLayout(row)
-        layout.addWidget(label("두 커밋(또는 태그) 사이에 바뀐 파일을 배포합니다. 기본값은 가장 최근 태그부터 지금(HEAD)까지입니다.",
-                               "muted"))
         layout.addStretch(1)
         return w
 
@@ -476,11 +474,10 @@ class DeployPage(QWidget):
         self.tabs.setTabVisible(TAB_REQUESTS, bool(kinds))
         if kinds:
             self.tabs.setTabText(TAB_REQUESTS, " / ".join(SERVICE_LABEL[k] for k in kinds))
-            self.req_hint.setText("[목록 불러오기]를 누르세요. 여러 개를 고르면 머지된 순서대로 합칩니다.")
+            self.req_hint.setText("")
         self.tabs.setTabVisible(TAB_GIT, is_git)
         self.tabs.setTabVisible(TAB_BUILD, p.mode == "sync")
-        self.build_hint.setText(f"{p.build_dir} 폴더 전체를 패키지에 담고, 서버에서는 내용이 다른 파일만 반영합니다. "
-                                "이번 빌드에 없는 옛 파일은 정리 폴더에서 지워집니다." if p.mode == "sync" else "")
+        self.build_hint.setText(f"빌드 결과 폴더: {p.build_dir}" if p.mode == "sync" else "")
         self.range_edit.setText(workflow.latest_tag_range(p) if is_git else "")
         default = TAB_BUILD if p.mode == "sync" else (TAB_REQUESTS if kinds else TAB_FILES)
         self.tabs.setCurrentIndex(default)
@@ -645,7 +642,7 @@ class DeployPage(QWidget):
             self.req_table.setColumnWidth(col, max(self.req_table.columnWidth(col), header.sectionSizeHint(col)))
         self.req_table.setColumnWidth(0, 44)
         self.req_hint.setText("조회된 항목이 없습니다. 상태(머지됨/열림)나 검색어를 바꿔 보세요." if not items else
-                              f"{len(items)}개 · 행을 누르면 선택됩니다. 여러 개를 고르면 머지된 순서대로 합칩니다.")
+                              f"{len(items)}개")
         self._invalidate()
 
     def _toggle_row(self, row: int, col: int) -> None:
@@ -854,7 +851,7 @@ class DeployPage(QWidget):
         self.done_chips.addStretch(1)
 
         upload, steps, (rollback, rollback_desc) = report.server_steps(result)
-        self.upload_label.setText(f"{upload}  그다음 서버에서 아래 명령을 순서대로 실행합니다.")
+        self.upload_label.setText(upload)
         _clear(self.command_box)
         self.done_commands = [cmd for cmd, _ in steps] + [rollback]
         for i, (cmd, desc) in enumerate(steps, 1):

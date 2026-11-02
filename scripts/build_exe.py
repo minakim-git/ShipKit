@@ -97,6 +97,7 @@ def build(pyinstaller, kind: str) -> Path:
     if gui:
         # 화면 아이콘(svg)과 exe 아이콘
         args += ["--add-data", f"{ROOT / 'src' / 'shipkit' / 'gui' / 'assets'}{os.pathsep}shipkit/gui/assets"]
+        args += ["--add-data", f"{ROOT / 'src' / 'shipkit' / 'docs'}{os.pathsep}shipkit/docs"]  # 사용자 가이드
         icon = make_icon(work / "ShipKit.ico")
         if icon:
             args += ["--icon", str(icon)]
