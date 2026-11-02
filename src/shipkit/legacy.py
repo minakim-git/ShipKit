@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from shipkit import CLI_NAME, __app_name__
+from shipkit.config import is_windows_path
 
 
 @dataclass
@@ -52,6 +53,15 @@ def _path(value: str) -> str:
     return value.replace("\\", "/").rstrip("/")
 
 
+def _server_path(value: str) -> Tuple[str, bool]:
+    """서버 경로와, Windows 경로인지. 'D:\\a\\b\\' 는 'D:/a/b' 로, '\\\\서버\\공유' 는 그대로 둔다."""
+    windows = is_windows_path(value)
+    if windows and not value.startswith("\\\\"):
+        value = value.replace("\\", "/")
+    stripped = value.rstrip("/")
+    return (stripped if len(stripped) > 2 else value), windows
+
+
 def to_yaml(gitlab_url: Optional[str], projects: List[LegacyProject], source: Path) -> str:
     out = [
         f"# {__app_name__} 설정 파일",
@@ -87,7 +97,10 @@ def to_yaml(gitlab_url: Optional[str], projects: List[LegacyProject], source: Pa
         out.append(f"{prefix}{_q(p.name)}:")
         out.append(f"{prefix}  root: {_q(_path(p.local_path))}")
         out.append(f"{prefix}  output_dir: {_q(_path(p.package_path))}")
-        out.append(f"{prefix}  server_path: {_q(p.server_path.rstrip('/') or p.server_path)}")
+        server, windows = _server_path(p.server_path)
+        out.append(f"{prefix}  server_path: {_q(server)}")
+        if windows:  # 기존 툴은 서버 OS 를 따로 두지 않았다: 경로 모양으로 알아본다
+            out.append(f"{prefix}  server_os: windows")
         if p.gitlab_project_id:
             out.append(f"{prefix}  gitlab_project: {_q(p.gitlab_project_id)}")
         out.append("")

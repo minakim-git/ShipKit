@@ -105,7 +105,7 @@ def test_config_store_merge_legacy(tmp_path):
     _legacy_db(db)
     data = {"projects": {"acme_erp": {"root": "keep", "output_dir": "o", "server_path": "/k"}}}
     added, skipped = config_store.merge_legacy(data, db)
-    assert added == [] and skipped == ["acme_erp"]
+    assert added == ["win_app"] and skipped == ["acme_erp"]
     assert data["projects"]["acme_erp"]["root"] == "keep" and data["gitlab"]["url"] == "https://gitlab.acme.local"
 
 
@@ -206,6 +206,7 @@ def test_first_run_wizard_imports_legacy_and_cancel(qapp, tmp_path, monkeypatch)
     w.settings_page.setup_requested.emit()                        # 앱 설정의 [처음 실행 안내 다시 보기]
     saved = config_store.load_raw(path)
     assert "acme_erp" in saved["projects"] and saved["defaults"]["output_dir"].endswith("/out/{project}")
+    assert saved["projects"]["win_app"]["server_os"] == "windows"  # Windows 서버 경로도 저장(검증)을 통과한다
     assert w.ctx.current == "acme_erp"
 
 

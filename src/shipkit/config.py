@@ -36,6 +36,13 @@ _UNSAFE_SHELL_CHARS = re.compile(r'["\'$`\\\n\r]')
 # Windows 서버(PowerShell): 경로 구분자 \ 는 허용, 따옴표·$·백틱은 금지
 _UNSAFE_PS_CHARS = re.compile(r'["\'$`\n\r]')
 _WIN_ABS_PATH = re.compile(r"^(?:[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+)")
+
+
+def is_windows_path(value: Any) -> bool:
+    """'D:/...' 또는 '\\\\서버\\공유' 같은 Windows 절대 경로인가 (서버 OS 를 추정할 때)."""
+    return bool(_WIN_ABS_PATH.match(str(value or "").strip()))
+
+
 SERVER_OSES = ("linux", "windows")
 
 MODES = ("changes", "sync")

@@ -54,7 +54,8 @@ def _legacy_db(path):
         INSERT INTO projects (name, local_path, package_path, server_password, server_path, gitlab_project_id)
         VALUES ('acme_erp', 'C:/workspace\\acme_erp',
                 'D:/배포/acme_erp/반영', 'SECRET-PW', '/opt/acme/app/erp', '306'),
-               ('no_server', 'C:/x', 'D:/y', '', '', '');
+               ('no_server', 'C:/x', 'D:/y', '', '', ''),
+               ('win_app', 'C:/w', 'D:/z', '', 'D:\\tomcat\\webapps\\ROOT\\', '');
         INSERT INTO settings (key, value) VALUES ('gitlab_url', 'https://gitlab.acme.local/'),
                ('gitlab_token', 'SECRET-TOKEN');
     """)
@@ -77,6 +78,9 @@ def test_import_legacy(tmp_path, capsys):
         "output_dir": "D:/배포/acme_erp/반영",
         "server_path": "/opt/acme/app/erp",
         "gitlab_project": "306",
+    }
+    assert data["projects"]["win_app"] == {  # Windows 경로면 server_os 까지 (안 그러면 리눅스 경로 검증에 걸린다)
+        "root": "C:/w", "output_dir": "D:/z", "server_path": "D:/tomcat/webapps/ROOT", "server_os": "windows",
     }
     assert "no_server" not in data["projects"]  # 서버 경로 없는 프로젝트는 주석 처리
     assert "# [확인 필요] server_path" in text
