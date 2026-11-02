@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
 
 from shipkit import __app_name__, __tagline__, __version__, config_store
 from shipkit.config import ConfigError
-from shipkit.gui import theme
+from shipkit.gui import diagnostics, theme
 from shipkit.gui.context import AppContext
 from shipkit.gui.guide_view import show_guide
 from shipkit.gui.widgets import Card, Chip, PathField, button, label, open_path, page_header
@@ -105,7 +105,11 @@ class SettingsPage(QWidget):
         row = QHBoxLayout()
         guide = button("사용자 가이드")
         guide.clicked.connect(lambda: show_guide(self))
+        log_btn = button("로그 파일 열기", "ghost")
+        log_btn.setToolTip("오류가 났을 때 담당자에게 보낼 기록입니다.")
+        log_btn.clicked.connect(self.open_log)
         row.addWidget(guide)
+        row.addWidget(log_btn)
         row.addStretch(1)
         about.body.addLayout(row)
         layout.addWidget(about)
@@ -118,6 +122,13 @@ class SettingsPage(QWidget):
         content.setAutoFillBackground(False)
         outer.addWidget(scroll, 1)
         ctx.listeners.append(self.refresh)
+
+    def open_log(self) -> None:
+        path = diagnostics.log_path()
+        if path.is_file():
+            open_path(path)
+        else:
+            self.ctx.dialogs.info("로그 파일", f"아직 로그 파일이 없습니다.\n{path}")
 
     def set_theme(self, key: str) -> None:
         """테마를 바로 바꾸고 이 PC 에 기억한다 (저장 버튼과 상관없음)."""

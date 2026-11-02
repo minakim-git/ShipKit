@@ -17,6 +17,7 @@ from shipkit.config import ConfigError, find_config, user_config_path
 from shipkit.gui import theme
 from shipkit.gui.connections_page import ConnectionsPage
 from shipkit.gui.context import AppContext
+from shipkit.gui import diagnostics
 from shipkit.gui.deploy_page import DeployPage
 from shipkit.gui.guide_view import show_guide
 from shipkit.gui.history_page import HistoryPage
@@ -277,6 +278,9 @@ class MainWindow(QMainWindow):
 def main(argv: Optional[Sequence[str]] = None) -> int:
     QCoreApplication.setOrganizationName(__app_name__)
     QCoreApplication.setApplicationName(__app_name__)
+    diagnostics.setup_logging()
+    holder: dict = {}  # 창이 뜨기 전의 오류는 stderr 로, 뜬 뒤에는 창으로
+    diagnostics.install_excepthook(lambda: holder["window"].ctx.dialogs if "window" in holder else None)
     app = QApplication.instance() or QApplication(list(argv) if argv is not None else sys.argv)
     app.setStyle("Fusion")
     theme.apply(app, current_theme_setting())
@@ -284,9 +288,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     QGuiApplication.styleHints().colorSchemeChanged.connect(
         lambda *_: current_theme_setting() == "system" and theme.apply(app, "system"))
     window = MainWindow()
+    holder["window"] = window
     window.show()
     window.first_run()
-    return app.exec()
+    code = app.exec()
+    diagnostics.log.info("종료 (%s)", code)
+    return code
 
 
 if __name__ == "__main__":

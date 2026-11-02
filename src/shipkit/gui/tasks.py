@@ -1,6 +1,7 @@
 """오래 걸리는 작업(GitLab 조회, 패키지 생성, 서버 올리기 등)을 백그라운드에서 돌려 창이 멈추지 않게 한다."""
 from __future__ import annotations
 
+import logging
 from typing import Any, Callable, Optional, Set
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
@@ -19,6 +20,7 @@ EXPECTED_ERRORS = (ConfigError, SecretError, GitError, GitHubError, GitLabError,
                    RemoteError)
 
 Emit = Callable[[Any], None]
+log = logging.getLogger("shipkit.tasks")
 
 
 def error_text(e: BaseException) -> str:
@@ -42,7 +44,11 @@ class _Task(QRunnable):
     def run(self) -> None:
         try:
             result = self.fn()
-        except Exception as e:  # 모든 오류를 화면으로 보낸다
+        except Exception as e:  # 모든 오류를 화면으로 보낸다 (로그에도: 예상된 오류는 한 줄, 아니면 추적까지)
+            if isinstance(e, EXPECTED_ERRORS):
+                log.warning("작업 실패: %s", e)
+            else:
+                log.error("작업 중 예상하지 못한 오류", exc_info=e)
             self.signals.failed.emit(error_text(e))
         else:
             self.signals.done.emit(result)

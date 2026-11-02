@@ -731,3 +731,33 @@ def test_user_guide_dialog(qapp, tmp_path, maven_project):
     qapp.processEvents()
     assert guide_view._open is None
     w.close()
+
+
+def test_unexpected_error_is_logged_and_shown(qapp, tmp_path):
+    """화면 스레드의 처리되지 않은 예외: 로그 파일에 추적을 남기고 창으로 알린다. 백그라운드 작업의 오류도 로그에."""
+    import sys
+    from PySide6.QtCore import QTimer
+    from shipkit.gui import diagnostics, tasks
+
+    path = tmp_path / "log" / "shipkit.log"
+    assert diagnostics.setup_logging(path) == path
+    dialogs = FakeDialogs()
+    diagnostics.install_excepthook(lambda: dialogs)
+    try:
+        def boom():
+            raise RuntimeError("터짐")
+        QTimer.singleShot(0, boom)          # PySide 는 슬롯의 예외를 sys.excepthook 으로 보낸다
+        for _ in range(5):
+            qapp.processEvents()
+        assert dialogs.messages and dialogs.messages[-1][:2] == ("error", "예상하지 못한 오류")
+        assert "RuntimeError: 터짐" in dialogs.messages[-1][2] and str(path) in dialogs.messages[-1][2]
+
+        tasks._Task(lambda: 1 / 0, tasks._Signals()).run()                       # 예상 못 한 오류: 추적까지
+        tasks._Task(lambda: (_ for _ in ()).throw(tasks.ConfigError("설정 오류")), tasks._Signals()).run()  # 예상된 오류: 한 줄
+        text = path.read_text(encoding="utf-8")
+        assert "Traceback" in text and "RuntimeError: 터짐" in text and "ZeroDivisionError" in text
+        assert "작업 실패: 설정 오류" in text and text.count("Traceback") == 2
+    finally:
+        diagnostics.uninstall_excepthook()
+        diagnostics.close_logging()
+    assert sys.excepthook is sys.__excepthook__
