@@ -349,6 +349,9 @@ QPushButton#ghost {{ background: transparent; border: none; color: {PRIMARY}; fo
 QPushButton#ghost:hover {{ background: {PRIMARY_SOFT}; }}
 QPushButton#sideLink {{ background: transparent; border: none; color: {MUTED}; font-size: 9.5pt; padding: 4px 6px; text-align: left; }}
 QPushButton#sideLink:hover {{ color: {PRIMARY}; background: {HOVER}; border-radius: 6px; }}
+QPushButton#sideUpdate {{ background: {PRIMARY_SOFT}; border: none; color: {PRIMARY}; font-size: 9.5pt; font-weight: 600;
+    padding: 5px 8px; text-align: left; border-radius: 6px; }}
+QPushButton#sideUpdate:hover {{ background: {HOVER}; }}
 QPushButton#danger {{ color: {TONES['danger'][0]}; }}
 QPushButton#danger:hover {{ background: {TONES['danger'][1]}; border-color: {DANGER_HOVER_BORDER}; }}
 

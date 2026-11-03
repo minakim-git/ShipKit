@@ -297,6 +297,7 @@ class Config:
     defaults: Dict[str, Any] = field(default_factory=dict)
     github: Optional[GitHubConfig] = None
     base_dir: Path = field(default_factory=Path.cwd)
+    update_location: str = ""   # 새 버전 확인 위치: version.txt 가 있는 공유 폴더 또는 URL (비우면 확인 안 함)
 
     def project(self, name: Optional[str], cwd: Optional[Path] = None) -> ProjectConfig:
         """이름으로 찾고, 이름이 없으면 현재 폴더로 추정한다.
@@ -429,7 +430,11 @@ def parse_config(data: Dict[str, Any], path: Optional[Path] = None) -> Config:
     projects = {}
     for name, raw in raw_projects.items():
         projects[str(name)] = _parse_project(str(name), _require_dict(raw, f"projects.{name}"), defaults, base_dir)
-    return Config(path=path, gitlab=gitlab, projects=projects, defaults=defaults, base_dir=base_dir, github=github)
+    update_location = data.get("update_location") or ""
+    if not isinstance(update_location, str):
+        raise ConfigError("update_location 은 폴더 경로나 URL 문자열이어야 합니다.")
+    return Config(path=path, gitlab=gitlab, projects=projects, defaults=defaults, base_dir=base_dir, github=github,
+                  update_location=update_location.strip())
 
 
 def _parse_service(data: Dict[str, Any], key: str, cls: Any, default_url: Optional[str]) -> Any:

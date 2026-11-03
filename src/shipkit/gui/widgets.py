@@ -466,6 +466,15 @@ def open_path(path: Path) -> None:
     QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
 
+def open_location(location: str) -> None:
+    """폴더(로컬·공유)는 탐색기로, URL 은 브라우저로 연다. version.txt 파일을 가리키면 그 폴더를 연다."""
+    if location.lower().startswith(("http://", "https://")):
+        QDesktopServices.openUrl(QUrl(location))
+        return
+    path = Path(location)
+    open_path(path.parent if path.suffix.lower() == ".txt" else path)
+
+
 _MESSAGE_MARK = {"info": "i", "success": "✓", "warning": "!", "danger": "!", "question": "?"}
 
 

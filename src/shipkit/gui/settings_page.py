@@ -8,12 +8,12 @@ from PySide6.QtWidgets import (
     QApplication, QButtonGroup, QFormLayout, QHBoxLayout, QLineEdit, QPushButton, QScrollArea, QVBoxLayout, QWidget,
 )
 
-from shipkit import __app_name__, __tagline__, __version__, config_store
+from shipkit import __app_name__, __tagline__, __version__, config_store, update
 from shipkit.config import ConfigError
 from shipkit.gui import diagnostics, theme
 from shipkit.gui.context import AppContext
 from shipkit.gui.guide_view import show_guide
-from shipkit.gui.widgets import Card, Chip, PathField, button, label, open_path, page_header
+from shipkit.gui.widgets import Card, Chip, PathField, button, label, open_location, open_path, page_header
 
 
 def _form() -> QFormLayout:
@@ -100,6 +100,20 @@ class SettingsPage(QWidget):
         start.body.addLayout(row)
         layout.addWidget(start)
 
+        updates = Card("새 버전 확인")
+        form = _form()
+        self.update_location = QLineEdit()
+        self.update_location.setPlaceholderText("version.txt 가 있는 공유 폴더(예: \\\\fileserver\\tools\\ShipKit) 또는 URL. 비우면 확인하지 않음")
+        self.update_check_btn = button("지금 확인", "ghost")
+        self.update_check_btn.clicked.connect(self.check_update)
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        row.addWidget(self.update_location, 1)
+        row.addWidget(self.update_check_btn)
+        form.addRow(label("확인 위치", "fieldLabel", wrap=False), row)
+        updates.body.addLayout(form)
+        layout.addWidget(updates)
+
         about = Card("정보")
         about.body.addWidget(label(f"<b>{__app_name__}</b>  v{__version__}  ·  {__tagline__}", "muted"))
         row = QHBoxLayout()
@@ -130,6 +144,23 @@ class SettingsPage(QWidget):
         else:
             self.ctx.dialogs.info("로그 파일", f"아직 로그 파일이 없습니다.\n{path}")
 
+    def check_update(self) -> None:
+        """[지금 확인]: 칸에 적힌 위치(저장 전이어도)의 version.txt 를 읽어 결과를 알린다."""
+        location = self.update_location.text().strip()
+        if not location:
+            self.ctx.dialogs.info("새 버전 확인", "확인 위치를 먼저 넣으세요.")
+            return
+
+        def done(info):
+            if info is None:
+                self.ctx.dialogs.info("새 버전 확인", f"지금 쓰는 v{__version__} 이 최신입니다.")
+            elif self.ctx.dialogs.ask("새 버전 확인", f"새 버전 v{info.version} 이 있습니다 (지금 v{__version__}).\n"
+                                      + (info.notes + "\n\n" if info.notes else "\n") + "받는 곳을 열까요?"):
+                open_location(info.location)
+
+        self.ctx.runner.run(lambda: update.check(location), done,
+                            on_failed=lambda msg: self.ctx.dialogs.error("새 버전 확인", msg), quiet=True)
+
     def set_theme(self, key: str) -> None:
         """테마를 바로 바꾸고 이 PC 에 기억한다 (저장 버튼과 상관없음)."""
         QSettings().setValue("ui/theme", key)
@@ -155,11 +186,17 @@ class SettingsPage(QWidget):
         defaults = data.get("defaults") or {}
         self.output_field.setText(str(defaults.get("output_dir", "")))
         self.package_name.setText(str(defaults.get("package_name", "")))
+        self.update_location.setText(str(data.get("update_location") or ""))
 
     def save(self) -> None:
-        """기본값(defaults)만 저장한다. 다른 값은 그대로 둔다."""
+        """기본값(defaults)과 새 버전 확인 위치만 저장한다. 다른 값은 그대로 둔다."""
         data = config_store.load_raw(self.ctx.config_path)
         before = copy.deepcopy(data)
+        location = self.update_location.text().strip()
+        if location:
+            data["update_location"] = location
+        else:
+            data.pop("update_location", None)
         defaults = data.setdefault("defaults", {}) or {}
         data["defaults"] = defaults
         for key, value in (("output_dir", self.output_field.text()), ("package_name", self.package_name.text().strip())):

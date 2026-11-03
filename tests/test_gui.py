@@ -770,3 +770,42 @@ def test_unexpected_error_is_logged_and_shown(qapp, tmp_path):
         diagnostics.uninstall_excepthook()
         diagnostics.close_logging()
     assert sys.excepthook is sys.__excepthook__
+
+
+# ---------------------------------------------------------------------- 새 버전 알림
+def test_update_notice_and_settings(qapp, tmp_path, maven_project, monkeypatch):
+    """앱 설정의 확인 위치에 더 새 version.txt 가 있으면 왼쪽 아래에 알리고, 누르면 그 위치를 연다."""
+    from shipkit import update
+
+    opened = []
+    monkeypatch.setattr("shipkit.gui.app.open_location", opened.append)
+    monkeypatch.setattr("shipkit.gui.settings_page.open_location", opened.append)
+    share = tmp_path / "share"
+    update.write_version_file(share / "version.txt", "99.0.0", "새 기능")
+    path = _config(tmp_path, maven_project)
+    w = make_window(path)
+    assert not w.update_btn.isVisibleTo(w)                                   # 확인 위치가 없으면 조용하다
+
+    s = w.settings_page
+    s.update_location.setText(str(share))
+    s.check_update()                                                         # 저장 전에도 [지금 확인] 은 된다
+    assert w.ctx.dialogs.messages[-1][:2] == ("ask", "새 버전 확인") and "v99.0.0" in w.ctx.dialogs.messages[-1][2]
+    assert opened == [str(share)]
+    s.save()
+    assert config_store.load_raw(path)["update_location"] == str(share)
+    assert w.update_btn.isVisibleTo(w) and w.update_btn.text() == "새 버전 v99.0.0" and "새 기능" in w.update_btn.toolTip()
+    w.update_btn.click()
+    assert opened == [str(share), str(share)]
+
+    update.write_version_file(share / "version.txt", "0.0.1")               # 더 새 버전이 없으면 숨긴다
+    s.check_update()
+    assert w.ctx.dialogs.messages[-1][:2] == ("info", "새 버전 확인") and "최신" in w.ctx.dialogs.messages[-1][2]
+    s.update_location.setText(str(tmp_path / "none"))                       # 읽지 못하면 시작 때는 로그만, [지금 확인] 은 오류 창
+    s.save()
+    assert w.ctx.dialogs.messages[-1][:2] == ("info", "앱 설정")
+    assert not w.update_btn.isVisibleTo(w)
+    s.check_update()
+    assert w.ctx.dialogs.messages[-1][:2] == ("error", "새 버전 확인") and "읽지 못했습니다" in w.ctx.dialogs.messages[-1][2]
+    s.update_location.setText("")
+    s.save()
+    assert "update_location" not in config_store.load_raw(path)

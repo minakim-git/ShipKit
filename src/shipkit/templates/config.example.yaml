@@ -17,6 +17,9 @@ gitlab:
 #   url: https://ghe.acme.local/api/v3   # GitHub Enterprise 일 때만
 #   token_env: GITHUB_TOKEN
 
+# 새 버전 확인 위치 (선택): 배포 담당자가 ShipKit.exe 와 version.txt 를 두는 공유 폴더 또는 URL
+# update_location: \\fileserver\tools\ShipKit
+
 # 모든 프로젝트 공통 기본값 (프로젝트에서 같은 키로 덮어쓸 수 있음)
 defaults:
   output_dir: D:/deploy/{project}     # 패키지 생성 위치 ({project} = 프로젝트 이름, 이 아래에 날짜 폴더가 생김)

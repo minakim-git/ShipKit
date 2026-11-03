@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-from shipkit import __app_name__, __tagline__, __version__, legacy
+from shipkit import __app_name__, __tagline__, __version__, legacy, update
 from shipkit.config import ConfigError, find_config, user_config_path
 from shipkit.gui import theme
 from shipkit.gui.connections_page import ConnectionsPage
@@ -25,7 +25,7 @@ from shipkit.gui.projects_page import TAB_SERVERS, ProjectsPage
 from shipkit.gui.settings_page import SettingsPage
 from shipkit.gui.setup_wizard import SetupWizard
 from shipkit.gui.tasks import TaskRunner
-from shipkit.gui.widgets import Dialogs, ProjectSwitcher, button, label
+from shipkit.gui.widgets import Dialogs, ProjectSwitcher, button, label, open_location
 from shipkit.secrets import token_source
 
 PAGES = (("배포", "nav-deploy.svg"), ("기록", "nav-history.svg"), ("프로젝트", "nav-projects.svg"),
@@ -88,6 +88,7 @@ class MainWindow(QMainWindow):
 
         self.ctx.listeners.append(self._refresh_projects)
         self.ctx.listeners.append(self._refresh_status)
+        self.ctx.listeners.append(self._check_update)
         self.ctx.connection_listeners.append(self._refresh_status)
         theme.on_change(self._refresh_status)
         self.ctx.project_listeners.append(self._show_project)
@@ -154,12 +155,53 @@ class MainWindow(QMainWindow):
         guide_row.addStretch(1)
         side.addLayout(guide_row)
 
+        # 새 버전 알림: 앱 설정의 확인 위치(공유 폴더·URL)에 더 새 version.txt 가 있을 때만 보인다
+        self.update_btn = button("", "sideUpdate")
+        theme.bind_icon(self.update_btn, "update.svg", "PRIMARY", 16)
+        self.update_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.update_btn.clicked.connect(self._open_update)
+        self.update_btn.hide()
+        self.update_info: Optional[update.UpdateInfo] = None
+        self._update_checked_for = ""
+        update_row = QHBoxLayout()
+        update_row.setContentsMargins(16, 0, 16, 10)
+        update_row.addWidget(self.update_btn)
+        side.addLayout(update_row)
+
         # 연결 상태 (연결 화면에서 바꾼 내용이 바로 반영된다)
         self.status_box = QVBoxLayout()
         self.status_box.setContentsMargins(22, 0, 16, 0)
         self.status_box.setSpacing(4)
         side.addLayout(self.status_box)
         return sidebar
+
+    # ------------------------------------------------------------------ 새 버전
+    def _check_update(self) -> None:
+        """설정을 읽었을 때: 확인 위치가 있으면 백그라운드에서 version.txt 를 읽는다 (같은 위치는 한 번만)."""
+        location = self.ctx.cfg.update_location if self.ctx.cfg else ""
+        if not location:
+            self.update_btn.hide()
+            self._update_checked_for = ""
+            return
+        if location == self._update_checked_for:
+            return
+        self._update_checked_for = location
+        self.update_btn.hide()  # 새 위치를 확인하는 동안 옛 알림은 치운다
+        self.ctx.runner.run(lambda: update.check(location), self._show_update,
+                            on_failed=lambda msg: diagnostics.log.warning("새 버전 확인 실패: %s", msg), quiet=True)
+
+    def _show_update(self, info: Optional[update.UpdateInfo]) -> None:
+        self.update_info = info
+        if info is None:
+            self.update_btn.hide()
+            return
+        self.update_btn.setText(f"새 버전 v{info.version}")
+        self.update_btn.setToolTip((info.notes + "\n\n" if info.notes else "") + f"지금 v{__version__}. 눌러서 받는 곳을 엽니다.")
+        self.update_btn.show()
+
+    def _open_update(self) -> None:
+        if self.update_info is not None:
+            open_location(self.update_info.location)
 
     def _nav_icons(self) -> None:
         for i, (_text, icon) in enumerate(PAGES):

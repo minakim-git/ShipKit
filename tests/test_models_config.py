@@ -39,6 +39,13 @@ def _cfg(**over):
     return {"projects": {"erp": p}}
 
 
+def test_update_location():
+    assert parse_config(_cfg()).update_location == ""
+    assert parse_config({"update_location": " \\\\fs\\tools\\ShipKit ", **_cfg()}).update_location == "\\\\fs\\tools\\ShipKit"
+    with pytest.raises(ConfigError, match="update_location"):
+        parse_config({"update_location": ["x"], **_cfg()})
+
+
 def test_parse_config_defaults_to_maven():
     cfg = parse_config(_cfg())
     p = cfg.project(None)

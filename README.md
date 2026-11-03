@@ -55,6 +55,8 @@ Java, Vue/React, Python, PHP, 정적 사이트 등 언어와 상관없이 쓸 �
 
 원하는 폴더(예: `C:\Tools\ShipKit`)에 두고 실행하면 됩니다. exe 만드는 방법은 [exe 만들기](#exe-만들기)를 참고하세요.
 
+새 버전을 나눠 줄 때는 `dist` 의 `ShipKit.exe` 와 `version.txt` 를 공유 폴더에 복사해 두면 됩니다. 각 PC 에서 앱 설정 → **새 버전 확인**에 그 폴더(또는 URL)를 한 번 저장해 두면, 앱을 켤 때 `version.txt` 를 읽어 더 새 버전이 있을 때만 왼쪽 아래에 알리고 누르면 그 폴더가 열립니다. 바깥 서비스는 보지 않습니다.
+
 ### 방법 2: Python 으로 설치
 
 Python 3.9 이상이 필요합니다.
@@ -168,6 +170,7 @@ gitlab:
   url: https://gitlab.example.com
 defaults:
   output_dir: D:/deploy/{project}     # {project} = 프로젝트 이름
+update_location: \\fileserver\tools\ShipKit   # 새 버전 확인 위치 (version.txt 가 있는 공유 폴더 또는 URL, 선택)
 projects:
   web:
     root: C:/workspace/web            # 나머지 값은 .shipkit.yml 에서 가져옴
@@ -350,7 +353,7 @@ Jenkins 등에서 그대로 쓸 수 있습니다.
 .venv\Scripts\python scripts\build_exe.py          # 둘 다 (gui / cli 로 하나만도 가능)
 ```
 
-`dist\ShipKit.exe`(화면, 약 55MB)와 `dist\shipkit-cli.exe`(명령어, 약 16MB)가 만들어집니다. 서버 스크립트 템플릿과 키링(Windows 자격 증명 관리자) 연동이 들어 있고, 파일 속성에 버전 정보가 표시됩니다. 팀원에게는 `ShipKit.exe`만 전달하면 됩니다.
+`dist\ShipKit.exe`(화면, 약 55MB)와 `dist\shipkit-cli.exe`(명령어, 약 16MB)가 만들어집니다. 서버 스크립트 템플릿과 키링(Windows 자격 증명 관리자) 연동이 들어 있고, 파일 속성에 버전 정보가 표시됩니다. 팀원에게는 `ShipKit.exe`만 전달하면 됩니다. 같이 만들어지는 `dist\version.txt`(첫 줄 버전, 둘째 줄부터 안내문)를 exe 와 함께 공유 폴더에 두면 새 버전 알림에 쓰입니다. 버전은 `src/shipkit/__init__.py` 의 `__version__` 을 올립니다.
 
 GUI 테스트는 화면 없이(`QT_QPA_PLATFORM=offscreen`) 실제 위젯을 조작해 확인합니다. PySide6가 설치되어 있지 않으면 건너뜁니다.
 

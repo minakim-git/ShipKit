@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from shipkit import CLI_NAME, __app_name__, __tagline__, __version__  # noqa: E402
+from shipkit.update import write_version_file as write_dist_version  # noqa: E402
 
 
 def write_version_file(path: Path, exe_name: str, description: str) -> None:
@@ -121,6 +122,8 @@ def main(argv: list) -> int:
         print(f"알 수 없는 대상: {unknown} (gui 또는 cli)")
         return 2
     built = [build(pyinstaller, k) for k in kinds]
+    # 새 버전 알림용: exe 와 같이 공유 폴더에 복사하면 각 PC 의 앱이 이 파일을 보고 알린다
+    built.append(write_dist_version(ROOT / "dist" / "version.txt"))
     print("\n" + "\n".join(f"  {p}" for p in built))
     return 0
 
