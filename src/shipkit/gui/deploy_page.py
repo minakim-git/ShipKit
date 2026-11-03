@@ -226,13 +226,36 @@ class DeployPage(QWidget):
         layout.setContentsMargins(0, 4, 0, 0)
         layout.setSpacing(8)
         row = QHBoxLayout()
+        row.setSpacing(8)
         row.addWidget(label("범위", "fieldLabel", wrap=False))
         self.range_edit = QLineEdit()
         self.range_edit.setPlaceholderText("예: v1.2..HEAD, abc123..def456")
         self.range_edit.textChanged.connect(self._invalidate)
+        self.since_btn = button("지난 배포 이후")
+        self.since_btn.setToolTip("지난 패키지를 만들 때의 커밋부터 지금(HEAD)까지를 범위에 넣습니다.")
+        self.since_btn.clicked.connect(self.use_since_last)
         row.addWidget(self.range_edit, 1)
+        row.addWidget(self.since_btn)
         layout.addLayout(row)
-        layout.addStretch(1)
+        self.since_label = label("", "muted")
+        layout.addWidget(self.since_label)
+        self.last_package: Optional[workflow.LastPackage] = None
+
+        mid = QHBoxLayout()
+        mid.addWidget(label("또는 커밋을 골라 담기", "fieldLabel", wrap=False))
+        mid.addStretch(1)
+        self.commits_btn = button("새로 고침", "ghost")
+        self.commits_btn.clicked.connect(self.load_commits)
+        mid.addWidget(self.commits_btn)
+        layout.addLayout(mid)
+        self.commit_table = _table(["", "커밋", "제목", "작성자", "시각"])
+        self.commit_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        for col, width in ((0, 44), (1, 90), (3, 96), (4, 130)):
+            self.commit_table.setColumnWidth(col, width)
+        self.commit_table.setTextElideMode(Qt.TextElideMode.ElideRight)
+        self.commit_table.cellClicked.connect(self._toggle_commit)
+        self.commit_table.itemChanged.connect(self._on_commits_changed)
+        layout.addWidget(self.commit_table, 1)
         return w
 
     def _files_tab(self) -> QWidget:
@@ -424,10 +447,12 @@ class DeployPage(QWidget):
         self.req_table.blockSignals(False)
         self.extra_edit.clear()
         self.files_edit.clear()
+        self._uncheck_commits()
         self.last_result = None
         self._invalidate()
         self.go_step(STEP_PICK)
         self.run_preflight()
+        self._refresh_since()
 
     def prefill(self, record) -> None:
         """기록에서 [같은 내용으로 다시 만들기]: 같은 MR/PR 번호나 같은 파일 목록을 ① 고르기에 채운다.
@@ -479,6 +504,8 @@ class DeployPage(QWidget):
         self.tabs.setTabVisible(TAB_BUILD, p.mode == "sync")
         self.build_hint.setText(f"빌드 결과 폴더: {p.build_dir}" if p.mode == "sync" else "")
         self.range_edit.setText(workflow.latest_tag_range(p) if is_git else "")
+        self.load_commits()
+        self._refresh_since()
         default = TAB_BUILD if p.mode == "sync" else (TAB_REQUESTS if kinds else TAB_FILES)
         self.tabs.setCurrentIndex(default)
         self.req_hint.setVisible(default == TAB_REQUESTS)
@@ -545,6 +572,8 @@ class DeployPage(QWidget):
             if not count:
                 self.ctx.dialogs.info("pull 받기", "이미 최신입니다.")
                 return
+            self.load_commits()
+            self._refresh_since()
             needs_build = p.mode == "sync" or any(r.build_dir for r in p.rules)
             text = f"원격에서 커밋 {count}개를 받았습니다."
             if needs_build:
@@ -576,7 +605,11 @@ class DeployPage(QWidget):
             text = (f"{len(numbers)}개 선택됨  ·  " + ", ".join(f"{prefix}{n}" for n in numbers)) if numbers else \
                 "배포할 MR/PR 을 고르세요."
         elif tab == TAB_GIT:
-            text = f"{self.range_edit.text().strip() or '-'}  사이에 바뀐 파일"
+            shas = self.selected_commits()
+            if shas:
+                text = f"커밋 {len(shas)}개 선택됨  ·  " + ", ".join(s[:7] for s in shas[:6]) + (" …" if len(shas) > 6 else "")
+            else:
+                text = f"{self.range_edit.text().strip() or '-'}  사이에 바뀐 파일"
         elif tab == TAB_FILES:
             count = sum(1 for line in self.files_edit.toPlainText().splitlines() if line.strip())
             text = f"파일 {count}개" if count else "배포할 파일 경로를 붙여넣으세요."
@@ -599,6 +632,104 @@ class DeployPage(QWidget):
     def _has_output(self) -> bool:
         result = self.prepared[3] if self.prepared else None
         return bool(result and (result.manifest or result.deletes))
+
+    # ------------------------------------------------------------------ git: 커밋 목록, 지난 배포 이후
+    def load_commits(self) -> None:
+        p = self.project
+        if p is None or not self.tabs.isTabVisible(TAB_GIT):
+            self.commit_table.setRowCount(0)
+            return
+        root = p.root
+
+        def failed(msg: str) -> None:
+            self.commit_table.setRowCount(0)
+            self.since_label.setText(f"커밋 목록을 읽지 못했습니다: {msg}")
+
+        self.ctx.runner.run(lambda: git_local.recent_commits(root, 50), self._show_commits, failed, quiet=True)
+
+    def _show_commits(self, commits) -> None:
+        t = self.commit_table
+        t.blockSignals(True)
+        t.setRowCount(0)
+        for c in commits:
+            row = t.rowCount()
+            t.insertRow(row)
+            check = QTableWidgetItem()
+            check.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
+            check.setCheckState(Qt.CheckState.Unchecked)
+            check.setData(Qt.ItemDataRole.UserRole, c.sha)
+            t.setItem(row, 0, check)
+            values = [c.short, c.subject + ("  (merge)" if c.merge else ""), c.author, c.date]
+            for col, value in enumerate(values, 1):
+                item = QTableWidgetItem(value)
+                item.setToolTip(c.sha if col == 1 else value)
+                if col == 1:
+                    item.setForeground(QColor(theme.PRIMARY))
+                t.setItem(row, col, item)
+        t.blockSignals(False)
+        header = t.horizontalHeader()
+        for col in (1, 3, 4):
+            t.resizeColumnToContents(col)
+            t.setColumnWidth(col, max(t.columnWidth(col), header.sectionSizeHint(col)))
+        t.setColumnWidth(0, 44)
+        self._on_commits_changed()
+
+    def _toggle_commit(self, row: int, col: int) -> None:
+        if col == 0:
+            return
+        item = self.commit_table.item(row, 0)
+        checked = item.checkState() == Qt.CheckState.Checked
+        item.setCheckState(Qt.CheckState.Unchecked if checked else Qt.CheckState.Checked)
+
+    def _uncheck_commits(self) -> None:
+        self.commit_table.blockSignals(True)
+        for row in range(self.commit_table.rowCount()):
+            self.commit_table.item(row, 0).setCheckState(Qt.CheckState.Unchecked)
+        self.commit_table.blockSignals(False)
+        self.range_edit.setEnabled(True)
+
+    def selected_commits(self) -> List[str]:
+        shas = []
+        for row in range(self.commit_table.rowCount()):
+            item = self.commit_table.item(row, 0)
+            if item and item.checkState() == Qt.CheckState.Checked:
+                shas.append(str(item.data(Qt.ItemDataRole.UserRole)))
+        return shas
+
+    def _on_commits_changed(self, *_args) -> None:
+        """커밋을 하나라도 고르면 범위 칸은 쓰지 않는다 (둘 중 하나만)."""
+        self.range_edit.setEnabled(not self.selected_commits())
+        self._invalidate()
+
+    def _refresh_since(self) -> None:
+        """'지난 배포 이후' 안내: 기록에 커밋이 남은 가장 최근 패키지 기준으로 그 뒤 커밋 수를 보여 준다."""
+        p = self.project
+        self.last_package = None
+        if p is None or not self.tabs.isTabVisible(TAB_GIT):
+            self.since_label.setText("")
+            self.since_btn.setEnabled(False)
+            return
+        try:
+            self.last_package = workflow.since_last_package(p)
+        except Exception as e:  # noqa: BLE001  (기록 폴더나 git 문제는 안내만)
+            self.since_label.setText(f"지난 패키지를 확인하지 못했습니다: {e}")
+            self.since_btn.setEnabled(False)
+            return
+        self.since_btn.setEnabled(self.last_package is not None)
+        self.since_label.setText(self.last_package.text if self.last_package else
+                                 "지난 패키지 기록에 커밋 정보가 없습니다 (이번 버전부터 기록합니다).")
+
+    def use_since_last(self) -> None:
+        """[지난 배포 이후]: 지난 패키지 때의 HEAD..HEAD 를 범위에 넣는다."""
+        last = self.last_package
+        if last is None:
+            self.ctx.dialogs.info("지난 배포 이후", "지난 패키지 기록에 커밋 정보가 없습니다.")
+            return
+        self._uncheck_commits()
+        self.range_edit.setText(last.rev_range)
+        if last.ahead == 0:
+            self.ctx.dialogs.info("지난 배포 이후", f"{last.name} 을 만든 뒤 새 커밋이 없습니다.")
+        self._invalidate()
 
     # ------------------------------------------------------------------ MR/PR 목록
     def load_requests(self) -> None:
@@ -673,9 +804,12 @@ class DeployPage(QWidget):
             kind = self.service_combo.currentData()
             return lambda: workflow.collect_requests(providers.make_provider(cfg, project, kind), project, numbers)
         if tab == TAB_GIT:
+            shas = self.selected_commits()
+            if shas:
+                return lambda: workflow.collect_commits(project, shas)
             rng = self.range_edit.text().strip()
             if not rng:
-                self.ctx.dialogs.error("입력 확인", "git 범위를 입력하세요. 예: v1.2..HEAD")
+                self.ctx.dialogs.error("입력 확인", "git 범위를 입력하거나 아래에서 커밋을 고르세요. 예: v1.2..HEAD")
                 return None
             return lambda: workflow.collect_git(project, rng)
         if tab == TAB_FILES:

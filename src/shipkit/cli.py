@@ -7,7 +7,7 @@
   shipkit check   [-p 프로젝트]      설정·경로·GitLab 연결 점검
   shipkit mr      [-p 프로젝트]      GitLab MR 목록
   shipkit pr      [-p 프로젝트]      GitHub PR 목록
-  shipkit package [-p 프로젝트] --mr 12 15 | --pr 7 | --git A..B | --files 목록.txt | 경로...
+  shipkit package [-p 프로젝트] --mr 12 15 | --pr 7 | --git A..B | --commits SHA... | --since-last | --files 목록.txt | 경로...
                                     (sync 모드 프로젝트는 변경 출처 없이도 실행 가능)
   shipkit presets                   사용 가능한 프리셋 목록
   shipkit token   set | delete | status  [gitlab | github]
@@ -245,11 +245,12 @@ def cmd_requests(args: argparse.Namespace) -> int:
 
 # ---------------------------------------------------------------------- package
 def _collect(args: argparse.Namespace, cfg: Config, project: ProjectConfig) -> Tuple[List[FileChange], SourceInfo]:
-    modes = sum(bool(x) for x in (args.mr, getattr(args, "pr", None), args.git, args.files, args.paths))
+    commits, since_last = getattr(args, "commits", None), getattr(args, "since_last", False)
+    modes = sum(bool(x) for x in (args.mr, getattr(args, "pr", None), args.git, commits, since_last, args.files, args.paths))
     if modes == 0 and project.mode == "sync":
         return workflow.collect_build(project)
     if modes != 1:
-        raise UsageError("변경 파일 출처를 하나만 지정하세요: --mr, --pr, --git, --files, 또는 경로 직접 나열")
+        raise UsageError("변경 파일 출처를 하나만 지정하세요: --mr, --pr, --git, --commits, --since-last, --files, 또는 경로 직접 나열")
 
     if args.mr or getattr(args, "pr", None):
         provider = _provider(cfg, project, "gitlab" if args.mr else "github")
@@ -257,6 +258,16 @@ def _collect(args: argparse.Namespace, cfg: Config, project: ProjectConfig) -> T
 
     if args.git:
         return workflow.collect_git(project, args.git)
+
+    if commits:
+        return workflow.collect_commits(project, commits)
+
+    if since_last:
+        last = workflow.since_last_package(project)
+        if last is None:
+            raise UsageError("지난 패키지 기록에 커밋 정보가 없습니다 (0.12 부터 기록). --git 으로 범위를 직접 주세요.")
+        print(f"{last.text}: --git {last.rev_range}")
+        return workflow.collect_git(project, last.rev_range)
 
     if args.files:
         if args.files == "-":
@@ -541,6 +552,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--mr", type=int, nargs="+", metavar="IID", help="GitLab MR 번호 (여러 개 가능)")
     p.add_argument("--pr", type=int, nargs="+", metavar="NUM", help="GitHub PR 번호 (여러 개 가능)")
     p.add_argument("--git", metavar="A..B", help="로컬 git 리비전 범위 (A 만 주면 A..HEAD)")
+    p.add_argument("--commits", metavar="SHA", nargs="+", help="고른 커밋들이 바꾼 파일 (연속이 아니어도 됨)")
+    p.add_argument("--since-last", action="store_true", help="지난 패키지를 만들 때의 커밋부터 HEAD 까지")
     p.add_argument("--files", metavar="FILE", help="파일 목록 텍스트 ('-' 이면 표준입력)")
     p.add_argument("paths", nargs="*", help="변경 파일 경로 직접 나열")
     p.add_argument("--archive", choices=["tar", "zip"], help="패키지를 압축 (tar = .tar.gz, 서버용 권장)")

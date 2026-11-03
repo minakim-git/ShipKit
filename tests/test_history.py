@@ -119,3 +119,59 @@ def test_old_package_without_record(tmp_path):
     assert r.server_path == "/app/ROOT" and r.source_kind == "gitlab-mr"
     assert [q["iid"] for q in r.requests] == [7, 9] and r.deletes == ["WEB-INF/old.jsp"]
     assert history.read_record(tmp_path / "out" / "not-a-package") is None
+
+
+def _git(root, *args):
+    import subprocess
+    subprocess.run(["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@t", *args],
+                   check=True, capture_output=True)
+    return subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+
+
+def test_record_keeps_head_and_since_last_package(maven_project, tmp_path):
+    """패키지 기록에 그때의 HEAD 를 남기고, 다음 배포 때 '지난 배포 이후' 범위와 커밋 묶음으로 쓴다."""
+    import shutil
+
+    if shutil.which("git") is None:
+        import pytest
+        pytest.skip("git 이 없습니다")
+    out = tmp_path / "out"
+    project = make_config(maven_project, out).projects["erp"]
+    assert workflow.since_last_package(project) is None                      # 기록 없음 (git 저장소도 아직 아님)
+
+    _git(maven_project, "init", "-q", "-b", "main")
+    _git(maven_project, "add", "-A")
+    first = _git(maven_project, "commit", "-q", "-m", "first")
+    project, result = _package(maven_project, out, ["src/main/webapp/WEB-INF/views/user/list.jsp"])
+    rec = history.read_record(result.out_dir)
+    assert rec.git_head == first and rec.git_branch == "main"
+    assert json.loads((result.out_dir / history.RECORD_FILE).read_text(encoding="utf-8"))["git"]["head"] == first
+
+    last = workflow.since_last_package(project)
+    assert last is not None and last.head == first and last.ahead == 0 and last.rev_range == f"{first[:9]}..HEAD"
+    assert last.name == result.out_dir.name and "이후 커밋 0개" in last.text
+
+    jsp = maven_project / "src/main/webapp/WEB-INF/views/user/list.jsp"
+    write(jsp, "v2")
+    write(maven_project / "src/main/webapp/js/new.js", "x")
+    second = _git(maven_project, "commit", "-q", "-am", "second")
+    _git(maven_project, "add", "-A")
+    third = _git(maven_project, "commit", "-q", "-m", "third")
+    last = workflow.since_last_package(project)
+    assert last.ahead == 2
+    changes, source = workflow.collect_git(project, last.rev_range)
+    assert sorted(c.path for c in changes) == ["src/main/webapp/WEB-INF/views/user/list.jsp", "src/main/webapp/js/new.js"]
+
+    changes, source = workflow.collect_commits(project, [third, second[:7]])     # 순서 상관없이, 짧은 sha 도
+    assert source.kind == "git-commits" and source.description == f"git 커밋 2개: {second[:7]}, {third[:7]}"
+    assert sorted((c.change, c.path) for c in changes) == [
+        (ChangeType.ADDED, "src/main/webapp/js/new.js"), (ChangeType.MODIFIED, "src/main/webapp/WEB-INF/views/user/list.jsp")]
+    assert not source.warnings
+    changes, source = workflow.collect_commits(project, [second])
+    assert [c.path for c in changes] == ["src/main/webapp/WEB-INF/views/user/list.jsp"]
+    import pytest
+    with pytest.raises(workflow.InputError):
+        workflow.collect_commits(project, ["", " "])
+
+    (result.out_dir / history.RECORD_FILE).unlink()                          # 기록 없는 예전 패키지만 있으면 None
+    assert workflow.since_last_package(project) is None

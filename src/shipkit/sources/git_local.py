@@ -6,7 +6,7 @@ import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Set, Tuple
+from typing import List, Optional, Sequence, Set, Tuple
 
 from shipkit.models import ChangeType, FileChange, normalize_repo_path
 
@@ -196,6 +196,50 @@ def branch_status(root: Path, do_fetch: bool = False) -> BranchStatus:
     if len(counts) == 2:
         status.ahead, status.behind = int(counts[0]), int(counts[1])
     return status
+
+
+@dataclass
+class CommitInfo:
+    sha: str
+    short: str
+    author: str
+    date: str       # "YYYY-MM-DD HH:MM"
+    subject: str
+    merge: bool = False
+
+
+def recent_commits(root: Path, limit: int = 50, ref: str = "HEAD") -> List[CommitInfo]:
+    """ref 에서 거슬러 올라가는 최근 커밋 (새 것부터). 배포 화면의 '커밋 골라 담기' 목록."""
+    out = run_git(root, "log", f"-n{limit}", "--date=format:%Y-%m-%d %H:%M",
+                  "--format=%H%x1f%h%x1f%an%x1f%ad%x1f%P%x1f%s", "-z", ref, "--")
+    commits = []
+    for rec in out.split("\0"):
+        parts = rec.strip("\r\n").split("\x1f")
+        if len(parts) < 6:
+            continue
+        sha, short, author, date, parents, subject = parts[:6]
+        commits.append(CommitInfo(sha, short, author, date, subject.strip(), merge=len(parents.split()) > 1))
+    return commits
+
+
+def order_commits(root: Path, shas: Sequence[str]) -> List[str]:
+    """고른 커밋을 오래된 것부터 (전체 sha). 모르는 커밋이면 GitError."""
+    if not shas:
+        return []
+    full = list(dict.fromkeys(run_git(root, "rev-list", "--no-walk=unsorted", *shas, "--").split()))  # 전체 sha, 중복 제거
+    # 커밋 시각이 같아도(한 번에 여러 커밋) 순서가 틀리지 않게 위상 순서(--topo-order)로 맞춘다
+    topo = run_git(root, "rev-list", "--topo-order", "--reverse", *full, "--").split()
+    pos = {sha: i for i, sha in enumerate(topo)}
+    return sorted(full, key=lambda s: pos.get(s, len(pos)))
+
+
+def changes_of_commit(root: Path, sha: str) -> List[FileChange]:
+    """한 커밋이 바꾼 파일. merge 커밋은 첫 부모 기준(= 머지로 들어온 변경 전체), 첫 커밋은 전체가 추가."""
+    try:
+        out = run_git(root, "diff", "--name-status", "-M", "--no-color", "-z", f"{sha}^", sha, "--")
+    except GitError:
+        out = run_git(root, "diff-tree", "--root", "-r", "--no-commit-id", "--name-status", "-M", "-z", sha, "--")
+    return parse_name_status_z(out, origin=sha[:7])
 
 
 def collect_from_git(root: Path, rev_range: str) -> Tuple[List[FileChange], str]:

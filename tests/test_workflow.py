@@ -113,6 +113,12 @@ def test_git_mode_warns_dirty_and_head_mismatch(maven_project, tmp_path, capsys)
     code = cli.main(["package", "-c", str(cfg), "--git", "v1..v2", "--dry-run"])
     out = capsys.readouterr().out
     assert code == 0
+
+    assert cli.main(["package", "-c", str(cfg), "--since-last", "--dry-run"]) == 2          # 기록 없음
+    assert "기록에 커밋 정보가 없습니다" in capsys.readouterr().err
+    assert cli.main(["package", "-c", str(cfg), "--commits", "v2", "--dry-run"]) == 0        # 태그 이름도 커밋
+    assert "git 커밋 1개" in capsys.readouterr().out
+    assert cli.main(["package", "-c", str(cfg), "--commits", "v2", "--git", "v1..v2"]) == 2  # 출처는 하나만
     assert "범위 끝 v2" in out
     assert "커밋되지 않은 로컬 수정" in out
 

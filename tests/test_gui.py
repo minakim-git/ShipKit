@@ -809,3 +809,63 @@ def test_update_notice_and_settings(qapp, tmp_path, maven_project, monkeypatch):
     s.update_location.setText("")
     s.save()
     assert "update_location" not in config_store.load_raw(path)
+
+
+# ---------------------------------------------------------------------- git 탭: 커밋 골라 담기, 지난 배포 이후
+def test_deploy_git_tab_commits_and_since_last(qapp, tmp_path, maven_project):
+    """커밋 목록에서 골라 담고, 패키지를 만든 뒤에는 [지난 배포 이후]로 그 다음 커밋만 담는다."""
+    from shipkit.gui.deploy_page import TAB_GIT
+
+    def git(*args):
+        subprocess.run(["git", "-C", str(maven_project), "-c", "user.name=t", "-c", "user.email=t@t", *args],
+                       check=True, capture_output=True)
+        return subprocess.run(["git", "-C", str(maven_project), "rev-parse", "HEAD"],
+                              capture_output=True, text=True).stdout.strip()
+
+    git("init", "-q", "-b", "main")
+    git("add", "-A")
+    first = git("commit", "-q", "-m", "first")
+    jsp = maven_project / "src/main/webapp/WEB-INF/views/user/list.jsp"
+    write(jsp, "v2")
+    second = git("commit", "-q", "-am", "second commit")
+
+    dialogs = FakeDialogs()
+    w = make_window(_config(tmp_path, maven_project), dialogs)
+    d = w.deploy_page
+    assert d.tabs.isTabVisible(TAB_GIT)
+    assert [d.commit_table.item(r, 2).text() for r in range(d.commit_table.rowCount())] == ["second commit", "first"]
+    assert d.commit_table.item(0, 0).data(Qt.ItemDataRole.UserRole) == second
+    assert not d.since_btn.isEnabled() and "커밋 정보가 없습니다" in d.since_label.text()
+
+    d.tabs.setCurrentIndex(TAB_GIT)
+    d.range_edit.setText("")
+    d.preview()                                                               # 아무것도 없으면 안내
+    assert dialogs.messages[-1][2].startswith("git 범위를 입력하거나")
+    d.commit_table.item(0, 0).setCheckState(Qt.CheckState.Checked)
+    assert not d.range_edit.isEnabled() and d.pick_summary.text().startswith(f"커밋 1개 선택됨  ·  {second[:7]}")
+    d.preview()
+    assert d.step == STEP_REVIEW and f"git 커밋 1개: {second[:7]}" in d.summary_label.text()
+    d.make_package()
+    assert d.last_result is not None and (d.last_result.out_dir / "manifest.txt").is_file()
+    from shipkit import history
+    record = history.read_record(d.last_result.out_dir)
+    assert record.git_head == second and record.source_kind == "git-commits"
+
+    d.start_over()                                                            # 새 배포: 체크가 풀리고 지난 배포 안내가 갱신된다
+    assert d.selected_commits() == [] and d.range_edit.isEnabled()
+    assert d.since_btn.isEnabled() and "이후 커밋 0개" in d.since_label.text()
+    d.use_since_last()
+    assert d.range_edit.text() == f"{second[:9]}..HEAD" and "새 커밋이 없습니다" in dialogs.messages[-1][2]
+
+    write(maven_project / "src/main/webapp/js/new.js", "x")
+    git("add", "-A")
+    third = git("commit", "-q", "-m", "third")
+    d.load_commits()
+    d._refresh_since()
+    assert d.commit_table.rowCount() == 3 and "이후 커밋 1개" in d.since_label.text()
+    d.commit_table.item(0, 0).setCheckState(Qt.CheckState.Checked)
+    d.use_since_last()                                                        # 범위를 쓰면 고른 커밋은 풀린다
+    assert d.selected_commits() == [] and d.range_edit.text() == f"{second[:9]}..HEAD"
+    d.preview()
+    assert f"git diff {second[:9]}..HEAD" in d.summary_label.text()
+    assert d.result_tree.topLevelItemCount() == 1 and third

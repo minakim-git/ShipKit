@@ -7,12 +7,14 @@
 from __future__ import annotations
 
 import logging
-from typing import List, Sequence, Tuple
+from dataclasses import dataclass
+from typing import List, Optional, Sequence, Tuple
 
 from shipkit import mapper, sync
 from shipkit.config import ProjectConfig
 from shipkit.models import Entry, FileChange, SourceInfo, Status, merge_changes
 from shipkit.sources import git_local, manual
+from shipkit.sources.git_local import GitError as GitErrorType
 from shipkit.sources.providers import Provider
 
 log = logging.getLogger(__name__)
@@ -40,6 +42,56 @@ def collect_git(project: ProjectConfig, rev_range: str) -> Tuple[List[FileChange
             "복사되는 파일은 지금 작업 폴더(현재 브랜치)의 파일과 빌드 결과입니다."
         )
     return changes, source
+
+
+def collect_commits(project: ProjectConfig, shas: Sequence[str]) -> Tuple[List[FileChange], SourceInfo]:
+    """고른 커밋들이 바꾼 파일을 합친다 (연속이 아니어도 됨). 같은 파일은 최종 상태만 남는다."""
+    ordered = git_local.order_commits(project.root, [s.strip() for s in shas if s.strip()])
+    if not ordered:
+        raise InputError("커밋을 하나 이상 고르세요.")
+    batches = [git_local.changes_of_commit(project.root, sha) for sha in ordered]
+    shorts = [s[:7] for s in ordered]
+    desc = f"git 커밋 {len(ordered)}개: " + ", ".join(shorts[:6]) + (f" 외 {len(shorts) - 6}개" if len(shorts) > 6 else "")
+    source = SourceInfo(kind="git-commits", description=desc)
+    missing = [s[:7] for s in ordered if git_local.contains_commit(project.root, s) is False]
+    if missing:
+        source.warnings.append(f"로컬 HEAD 에 들어 있지 않은 커밋: {', '.join(missing)}. "
+                               "복사되는 파일은 지금 작업 폴더(현재 브랜치)의 파일과 빌드 결과입니다.")
+    return merge_changes(batches), source
+
+
+@dataclass
+class LastPackage:
+    """지난 패키지를 만들 때의 HEAD 와 그 뒤 쌓인 커밋 수 ('지난 배포 이후' 범위)."""
+    name: str          # 패키지 폴더 이름
+    when: str          # 만든 시각 "MM-DD HH:MM"
+    description: str   # 그 패키지의 변경 출처
+    head: str          # 그때의 HEAD (전체 sha)
+    ahead: int         # 그 뒤 커밋 수
+
+    @property
+    def rev_range(self) -> str:
+        return f"{self.head[:9]}..HEAD"
+
+    @property
+    def text(self) -> str:
+        return f"지난 패키지 {self.name} ({self.when}, {self.description}) 이후 커밋 {self.ahead}개"
+
+
+def since_last_package(project: ProjectConfig) -> Optional[LastPackage]:
+    """기록에 커밋이 남은 가장 최근 패키지 기준. 기록이 없거나 그 커밋이 로컬에 없으면 None."""
+    from shipkit import history
+    if not project.root.is_dir() or not git_local.is_git_repo(project.root):
+        return None
+    for r in history.list_records(project, limit=30):
+        if not r.git_head or git_local.resolve_commit(project.root, r.git_head) is None:
+            continue
+        try:
+            ahead = int(git_local.run_git(project.root, "rev-list", "--count", f"{r.git_head}..HEAD", "--").strip())
+        except (GitErrorType, ValueError):
+            continue
+        return LastPackage(r.name, r.created_at.strftime("%m-%d %H:%M"), r.description, r.git_head, ahead)
+    return None
 
 
 def latest_tag_range(project: ProjectConfig) -> str:

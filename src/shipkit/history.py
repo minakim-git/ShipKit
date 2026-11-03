@@ -46,6 +46,8 @@ class PackageRecord:
     deployments: List[dict] = field(default_factory=list)  # 화면에서 서버에 반영한 이력 (append_deployment)
     hooks_config: Optional[Dict[str, List[dict]]] = None   # 만들 때의 서버 명령 설정 전체 (조건 포함, 없으면 예전 기록)
     has_record: bool = True               # False = 기록 파일이 없는 예전 패키지
+    git_head: str = ""                    # 만들 때 로컬 HEAD 커밋 ('지난 배포 이후' 범위의 시작, 0.12 부터)
+    git_branch: str = ""
 
     @property
     def name(self) -> str:
@@ -105,6 +107,17 @@ def append_deployment(folder: Path, server: str, address: str, action: str, code
 
 
 # ---------------------------------------------------------------------- 쓰기
+def _git_state(p: ProjectConfig) -> dict:
+    """만들 때의 HEAD 커밋과 브랜치 (다음 배포 때 '지난 배포 이후' 범위로 쓴다). git 저장소가 아니면 빈 dict."""
+    from shipkit.sources import git_local
+    try:
+        if not p.root.is_dir() or not git_local.is_git_repo(p.root):
+            return {}
+        return {"head": git_local.resolve_commit(p.root, "HEAD") or "", "branch": git_local.current_branch(p.root) or ""}
+    except git_local.GitError:
+        return {}
+
+
 def write_record(result: "PackageResult") -> Path:
     p, source = result.project, result.source
     changes = result.source_changes or [e.change for e in result.entries]
@@ -127,6 +140,7 @@ def write_record(result: "PackageResult") -> Path:
         "hooks": result.hooks,
         "hooks_config": hooks.config_dict(p),
         "changes": [f"{c.change.value}\t{c.path}" for c in changes],
+        "git": _git_state(p),
         "report": report.build_data(result),  # 보고서 창이 같은 모양으로 다시 그릴 수 있게
     }
     path = result.out_dir / RECORD_FILE
@@ -153,7 +167,7 @@ def read_record(folder: Path) -> Optional[PackageRecord]:
     if meta_file.is_file():
         try:
             data = json.loads(meta_file.read_text(encoding="utf-8"))
-            source, server = data.get("source") or {}, data.get("server") or {}
+            source, server, git = data.get("source") or {}, data.get("server") or {}, data.get("git") or {}
             return PackageRecord(
                 path=folder, created_at=datetime.fromisoformat(data["created_at"]),
                 source_kind=source.get("kind", "unknown"), description=source.get("description", ""),
@@ -163,6 +177,7 @@ def read_record(folder: Path) -> Optional[PackageRecord]:
                 changes=data.get("changes") or [], archive_kind=data.get("archive"), hooks=data.get("hooks") or {},
                 deployments=[d for d in data.get("deployments") or [] if isinstance(d, dict)],
                 hooks_config=data["hooks_config"] if isinstance(data.get("hooks_config"), dict) else None,
+                git_head=str(git.get("head") or ""), git_branch=str(git.get("branch") or ""),
             )
         except (ValueError, KeyError, TypeError):
             pass  # 손상된 기록 파일은 예전 패키지처럼 읽는다
