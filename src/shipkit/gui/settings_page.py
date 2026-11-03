@@ -5,7 +5,7 @@ import copy
 
 from PySide6.QtCore import QSettings, Qt, Signal
 from PySide6.QtWidgets import (
-    QApplication, QButtonGroup, QFormLayout, QHBoxLayout, QLineEdit, QPushButton, QScrollArea, QVBoxLayout, QWidget,
+    QApplication, QCheckBox, QFormLayout, QHBoxLayout, QLineEdit, QPushButton, QScrollArea, QVBoxLayout, QWidget,
 )
 
 from shipkit import __app_name__, __tagline__, __version__, config_store, update
@@ -45,21 +45,25 @@ class SettingsPage(QWidget):
         layout.setSpacing(14)
 
         look = Card("화면")
-        row = QHBoxLayout()
-        row.setSpacing(6)
-        self.theme_group = QButtonGroup(self)
+        self.follow_system = QCheckBox("Windows 의 밝게/어둡게 설정 따르기 (밝을 때와 어두울 때 쓸 테마를 하나씩 고릅니다)")
+        self.follow_system.toggled.connect(self._toggle_follow)
+        look.body.addWidget(self.follow_system)
         self.theme_buttons = {}
-        for key, text in theme.SETTINGS:
-            b = QPushButton(text)
-            b.setObjectName("seg")
-            b.setCheckable(True)
-            b.setCursor(Qt.CursorShape.PointingHandCursor)
-            self.theme_group.addButton(b)
-            self.theme_buttons[key] = b
-            b.clicked.connect(lambda _=False, key=key: self.set_theme(key))
-            row.addWidget(b)
-        row.addStretch(1)
-        look.body.addLayout(row)
+        for caption, dark in (("밝은 테마", False), ("어두운 테마", True)):
+            look.body.addWidget(label(caption, "fieldLabel", wrap=False))
+            row = QHBoxLayout()
+            row.setSpacing(6)
+            for t in theme.themes(dark):
+                b = QPushButton(t.name)
+                b.setObjectName("seg")
+                b.setCheckable(True)
+                b.setIcon(theme.swatch(t.key))
+                b.setCursor(Qt.CursorShape.PointingHandCursor)
+                self.theme_buttons[t.key] = b
+                b.clicked.connect(lambda _=False, key=t.key: self.set_theme(key))
+                row.addWidget(b)
+            row.addStretch(1)
+            look.body.addLayout(row)
         layout.addWidget(look)
 
         defaults = Card("패키지 기본값")
@@ -162,16 +166,49 @@ class SettingsPage(QWidget):
                             on_failed=lambda msg: self.ctx.dialogs.error("새 버전 확인", msg), quiet=True)
 
     def set_theme(self, key: str) -> None:
-        """테마를 바로 바꾸고 이 PC 에 기억한다 (저장 버튼과 상관없음)."""
-        QSettings().setValue("ui/theme", key)
-        self.theme_buttons[key].setChecked(True)
+        """테마를 바로 바꾸고 이 PC 에 기억한다 (저장 버튼과 상관없음). 시스템 설정을 따르는 중이면
+        그 테마가 밝은지 어두운지에 따라 '밝을 때/어두울 때' 테마로 기억하고, 지금 모드와 맞으면 바로 적용된다."""
+        key = theme.ALIASES.get(key, key)
+        settings = QSettings()
+        if self.follow_system.isChecked():
+            settings.setValue("ui/theme_dark" if theme.THEMES[key].dark else "ui/theme_light", key)
+            setting = "system"
+        else:
+            settings.setValue("ui/theme", key)
+            setting = key
+        self._apply(setting)
+
+    def _toggle_follow(self, on: bool) -> None:
+        settings = QSettings()
+        if on:
+            settings.setValue("ui/theme", "system")
+            self._apply("system")
+        else:
+            key = theme.THEME  # 지금 보이는 테마를 그대로 고정한다
+            settings.setValue("ui/theme", key)
+            self._apply(key)
+
+    def _apply(self, setting: str) -> None:
         app = QApplication.instance()
         if app is not None:
-            theme.apply(app, key)
+            theme.apply(app, setting)
+        self._sync_theme_buttons()
+
+    def _sync_theme_buttons(self) -> None:
+        """시스템을 따르면 밝은 쪽·어두운 쪽에서 하나씩, 아니면 지금 테마 하나만 눌린 상태로."""
+        if self.follow_system.isChecked():
+            checked = {theme.preferred("light"), theme.preferred("dark")}
+        else:
+            checked = {theme.THEME}
+        for key, b in self.theme_buttons.items():
+            b.setChecked(key in checked)
 
     def refresh(self) -> None:
         current = str(QSettings().value("ui/theme", "system"))
-        self.theme_buttons.get(current, self.theme_buttons["system"]).setChecked(True)
+        self.follow_system.blockSignals(True)
+        self.follow_system.setChecked(current not in theme.THEMES and current not in theme.ALIASES)
+        self.follow_system.blockSignals(False)
+        self._sync_theme_buttons()
         exists = self.ctx.config_path.is_file()
         self.path_label.setText(str(self.ctx.config_path))
         if self.ctx.load_error:

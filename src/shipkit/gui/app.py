@@ -35,9 +35,9 @@ ADD_PROJECT, IMPORT_LEGACY = "__add__", "__legacy__"  # 프로젝트 목록 맨 
 
 
 def current_theme_setting() -> str:
-    """앱 설정의 화면 테마 (system / light / dark)."""
+    """앱 설정의 화면 테마 (system 또는 테마 키. 예전 값 light/dark 도 받는다)."""
     value = str(QSettings().value("ui/theme", "system"))
-    return value if value in dict(theme.SETTINGS) else "system"
+    return value if value in dict(theme.SETTINGS) or value in theme.ALIASES else "system"
 
 
 def default_config_path() -> Path:

@@ -1,8 +1,10 @@
 """디자인 시스템: 색·글꼴·아이콘·스타일시트를 한곳에서 관리한다.
 
-밝은 배경 위에 흰 카드, 둥근 모서리, 강조색(인디고) 하나로 정리한 요즘 앱 스타일. 어두운 테마도 같은 이름의 색 묶음으로
-만들어 두고 apply() 로 바꾼다. 다른 화면은 theme.PRIMARY 처럼 이 모듈의 이름으로 색을 읽으므로, 테마를 바꾸면
-다음에 그릴 때부터 새 색이 쓰인다. 미리 만들어 둔 아이콘은 bind_icon() 으로 등록해 두면 테마가 바뀔 때 다시 그린다.
+밝은 배경 위에 흰 카드, 둥근 모서리, 강조색 하나로 정리한 요즘 앱 스타일. 테마(색 묶음)는 여러 개를 THEMES 에
+등록해 두고 apply() 로 바꾼다 (어두운 테마 여럿, 밝은 테마 여럿). 다른 화면은 theme.PRIMARY 처럼 이 모듈의 이름으로
+색을 읽으므로, 테마를 바꾸면 다음에 그릴 때부터 새 색이 쓰인다. 미리 만들어 둔 아이콘은 bind_icon() 으로 등록해 두면
+테마가 바뀔 때 다시 그린다. 그림 파일(svg)에는 기본 밝은 테마(ivory)의 색이 적혀 있고, 다른 테마에서는 같은 자리의
+색으로 바꿔 그린다.
 """
 from __future__ import annotations
 
@@ -11,9 +13,10 @@ import tempfile
 import weakref
 from importlib import resources
 from pathlib import Path
+from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple
 
-from PySide6.QtCore import QByteArray, QSize, Qt
+from PySide6.QtCore import QByteArray, QSettings, QSize, Qt
 from PySide6.QtGui import QColor, QGuiApplication, QIcon, QPainter, QPalette, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 
@@ -50,13 +53,168 @@ DARK_TONES: Dict[str, Tuple[str, str]] = {
     "success": ("#4ADE80", "#14291D"), "warning": ("#FBBF24", "#2E2410"), "danger": ("#F87171", "#341A1A"),
     "info": ("#60A5FA", "#13243A"), "primary": ("#8B93FA", "#272A4A"), "neutral": ("#C9CED8", "#262B35"),
 }
-THEMES = {"light": (LIGHT, LIGHT_TONES), "dark": (DARK, DARK_TONES)}
-SETTINGS = (("system", "시스템 설정 따르기"), ("light", "밝게"), ("dark", "어둡게"))  # 앱 설정의 선택지
+
+
+def _pal(**over: str) -> Dict[str, str]:
+    """색 묶음을 짧게 적기 위한 도우미: 빠진 이름은 없게 한다."""
+    missing = set(LIGHT) - set(over)
+    assert not missing, missing
+    return dict(over)
+
+
+def _tones(**over: Tuple[str, str]) -> Dict[str, Tuple[str, str]]:
+    assert set(over) == set(LIGHT_TONES), set(over) ^ set(LIGHT_TONES)
+    return dict(over)
+
+
+@dataclass(frozen=True)
+class Theme:
+    key: str
+    name: str
+    dark: bool
+    colors: Dict[str, str]
+    tones: Dict[str, Tuple[str, str]]
+    logo: Optional[Dict[str, str]] = None   # 로고 색 (bg/stroke/accent). 없으면 색 묶음에서 만든다
+
+
+# ---- 어두운 테마
+_OCEANIC = _pal(
+    BG="#263238", SURFACE="#2E3C43", BORDER="#37474F", BORDER_STRONG="#455A64", HOVER="#314549",
+    TEXT="#EEFFFF", MUTED="#B0BEC5", SUBTLE="#607D8B", LABEL="#CFD8DC",
+    HEAD="#2A373E", LINE="#32424A", ALT="#2A3940",
+    BTN="#009688", BTN_HOVER="#26A69A", BTN_DISABLED="#1F4B49",
+    PRIMARY="#80CBC4", PRIMARY_HOVER="#A7DBD6", PRIMARY_SOFT="#2A4A4A", PRIMARY_DISABLED="#3A5A5A",
+    TIP_BG="#37474F",
+    OK_BORDER="#2E5D3A", ERR_BORDER="#6B2F2F", DANGER_HOVER_BORDER="#8A3A3A",
+    WARN_BORDER="#6A5520", WARN_HOVER="#45391A", WARN_HOVER_BORDER="#8A6D20",
+)
+_OCEANIC_TONES = _tones(success=("#C3E88D", "#2F4A2A"), warning=("#FFCB6B", "#4A3E1F"), danger=("#F07178", "#4A2A2E"),
+                        info=("#82AAFF", "#2A3A55"), primary=("#80CBC4", "#2A4A4A"), neutral=("#CFD8DC", "#37474F"))
+_FOREST = _pal(
+    BG="#152019", SURFACE="#1C2A22", BORDER="#2A3A30", BORDER_STRONG="#3A4D40", HOVER="#22332A",
+    TEXT="#E3ECE5", MUTED="#9BB0A2", SUBTLE="#6A8071", LABEL="#C6D5CA",
+    HEAD="#1F2E25", LINE="#263730", ALT="#1E2C24",
+    BTN="#4CAF50", BTN_HOVER="#66BB6A", BTN_DISABLED="#2E5A33",
+    PRIMARY="#8BD49A", PRIMARY_HOVER="#A8E1B3", PRIMARY_SOFT="#26402D", PRIMARY_DISABLED="#3B5A42",
+    TIP_BG="#2A3A30",
+    OK_BORDER="#2F5D3A", ERR_BORDER="#5C2E2E", DANGER_HOVER_BORDER="#7A3A3A",
+    WARN_BORDER="#5A4A1A", WARN_HOVER="#3A3418", WARN_HOVER_BORDER="#7A6420",
+)
+_FOREST_TONES = _tones(success=("#8BD49A", "#26402D"), warning=("#E6C07B", "#3F3620"), danger=("#E57373", "#40262A"),
+                       info=("#7FB7E0", "#243A4C"), primary=("#8BD49A", "#26402D"), neutral=("#C6D5CA", "#2A3A30"))
+_VOLCANO = _pal(
+    BG="#1E1512", SURFACE="#27201C", BORDER="#3A2E29", BORDER_STRONG="#4D3D36", HOVER="#2F2622",
+    TEXT="#F1E8E2", MUTED="#B8A79E", SUBTLE="#7E6E66", LABEL="#D9CCC5",
+    HEAD="#2B2320", LINE="#332A26", ALT="#29211E",
+    BTN="#E0672E", BTN_HOVER="#EB7F4A", BTN_DISABLED="#5A3A2A",
+    PRIMARY="#F29A6B", PRIMARY_HOVER="#F7B590", PRIMARY_SOFT="#45302A", PRIMARY_DISABLED="#5A463E",
+    TIP_BG="#3A2E29",
+    OK_BORDER="#3F5A35", ERR_BORDER="#6B2E2E", DANGER_HOVER_BORDER="#8A3A3A",
+    WARN_BORDER="#6A5520", WARN_HOVER="#45391A", WARN_HOVER_BORDER="#8A6D20",
+)
+_VOLCANO_TONES = _tones(success=("#A3D977", "#2F4028"), warning=("#F2C26B", "#45391A"), danger=("#F27D7D", "#4A2A2A"),
+                        info=("#8FC3E8", "#2A3A4A"), primary=("#F29A6B", "#45302A"), neutral=("#D9CCC5", "#3A2E29"))
+_DRACULA = _pal(
+    BG="#282A36", SURFACE="#2F3240", BORDER="#3E4254", BORDER_STRONG="#4F5470", HOVER="#363A4A",
+    TEXT="#F8F8F2", MUTED="#A8ABC0", SUBTLE="#6272A4", LABEL="#D6D8E4",
+    HEAD="#2C2F3C", LINE="#373B4A", ALT="#2B2E3A",
+    BTN="#9D6FE8", BTN_HOVER="#B08BF2", BTN_DISABLED="#4E4468",
+    PRIMARY="#BD93F9", PRIMARY_HOVER="#D2B2FB", PRIMARY_SOFT="#3C3552", PRIMARY_DISABLED="#55496F",
+    TIP_BG="#3E4254",
+    OK_BORDER="#2F5D3A", ERR_BORDER="#6B2F3A", DANGER_HOVER_BORDER="#8A3A4A",
+    WARN_BORDER="#6A5A20", WARN_HOVER="#45401A", WARN_HOVER_BORDER="#8A7A20",
+)
+_DRACULA_TONES = _tones(success=("#50FA7B", "#26402D"), warning=("#F1FA8C", "#3E4020"), danger=("#FF5555", "#4A2A2E"),
+                        info=("#8BE9FD", "#2A3F4A"), primary=("#BD93F9", "#3C3552"), neutral=("#D6D8E4", "#3E4254"))
+_GITHUB_DARK = _pal(
+    BG="#0D1117", SURFACE="#161B22", BORDER="#30363D", BORDER_STRONG="#444C56", HOVER="#21262D",
+    TEXT="#E6EDF3", MUTED="#8B949E", SUBTLE="#6E7681", LABEL="#C9D1D9",
+    HEAD="#1A2029", LINE="#21262D", ALT="#121820",
+    BTN="#238636", BTN_HOVER="#2EA043", BTN_DISABLED="#1C4A28",
+    PRIMARY="#58A6FF", PRIMARY_HOVER="#79B8FF", PRIMARY_SOFT="#1F2D44", PRIMARY_DISABLED="#2C3E5C",
+    TIP_BG="#30363D",
+    OK_BORDER="#2E6B3A", ERR_BORDER="#6E2A2A", DANGER_HOVER_BORDER="#8E3535",
+    WARN_BORDER="#6B5A1E", WARN_HOVER="#3A3418", WARN_HOVER_BORDER="#8A7A2A",
+)
+_GITHUB_DARK_TONES = _tones(success=("#3FB950", "#1C3A26"), warning=("#D29922", "#3A2F15"), danger=("#F85149", "#4A2224"),
+                            info=("#58A6FF", "#1F2D44"), primary=("#58A6FF", "#1F2D44"), neutral=("#C9D1D9", "#30363D"))
+
+# ---- 밝은 테마
+_PAPER = _pal(
+    BG="#F4F5F7", SURFACE="#FFFFFF", BORDER="#E3E6EB", BORDER_STRONG="#CBD0D8", HOVER="#EDEFF3",
+    TEXT="#1F2430", MUTED="#6B7280", SUBTLE="#9AA1AE", LABEL="#3C4452",
+    HEAD="#F7F8FA", LINE="#EEF0F3", ALT="#F9FAFB",
+    BTN="#4F46E5", BTN_HOVER="#4338CA", BTN_DISABLED="#C7C9F0",
+    PRIMARY="#4F46E5", PRIMARY_HOVER="#3730A3", PRIMARY_SOFT="#EEF0FD", PRIMARY_DISABLED="#C7C9F0",
+    TIP_BG="#1F2430",
+    OK_BORDER="#BBE5C8", ERR_BORDER="#F3C2BE", DANGER_HOVER_BORDER="#E89C96",
+    WARN_BORDER="#F2D9A0", WARN_HOVER="#FBF3E0", WARN_HOVER_BORDER="#E8C070",
+)
+_PAPER_TONES = _tones(success=("#15803D", "#E8F7EE"), warning=("#B45309", "#FDF3E1"), danger=("#B91C1C", "#FBE9E7"),
+                      info=("#1D4ED8", "#E8EFFD"), primary=("#4F46E5", "#EEF0FD"), neutral=("#3C4452", "#EDEFF3"))
+_SKY = _pal(
+    BG="#EEF4F9", SURFACE="#FBFDFF", BORDER="#D9E4EE", BORDER_STRONG="#BCCCDB", HOVER="#E4EDF5",
+    TEXT="#1E2A35", MUTED="#647A8E", SUBTLE="#93A6B6", LABEL="#3A4C5C",
+    HEAD="#F2F7FB", LINE="#E6EEF4", ALT="#F6FAFD",
+    BTN="#1E88E5", BTN_HOVER="#1976D2", BTN_DISABLED="#B6D4F0",
+    PRIMARY="#1E78CC", PRIMARY_HOVER="#155FA6", PRIMARY_SOFT="#E1EEFA", PRIMARY_DISABLED="#B6D4F0",
+    TIP_BG="#1E2A35",
+    OK_BORDER="#B9DEC6", ERR_BORDER="#F0C3BE", DANGER_HOVER_BORDER="#E39B94",
+    WARN_BORDER="#EFD6A0", WARN_HOVER="#FBF2DF", WARN_HOVER_BORDER="#E4BE70",
+)
+_SKY_TONES = _tones(success=("#2E7D32", "#E6F3E8"), warning=("#B26A00", "#FBF0DC"), danger=("#C62828", "#FBE7E5"),
+                    info=("#1E78CC", "#E1EEFA"), primary=("#1E78CC", "#E1EEFA"), neutral=("#3A4C5C", "#E4EDF5"))
+_SAND = _pal(
+    BG="#F7EFE3", SURFACE="#FFFBF4", BORDER="#ECDFCB", BORDER_STRONG="#DCCBB0", HOVER="#F2E8D8",
+    TEXT="#3A2E22", MUTED="#8A7A66", SUBTLE="#B3A48F", LABEL="#5C4D3D",
+    HEAD="#F9F3E8", LINE="#F0E6D6", ALT="#FBF6EC",
+    BTN="#C98A3C", BTN_HOVER="#B07530", BTN_DISABLED="#E9D6B8",
+    PRIMARY="#B5782F", PRIMARY_HOVER="#93601F", PRIMARY_SOFT="#F6E8D2", PRIMARY_DISABLED="#E9D6B8",
+    TIP_BG="#3A2E22",
+    OK_BORDER="#C4DCB0", ERR_BORDER="#EEC2B3", DANGER_HOVER_BORDER="#E09E8A",
+    WARN_BORDER="#EACF9A", WARN_HOVER="#F8EDD6", WARN_HOVER_BORDER="#DDB868",
+)
+_SAND_TONES = _tones(success=("#5A7F3A", "#ECF2E2"), warning=("#A2611E", "#F8EBD6"), danger=("#B4473A", "#F8E5DF"),
+                     info=("#5E7A9A", "#E8EEF4"), primary=("#B5782F", "#F6E8D2"), neutral=("#5C4D3D", "#F2E8D8"))
+_GITHUB_LIGHT = _pal(
+    BG="#F6F8FA", SURFACE="#FFFFFF", BORDER="#D0D7DE", BORDER_STRONG="#AFB8C1", HOVER="#EAEEF2",
+    TEXT="#1F2328", MUTED="#656D76", SUBTLE="#8C959F", LABEL="#424A53",
+    HEAD="#F3F5F7", LINE="#EAEEF2", ALT="#F9FBFC",
+    BTN="#1F883D", BTN_HOVER="#1A7F37", BTN_DISABLED="#B7DFC2",
+    PRIMARY="#0969DA", PRIMARY_HOVER="#0550AE", PRIMARY_SOFT="#DDF4FF", PRIMARY_DISABLED="#B6D3F2",
+    TIP_BG="#24292F",
+    OK_BORDER="#ACEEBB", ERR_BORDER="#FFC1C1", DANGER_HOVER_BORDER="#F7A1A1",
+    WARN_BORDER="#F0D28A", WARN_HOVER="#FFF8C5", WARN_HOVER_BORDER="#E3B341",
+)
+_GITHUB_LIGHT_TONES = _tones(success=("#1A7F37", "#DAFBE1"), warning=("#9A6700", "#FFF8C5"), danger=("#CF222E", "#FFEBE9"),
+                             info=("#0969DA", "#DDF4FF"), primary=("#0969DA", "#DDF4FF"), neutral=("#424A53", "#EAEEF2"))
+
+THEMES: Dict[str, Theme] = {t.key: t for t in (
+    Theme("ivory", "아이보리", False, LIGHT, LIGHT_TONES, {"bg": "#EDEBE2", "stroke": "#8B8468", "accent": "#C9B99A"}),
+    Theme("paper", "종이", False, _PAPER, _PAPER_TONES),
+    Theme("sky", "하늘", False, _SKY, _SKY_TONES),
+    Theme("sand", "모래", False, _SAND, _SAND_TONES),
+    Theme("github-light", "GitHub 밝게", False, _GITHUB_LIGHT, _GITHUB_LIGHT_TONES),
+    Theme("midnight", "미드나이트", True, DARK, DARK_TONES, {"bg": "#2A2F3A", "stroke": "#D8D1B8", "accent": "#8F8870"}),
+    Theme("oceanic", "오션", True, _OCEANIC, _OCEANIC_TONES),
+    Theme("forest", "숲", True, _FOREST, _FOREST_TONES),
+    Theme("volcano", "화산", True, _VOLCANO, _VOLCANO_TONES),
+    Theme("dracula", "드라큘라", True, _DRACULA, _DRACULA_TONES),
+    Theme("github-dark", "GitHub 어둡게", True, _GITHUB_DARK, _GITHUB_DARK_TONES),
+)}
+DEFAULT_THEME = {"light": "ivory", "dark": "midnight"}   # 시스템 설정을 따를 때 따로 고르지 않았으면 이 테마
+ALIASES = {"light": "ivory", "dark": "midnight"}         # 예전 설정값
+SETTINGS = (("system", "시스템 설정 따르기"),) + tuple((t.key, t.name) for t in THEMES.values())  # 설정값으로 허용되는 것
+
+
+def themes(dark: bool) -> List[Theme]:
+    return [t for t in THEMES.values() if t.dark == dark]
 
 FONT_FAMILY = '"Segoe UI Variable Text", "Segoe UI", "Malgun Gothic"'
 
 # 지금 쓰는 색 (use() 가 바꾼다). 편집기가 이름을 알 수 있게 밝은 테마 값으로 먼저 둔다.
-MODE = "light"
+MODE = "light"      # light / dark (지금 테마가 어두운지)
+THEME = "ivory"     # 지금 테마의 키
 BG = SURFACE = BORDER = BORDER_STRONG = HOVER = TEXT = MUTED = SUBTLE = LABEL = HEAD = LINE = ALT = ""
 BTN = BTN_HOVER = BTN_DISABLED = PRIMARY = PRIMARY_HOVER = PRIMARY_SOFT = PRIMARY_DISABLED = TIP_BG = ""
 OK_BORDER = ERR_BORDER = DANGER_HOVER_BORDER = WARN_BORDER = WARN_HOVER = WARN_HOVER_BORDER = ""
@@ -66,20 +224,25 @@ _listeners: List[Callable[[], None]] = []
 _bound: List[Tuple["weakref.ref", tuple]] = []
 
 
-def use(mode: str) -> None:
-    """색 묶음만 바꾼다 (화면에 적용은 apply)."""
-    global MODE, TONES
-    colors, tones = THEMES[mode]
-    MODE = mode
-    globals().update(colors)
-    TONES = dict(tones)
+def use(key: str) -> None:
+    """색 묶음만 바꾼다 (화면에 적용은 apply). key 는 테마 키 (light/dark 는 기본 테마로)."""
+    global MODE, THEME, TONES
+    t = THEMES[ALIASES.get(key, key)]
+    MODE = "dark" if t.dark else "light"
+    THEME = t.key
+    globals().update(t.colors)
+    TONES = dict(t.tones)
 
 
-use("light")
+use("ivory")
 
 
 def is_dark() -> bool:
     return MODE == "dark"
+
+
+def current() -> Theme:
+    return THEMES[THEME]
 
 
 def system_mode() -> str:
@@ -90,12 +253,25 @@ def system_mode() -> str:
     return "dark" if QGuiApplication.styleHints().colorScheme() == Qt.ColorScheme.Dark else "light"
 
 
+def preferred(mode: str) -> str:
+    """시스템 설정을 따를 때 그 모드(light/dark)에서 쓸 테마 키 (앱 설정에서 고른 것, 없으면 기본)."""
+    key = str(QSettings().value(f"ui/theme_{mode}", "")) if QGuiApplication.instance() is not None else ""
+    if key in THEMES and THEMES[key].dark == (mode == "dark"):
+        return key
+    return DEFAULT_THEME[mode]
+
+
 def resolve(setting: str) -> str:
-    return system_mode() if setting not in ("light", "dark") else setting
+    """설정값(system / 테마 키 / 예전 light·dark) → 지금 써야 할 테마 키."""
+    if setting in THEMES:
+        return setting
+    if setting in ALIASES:
+        return ALIASES[setting]
+    return preferred(system_mode())
 
 
 def apply(app, setting: str = "system") -> str:
-    """설정(system/light/dark)에 맞는 테마를 앱 전체에 적용하고, 등록해 둔 아이콘·화면을 다시 그린다."""
+    """설정(system 또는 테마 키)에 맞는 테마를 앱 전체에 적용하고, 등록해 둔 아이콘·화면을 다시 그린다. 반환: 테마 키."""
     use(resolve(setting))
     app.setPalette(_palette())
     app.setStyleSheet(stylesheet())
@@ -112,7 +288,7 @@ def apply(app, setting: str = "system") -> str:
             listener()
         except RuntimeError:  # 이미 닫힌 창의 함수
             _listeners.remove(listener)
-    return MODE
+    return THEME
 
 
 def on_change(listener: Callable[[], None]) -> None:
@@ -147,15 +323,16 @@ def assets_dir() -> Path:
 
 
 def _color_map() -> Dict[str, str]:
-    """밝은 테마 색 -> 지금 테마 색 (그림 파일에 직접 적힌 색을 바꿀 때)."""
-    if MODE == "light":
+    """기본 밝은 테마(ivory) 색 -> 지금 테마 색 (그림 파일에 직접 적힌 색을 바꿀 때)."""
+    if THEME == DEFAULT_THEME["light"]:
         return {}
-    pairs = list(zip(LIGHT.values(), DARK.values()))
+    t = current()
+    pairs = [(LIGHT[k], t.colors[k]) for k in LIGHT]
     for key in LIGHT_TONES:
-        pairs += list(zip(LIGHT_TONES[key], DARK_TONES[key]))
+        pairs += list(zip(LIGHT_TONES[key], t.tones[key]))
     mapping: Dict[str, str] = {}
-    for light, dark in pairs:
-        mapping.setdefault(light.lower(), dark)  # 같은 색이 여러 이름에 있으면 앞의 것 (BTN 이 PRIMARY 보다 앞)
+    for light, now in pairs:
+        mapping.setdefault(light.lower(), now)  # 같은 색이 여러 이름에 있으면 앞의 것 (BTN 이 PRIMARY 보다 앞)
     return mapping
 
 
@@ -167,11 +344,11 @@ def _recolor(svg: str) -> str:
 
 
 def asset(name: str) -> str:
-    """스타일시트 url() 에 넣을 경로 (슬래시). 어두운 테마에서는 색을 바꾼 사본을 임시 폴더에 만든다."""
+    """스타일시트 url() 에 넣을 경로 (슬래시). 기본 밝은 테마가 아니면 색을 바꾼 사본을 임시 폴더에 만든다."""
     source = assets_dir() / name
-    if MODE == "light":
+    if THEME == DEFAULT_THEME["light"]:
         return source.as_posix()
-    target = Path(tempfile.gettempdir()) / "shipkit-theme" / MODE / name
+    target = Path(tempfile.gettempdir()) / "shipkit-theme" / THEME / name
     text = _recolor(source.read_text(encoding="utf-8"))
     if not target.is_file() or target.read_text(encoding="utf-8") != text:
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -212,23 +389,51 @@ def bind_icon(obj, name: str, color_key: str, size: int = 20, selected_key: str 
     _bound.append((weakref.ref(obj), args))
 
 
-# 로고(logo.svg)의 색: 밝은 테마 값이 파일에 적혀 있고, 어두운 테마에서는 바탕을 어둡게·선을 밝은 모래색으로 바꾼다
-LOGO_COLORS = {
-    "light": {"bg": "#EDEBE2", "stroke": "#8B8468", "accent": "#C9B99A"},
-    "dark": {"bg": "#2A2F3A", "stroke": "#D8D1B8", "accent": "#8F8870"},
-}
+# 로고(logo.svg)의 색: 파일에는 기본 밝은 테마(ivory) 값이 적혀 있고, 다른 테마에서는 그 테마의 로고 색으로 바꾼다
+LOGO_COLORS = THEMES["ivory"].logo
+
+
+def logo_colors(key: str) -> Dict[str, str]:
+    """테마의 로고 색. 따로 정하지 않은 테마는 색 묶음에서 만든다 (바탕은 옅은 면, 선은 강조색)."""
+    t = THEMES[ALIASES.get(key, key)]
+    if t.logo:
+        return t.logo
+    c = t.colors
+    if t.dark:
+        return {"bg": c["BORDER"], "stroke": c["PRIMARY"], "accent": c["BORDER_STRONG"]}
+    return {"bg": c["HOVER"], "stroke": c["BTN"], "accent": c["BORDER_STRONG"]}
 
 
 def logo_svg(frame: bool = True, mode: Optional[str] = None) -> str:
-    """로고 SVG 글. frame=False 면 네모 바탕을 빼고 공구만 꽉 차게 (사이드바용). mode 를 주면 그 테마 색."""
+    """로고 SVG 글. frame=False 면 네모 바탕을 빼고 공구만 꽉 차게 (사이드바용). mode 는 테마 키(또는 light/dark)."""
     text = (assets_dir() / "logo.svg").read_text(encoding="utf-8")
     if not frame:
         text = re.sub(r"<rect [^>]*?/>", "", text, count=1).replace('viewBox="0 0 64 64"', 'viewBox="5 5 54 54"')
-    mode = mode or MODE
-    if mode == "dark":
-        for key, light in LOGO_COLORS["light"].items():
-            text = text.replace(light, LOGO_COLORS["dark"][key])
+    colors = logo_colors(mode or THEME)
+    if colors is not LOGO_COLORS:
+        for key, base in LOGO_COLORS.items():
+            text = text.replace(base, colors[key])
     return text
+
+
+def swatch(key: str, size: int = 18) -> QIcon:
+    """앱 설정의 테마 단추에 붙는 색 견본: 그 테마의 바탕 위에 카드와 강조색 점."""
+    t = THEMES[key]
+    pm = QPixmap(QSize(size * 2, size * 2))
+    pm.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pm)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setPen(QColor(t.colors["BORDER_STRONG"]))
+    painter.setBrush(QColor(t.colors["BG"]))
+    painter.drawRoundedRect(1, 1, size * 2 - 2, size * 2 - 2, 6, 6)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor(t.colors["SURFACE"]))
+    painter.drawRoundedRect(6, 10, size * 2 - 12, size * 2 - 16, 4, 4)
+    painter.setBrush(QColor(t.colors["BTN"]))
+    painter.drawEllipse(size - 5, size - 2, 10, 10)
+    painter.end()
+    pm.setDevicePixelRatio(2)
+    return QIcon(pm)
 
 
 def logo_pixmap(size: int, frame: bool = True, mode: Optional[str] = None) -> QPixmap:
