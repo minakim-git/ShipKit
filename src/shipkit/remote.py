@@ -108,6 +108,22 @@ def remember_host_key(profile: ServerProfile, status: HostKeyStatus, path: Optio
     known.save(str(path))
 
 
+def forget_host_key(profile: ServerProfile, path: Optional[Path] = None) -> bool:
+    """기억한 지문을 지운다 (서버를 다시 설치해 지문이 바뀌었을 때). 반환: 지운 것이 있었는지."""
+    import paramiko
+    path = path or known_hosts_path()
+    if not path.is_file():
+        return False
+    known = paramiko.HostKeys()
+    known.load(str(path))
+    label = host_label(profile.host, profile.port)
+    if not known.lookup(label):
+        return False
+    del known[label]
+    known.save(str(path))
+    return True
+
+
 # ---------------------------------------------------------------------- 연결
 @dataclass
 class Secrets:

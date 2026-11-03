@@ -11,6 +11,7 @@ from typing import Any, Callable, Dict, List, Optional
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QCheckBox, QComboBox, QHBoxLayout, QLineEdit, QListWidget, QSpinBox, QVBoxLayout, QWidget
 
+from shipkit import remote
 from shipkit.config import ConfigError, ServerProfile, parse_servers
 from shipkit.gui.context import AppContext
 from shipkit.gui.project_widgets import form_layout as _form
@@ -111,8 +112,12 @@ class ServersTab(QWidget):
         self.server_test_btn.clicked.connect(self.test_server)
         forget = button("저장된 비밀번호 지우기", "ghost")
         forget.clicked.connect(self.forget_server_secrets)
+        forget_key = button("서버 지문 잊기", "ghost")
+        forget_key.setToolTip("서버를 다시 설치해 지문이 바뀌었을 때. 다음 접속 때 새 지문을 보여 주고 다시 묻습니다.")
+        forget_key.clicked.connect(self.forget_host_key)
         buttons.addWidget(self.server_test_btn)
         buttons.addWidget(forget)
+        buttons.addWidget(forget_key)
         buttons.addStretch(1)
         right.addLayout(buttons)
         split.addWidget(self.server_form_box, 1)
@@ -262,6 +267,19 @@ class ServersTab(QWidget):
             self.ctx.dialogs.error("연결 시험 실패", text)
 
         self.client.test(profile, done, failed, finish)  # 비밀번호 입력을 취소하면 finish
+
+    def forget_host_key(self) -> None:
+        profile = self._current_profile()
+        if profile is None:
+            return
+        if not self.ctx.dialogs.ask("서버 지문 잊기",
+                                    f"{profile.host}:{profile.port} 의 기억한 지문을 지울까요?\n"
+                                    "다음 접속 때 새 지문을 보여 주고 다시 묻습니다. 서버를 다시 설치한 것이 맞는지 "
+                                    "관리자에게 확인한 뒤 지우세요."):
+            return
+        removed = remote.forget_host_key(profile)
+        self.ctx.dialogs.info("서버 지문 잊기", "지문을 지웠습니다. 다음 접속 때 다시 확인합니다." if removed
+                              else "기억한 지문이 없습니다.")
 
     def forget_server_secrets(self) -> None:
         profile = self._current_profile()

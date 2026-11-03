@@ -78,13 +78,15 @@ def find_package(project: ProjectConfig, path: Optional[str]) -> Path:
     return records[0].path
 
 
-def ensure_host_key(profile: ServerProfile, accept_new: bool) -> None:
+def ensure_host_key(profile: ServerProfile, accept_new: bool, forget: bool = False) -> None:
+    if forget and remote.forget_host_key(profile):
+        _out("기억한 서버 지문을 지웠습니다.\n")
     status = remote.check_host_key(profile)
     if status.state == "known":
         return
     if status.state == "changed":
         raise DeployError(f"{profile.host} 의 서버 지문이 기억한 것과 다릅니다. 다른 서버로 연결될 위험이 있어 접속하지 않습니다.\n"
-                          f"지금 지문: {status.fingerprint}\n서버를 다시 설치했다면 {remote.known_hosts_path()} 에서 그 줄을 지우세요.")
+                          f"지금 지문: {status.fingerprint}\n서버를 다시 설치한 것이 맞다면 --forget-host-key 를 붙여 다시 실행하세요.")
     _out(f"{profile.name} ({profile.host}:{profile.port}) 에 처음 접속합니다. 서버 지문 ({status.key_type}): {status.fingerprint}\n")
     if not accept_new:
         if not _tty():

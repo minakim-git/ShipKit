@@ -123,6 +123,10 @@ def test_host_key_new_known_changed(sshd, tmp_path):
     assert remote.check_host_key(p, known).state == "known"
     sshd.key = __import__("paramiko").RSAKey.generate(1024)             # 서버를 다시 설치한 경우
     assert remote.check_host_key(p, known).state == "changed"
+    assert remote.forget_host_key(p, known)                             # 지문 잊기 -> 처음 접속처럼 다시 묻는다
+    assert remote.check_host_key(p, known).state == "new"
+    assert not remote.forget_host_key(p, known)                         # 지울 것이 없으면 False
+    assert not remote.forget_host_key(p, tmp_path / "none")
 
 
 def _connect(sshd, tmp_path, profile, secrets):

@@ -703,6 +703,11 @@ def test_remote_panel_upload_apply_rollback(qapp, tmp_path, maven_project, monke
     page.servers_tab.srv_mode.setCurrentIndex(0)
     page.servers_tab.test_server()
     assert dialogs.messages[-1][:2] == ("info", "연결 시험") and "접속 성공" in dialogs.messages[-1][2], dialogs.messages[-1]
+    page.servers_tab.forget_host_key()                                      # 서버 지문 잊기 (확인 후 지움)
+    assert dialogs.messages[-2][:2] == ("ask", "서버 지문 잊기") and "지문을 지웠습니다" in dialogs.messages[-1][2]
+    assert "127.0.0.1" not in (tmp_path / "known_hosts").read_text(encoding="utf-8")
+    page.servers_tab.forget_host_key()
+    assert "기억한 지문이 없습니다" in dialogs.messages[-1][2]
     page.servers_tab.add_server()
     page.servers_tab.srv_host.setText("10.0.0.9")
     page.servers_tab.srv_user.setText("app")

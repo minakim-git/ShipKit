@@ -92,8 +92,8 @@ class RemoteClient:
         def checked(status: remote.HostKeyStatus) -> None:
             if status.state == "changed":
                 failed(f"{profile.host} 의 서버 지문이 예전에 기억한 것과 다릅니다. 다른 서버로 연결될 위험이 있어 "
-                       f"접속하지 않았습니다.\n지금 지문: {status.fingerprint}\n서버를 다시 설치했다면 서버 관리자에게 확인한 뒤 "
-                       f"{remote.known_hosts_path()} 에서 그 줄을 지우세요.")
+                       f"접속하지 않았습니다.\n지금 지문: {status.fingerprint}\n서버를 다시 설치한 것이 맞다면 프로젝트 설정 → "
+                       "서버 연결의 [서버 지문 잊기]를 누른 뒤 다시 접속하세요.")
                 return
             if status.state == "new":
                 if not self.ctx.dialogs.ask(

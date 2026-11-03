@@ -50,6 +50,22 @@ def test_find_server_and_package(tmp_path):
 
 
 @needs_bash
+def test_deploy_changed_host_key_and_forget(tmp_path, maven_project, sshd, monkeypatch, capsys):
+    """서버를 다시 설치해 지문이 바뀌면 거부하고, --forget-host-key 로 지운 뒤 새로 확인한다."""
+    import paramiko
+    cfg, _server, _keyring = _setup(tmp_path, maven_project, sshd, monkeypatch)
+    assert cli.main(["package", "-c", str(cfg), "-p", "erp", "src/main/webapp/WEB-INF/views/user/list.jsp"]) == 0
+    assert cli.main(["deploy", "-c", str(cfg), "-p", "erp", "--accept-host-key"]) == 0
+    sshd.key = paramiko.RSAKey.generate(1024)
+    capsys.readouterr()
+    assert cli.main(["deploy", "-c", str(cfg), "-p", "erp", "--accept-host-key"]) == 2
+    err = capsys.readouterr().err
+    assert "지문이 기억한 것과 다릅니다" in err and "--forget-host-key" in err
+    assert cli.main(["deploy", "-c", str(cfg), "-p", "erp", "--forget-host-key", "--accept-host-key"]) == 0
+    assert "기억한 서버 지문을 지웠습니다" in capsys.readouterr().out
+
+
+@needs_bash
 def test_deploy_check_apply_rollback_and_status(tmp_path, maven_project, sshd, monkeypatch, capsys):
     cfg, server, keyring = _setup(tmp_path, maven_project, sshd, monkeypatch)
     jsp = "src/main/webapp/WEB-INF/views/user/list.jsp"

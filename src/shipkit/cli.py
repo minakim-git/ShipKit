@@ -445,7 +445,7 @@ def _remote_target(args: argparse.Namespace):
     cfg = load_config(args.config)
     project = cfg.project(args.project)
     profile = remote_cli.find_server(project, args.server)
-    remote_cli.ensure_host_key(profile, getattr(args, "accept_host_key", False))
+    remote_cli.ensure_host_key(profile, getattr(args, "accept_host_key", False), getattr(args, "forget_host_key", False))
     secrets = remote_cli.collect_secrets(profile, os.environ, save=getattr(args, "save_password", False))
     return project, profile, secrets
 
@@ -558,6 +558,7 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("-p", "--project", help="프로젝트 이름")
         p.add_argument("--server", help="프로젝트 설정의 서버 연결 이름 (하나뿐이면 생략)")
         p.add_argument("--accept-host-key", action="store_true", help="처음 접속하는 서버의 지문을 묻지 않고 기억 (자동화용)")
+        p.add_argument("--forget-host-key", action="store_true", help="기억한 서버 지문을 지우고 새로 확인 (서버를 다시 설치했을 때)")
         p.add_argument("--save-password", action="store_true", help="터미널에서 입력한 비밀번호를 OS 키링에 저장")
         if name == "deploy":
             p.add_argument("--package", metavar="FOLDER", help="올릴 패키지 폴더 (기본: 가장 최근에 만든 패키지)")
