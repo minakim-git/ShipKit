@@ -397,6 +397,7 @@ projects:
         run_as: app            # 서버 스크립트를 실행할 계정 (비우면 접속 계정)
         run_with: su           # sudo | su
         run_password: true     # 계정을 바꿀 때 비밀번호가 필요하면 (끄면 묻지 않고 실행하고, 서버가 비밀번호를 물으면 바로 실패)
+                               # su 는 서버 로케일과 상관없이 암호 질문을 알아챕니다 (LC_ALL=C 로 띄우고, 번역된 질문도 인식)
         chown: true            # 올린 패키지 폴더 소유자를 실행 계정으로
         upload_dir: /home/app/deploy
 ```

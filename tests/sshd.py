@@ -98,6 +98,14 @@ class _SFTP(SFTPServerInterface):
         return SFTP_OK
 
 
+# 로케일별 su 암호 질문과 sudo -n 거부 문구 (실제 서버의 gettext 번역)
+MESSAGES = {
+    "C": {"su": "Password: ", "sudo": "sudo: a password is required"},
+    "ko": {"su": "암호: ", "sudo": "sudo: 암호가 필요합니다"},
+    "ja": {"su": "パスワード: ", "sudo": "sudo: パスワードが必要です"},
+}
+
+
 class FakeSSHServer:
     def __init__(self, home: Path, bash: str):
         self.home = home
@@ -106,6 +114,8 @@ class FakeSSHServer:
         self.commands: List[str] = []   # 받은 명령
         self.ran_as: List[str] = []     # 계정 전환 기록 (sudo:계정 / su:계정)
         self.sudo_nopasswd = False      # True 면 sudo -n 이 비밀번호 없이 된다 (sudoers NOPASSWD)
+        self.locale = "C"               # 서버 로케일: su·sudo 문구가 번역된다 (C / ko / ja)
+        self.honor_env = True           # False 면 명령 앞의 LC_ALL=C 를 무시한다 (번역된 질문을 그대로 내는 서버)
         self.sock = socket.socket()
         self.sock.bind(("127.0.0.1", 0))
         self.sock.listen(5)
@@ -167,6 +177,12 @@ class _Server(paramiko.ServerInterface):
     def _run(self, channel, command: str) -> None:
         time.sleep(0.05)  # exec 요청에 대한 응답이 먼저 가도록 (바로 닫으면 손님 쪽이 'Channel closed')
         argv = shlex.split(command)
+        env = {}
+        while argv and "=" in argv[0] and not argv[0].startswith("-"):   # 앞의 VAR=value
+            name, _, value = argv.pop(0).partition("=")
+            env[name] = value
+        locale = env.get("LC_ALL", self.owner.locale) if self.owner.honor_env else self.owner.locale
+        msg = MESSAGES.get(locale, MESSAGES["C"])
         user: Optional[str] = None
         if argv[0] == "sudo":
             rest = argv[1:]
@@ -181,7 +197,7 @@ class _Server(paramiko.ServerInterface):
                     rest = rest[1:]
             if "-n" in flags:  # 묻지 않고 실행: 비밀번호 없이 되는 서버(NOPASSWD)가 아니면 바로 실패
                 if not self.owner.sudo_nopasswd:
-                    channel.sendall(b"sudo: a password is required\n")
+                    channel.sendall(msg["sudo"].encode("utf-8") + b"\n")
                     channel.send_exit_status(1)
                     channel.close()
                     return
@@ -194,7 +210,7 @@ class _Server(paramiko.ServerInterface):
             self.owner.ran_as.append(f"sudo:{user or 'root'}")
         elif argv[0] == "su":
             user = argv[2]
-            channel.sendall(b"Password: ")
+            channel.sendall(msg["su"].encode("utf-8"))
             if self._readline(channel) != SU_PW:
                 try:
                     channel.sendall(b"su: Authentication failure\n")

@@ -7,6 +7,8 @@
    비밀번호가 필요하면(run_password) sudo 는 표준 입력으로, su 는 가상 터미널의 암호 질문에 답한다.
    비밀번호를 쓰지 않는 설정인데 서버가 비밀번호를 물으면 기다리지 않고 바로 실패한다
    (sudo 는 -n, su 는 암호 질문이 보이는 즉시 중단). 그러지 않으면 명령이 영원히 멈춘다.
+   su 의 암호 질문은 서버 로케일에 따라 번역되므로 su 를 LC_ALL=C 로 띄워 영어 "Password:" 가 나오게 하고,
+   그래도 번역된 질문이 오면(LC_ALL 을 무시하는 su) 알려진 번역 단어로도 알아챈다.
 
 화면·명령어와 실제 연결을 떼어 두려고 Connection(올리기·실행) 을 따로 둔다. 테스트는 같은 모양의 로컬 연결을 쓴다.
 """
@@ -33,7 +35,11 @@ _DRIVE_ROOT = re.compile(r"^/?[A-Za-z]:$")  # Windows OpenSSH 의 SFTP 경로 (/
 CONNECT_TIMEOUT = 15
 IDLE_TIMEOUT = 600                        # 명령 실행 중 이만큼(초) 서버 출력이 없으면 끊긴 것으로 보고 중단한다
 PROMPT_WINDOW = 256                       # 가상 터미널 출력이 이만큼 쌓이도록 암호 질문이 없으면 더 지켜보지 않는다
-SUDO_NEEDS_PASSWORD = "a password is required"   # sudo -n 이 비밀번호 없이 실행하지 못할 때 내는 문구
+SUDO_NEEDS_PASSWORD = "a password is required"   # sudo -n 이 비밀번호 없이 실행하지 못할 때 내는 문구 (영어 로케일)
+# su·PAM 의 암호 질문에 나오는 단어 (로케일별 번역). 질문은 보통 "Password:" 처럼 콜론으로 끝난다.
+PASSWORD_WORDS = ("password", "암호", "비밀번호", "パスワード", "密码", "密碼", "passwort", "contraseña", "mot de passe",
+                  "senha", "пароль", "wachtwoord", "hasło", "heslo", "lösenord", "adgangskode", "passord", "şifre",
+                  "parola", "jelszó", "salasana")
 
 
 class RemoteError(Exception):
@@ -331,8 +337,20 @@ class SSHConnection:
 
 
 def _is_password_prompt(text: str) -> bool:
+    """가상 터미널 출력의 끝이 암호 질문인지. 'Password:' 와 번역된 질문(콜론은 전각 '：' 일 수도) 을 알아본다."""
     tail = text.strip().lower()
-    return tail.endswith(":") and ("password" in tail or "암호" in tail or "비밀번호" in tail)
+    if not tail.endswith((":", "：")):
+        return False
+    last = tail.rsplit("\n", 1)[-1]   # 질문은 마지막 줄에 있다 (앞 줄의 평범한 출력에 든 단어로 오판하지 않게)
+    return any(word in last for word in PASSWORD_WORDS)
+
+
+def _sudo_refused(output: str) -> bool:
+    """sudo -n 이 비밀번호가 없어 실행을 거부했는지. 영어 문구가 아니어도(번역된 로케일) 'sudo:' 한 줄만 찍고 끝나면 그렇게 본다."""
+    if SUDO_NEEDS_PASSWORD in output:
+        return True
+    lines = [ln for ln in output.replace("\r", "").split("\n") if ln.strip()]
+    return len(lines) == 1 and lines[0].startswith("sudo:")
 
 
 # ---------------------------------------------------------------------- 명령 만들기
@@ -386,7 +404,8 @@ def as_runner(profile: ServerProfile, inner: str, password: Optional[bool] = Non
     if not profile.run_as:
         return f"bash -c {shlex.quote(inner)}"
     if profile.run_with == "su":
-        return f"su - {shlex.quote(profile.run_as)} -c {shlex.quote(inner)}"
+        # LC_ALL=C: 암호 질문이 번역되지 않고 "Password:" 로 나오게 (su - 는 환경을 비우므로 안쪽 명령에는 안 넘어간다)
+        return f"LC_ALL=C su - {shlex.quote(profile.run_as)} -c {shlex.quote(inner)}"
     if password is None:
         password = profile.run_password
     return f"{_sudo(password)} -u {shlex.quote(profile.run_as)} bash -c {shlex.quote(inner)}"
@@ -489,7 +508,7 @@ def _run_sudo_aware(conn: Connection, profile: ServerProfile, cmd: str, output: 
         output(text)
 
     code = conn.run(cmd, out, **opts)
-    if code and opts["password"] is None and cmd.startswith("sudo -n") and SUDO_NEEDS_PASSWORD in "".join(seen):
+    if code and opts["password"] is None and cmd.startswith("sudo -n") and _sudo_refused("".join(seen)):
         output(f"[안내] {profile.user} 계정의 sudo 에 비밀번호가 필요합니다. "
                "서버 연결 설정에서 '비밀번호 필요(run_password)'를 켜거나, 서버의 sudoers 에 NOPASSWD 를 설정하세요.\n")
     return code

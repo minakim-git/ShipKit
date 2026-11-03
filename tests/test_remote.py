@@ -71,7 +71,7 @@ def test_commands_for_each_account_mode():
     assert remote.chown_command(sudo, "/d/p") == "sudo -S -p '' chown -R app: /d/p"
     su = ServerProfile("a", "h", "root", run_as="app", run_with="su", server_path="/srv/other")
     assert remote.script_command(su, "/d/p", "rollback", no_hooks=True) == \
-        "su - app -c 'cd /d/p && bash shipkit.sh rollback /srv/other --no-hooks'"
+        "LC_ALL=C su - app -c 'cd /d/p && bash shipkit.sh rollback /srv/other --no-hooks'"
     assert remote.chown_command(su, "/d/p") is None                      # chown 안 켬
     assert remote.expand_dir("~/deploy", "/home/app") == "/home/app/deploy"
     # 비밀번호를 보내지 않을 때는 sudo 가 묻지 않고 바로 실패하게(-n) 해서 영원히 기다리는 일이 없게 한다
@@ -83,6 +83,55 @@ def test_commands_for_each_account_mode():
     assert remote.run_password(nopw, remote.Secrets(run="pw")) == {"password": "pw", "pty": False}
     assert remote.run_password(nopw, remote.Secrets()) == {"password": None, "pty": False}
     assert remote.run_password(su, remote.Secrets(run="pw")) == {"password": None, "pty": True}  # su 는 설정대로만
+
+
+def test_password_prompt_detection():
+    """su·PAM 의 암호 질문을 로케일에 상관없이 알아본다. 평범한 출력은 질문으로 보지 않는다."""
+    for prompt in ("Password: ", "Password:", "[sudo] password for admin: ", "암호: ", "암호:", "비밀번호: ",
+                   "パスワード: ", "パスワード：", "密码：", "Passwort: ", "Mot de passe : ", "Contraseña: ", "Пароль: ",
+                   "Senha: ", "some output\r\nPassword: "):
+        assert remote._is_password_prompt(prompt), prompt
+    for text in ("", "Password", "password changed\n", "Password: ok\n", "암호를 바꾸세요\n", "hello:\n",
+                 "password is required\nnext line:"):
+        assert not remote._is_password_prompt(text), text
+    assert remote._sudo_refused("sudo: a password is required\n")
+    assert remote._sudo_refused("sudo: 암호가 필요합니다\r\n")
+    assert not remote._sudo_refused("sudo: 암호가 필요합니다\nmore output\n")   # 안쪽 명령까지 실행된 흔적이 있으면 아니다
+    assert not remote._sudo_refused("[오류] 파일이 없습니다\n")
+
+
+@needs_bash
+def test_run_as_on_localized_server(sshd, tmp_path, maven_project):
+    """한국어·일본어 로케일 서버: su 는 LC_ALL=C 로 영어 질문을 받고, LC_ALL 을 무시하는 서버의 번역된 질문도 알아챈다.
+    sudo -n 거부 문구가 번역되어도 안내를 붙인다."""
+    server = tmp_path / "server"
+    server.mkdir()
+    result = _package(maven_project, tmp_path, server)
+    su = _profile(sshd, user="admin", run_as="app", run_with="su", run_password=True)
+    for locale, honor_env in (("ko", True), ("ko", False), ("ja", False)):
+        sshd.locale, sshd.honor_env, sshd.ran_as[:] = locale, honor_env, []
+        conn = _connect(sshd, tmp_path, su, remote.Secrets(login=LOGIN_PW))
+        out = []
+        try:
+            res = remote.upload_and_check(conn, su, remote.Secrets(LOGIN_PW, SU_PW), result.out_dir, out.append)
+            text = "".join(out)
+            assert res.ok and sshd.ran_as == ["su:app"], (locale, honor_env, text)
+            assert "Password" not in text and "암호" not in text and "パスワード" not in text, text
+        finally:
+            conn.close()
+    sshd.locale, sshd.honor_env = "C", True
+
+    sshd.locale = "ko"
+    sudo = _profile(sshd, user="admin", run_as="app")
+    conn = _connect(sshd, tmp_path, sudo, remote.Secrets(login=LOGIN_PW))
+    out = []
+    try:
+        res = remote.upload_and_check(conn, sudo, remote.Secrets(LOGIN_PW), result.out_dir, out.append)
+        text = "".join(out)
+        assert not res.ok and "sudo: 암호가 필요합니다" in text and "run_password" in text, text
+    finally:
+        conn.close()
+        sshd.locale = "C"
 
 
 @needs_bash
