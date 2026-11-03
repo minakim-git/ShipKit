@@ -19,6 +19,7 @@ from shipkit import PROJECT_FILE, __app_name__, config_store
 from shipkit.config import PRESETS, ConfigError, GitLabConfig, load_project_file
 from shipkit.gui import theme
 from shipkit.gui.context import AppContext
+from shipkit.gui.guide_view import show_guide
 from shipkit.gui.widgets import Card, PathField, Stepper, button, label
 from shipkit.projectfile import detect_preset, find_repo_root
 from shipkit.secrets import SecretError, set_token
@@ -66,8 +67,7 @@ class SetupWizard(QDialog):
         texts = QVBoxLayout()
         texts.setSpacing(2)
         texts.addWidget(label(f"{__app_name__} 시작하기", "pageTitle"))
-        texts.addWidget(label("세 가지만 정하면 바로 배포 패키지를 만들 수 있습니다. 모두 나중에 바꿀 수 있습니다.",
-                              "pageSubtitle"))
+        texts.addWidget(label("세 단계로 설정합니다. 모두 나중에 바꿀 수 있습니다.", "pageSubtitle"))
         head.addWidget(logo, 0, Qt.AlignmentFlag.AlignTop)
         head.addSpacing(8)
         head.addLayout(texts, 1)
@@ -90,6 +90,8 @@ class SetupWizard(QDialog):
         buttons = QHBoxLayout()
         self.later_btn = button("나중에 하기", "ghost")
         self.later_btn.clicked.connect(self.reject)
+        self.guide_btn = button("사용자 가이드", "ghost")
+        self.guide_btn.clicked.connect(lambda: show_guide(self))
         self.back_btn = button("이전")
         self.back_btn.clicked.connect(lambda: self.go(self.step - 1))
         self.next_btn = button("다음", "primary")
@@ -97,6 +99,7 @@ class SetupWizard(QDialog):
         self.next_btn.setDefault(True)
         self.next_btn.clicked.connect(self.next)
         buttons.addWidget(self.later_btn)
+        buttons.addWidget(self.guide_btn)
         buttons.addStretch(1)
         buttons.addWidget(self.back_btn)
         buttons.addWidget(self.next_btn)
@@ -110,9 +113,7 @@ class SetupWizard(QDialog):
         col = QVBoxLayout(w)
         col.setContentsMargins(0, 0, 0, 0)
         col.setSpacing(12)
-        self.legacy_card = Card("기존 배포 툴 설정을 찾았습니다",
-                                "compiled-java-deployer 에 등록한 프로젝트와 GitLab 주소를 그대로 가져올 수 있습니다. "
-                                "토큰은 가져오지 않으니 아래에 다시 넣어 주세요.")
+        self.legacy_card = Card("기존 배포 툴 설정을 찾았습니다", "프로젝트와 GitLab 주소를 그대로 가져옵니다. 토큰은 다시 넣어 주세요.")
         row = QHBoxLayout()
         self.legacy_btn = button("가져오기", "primary")
         self.legacy_btn.clicked.connect(self.import_legacy)
@@ -123,7 +124,7 @@ class SetupWizard(QDialog):
         self.legacy_card.setVisible(self.legacy_db is not None)
         col.addWidget(self.legacy_card)
 
-        card = Card("GitLab 연결", "MR 번호만 고르면 바뀐 파일을 알아서 모읍니다. 이를 위해 GitLab 주소와 토큰이 필요합니다.")
+        card = Card("GitLab 연결")
         form = _form()
         self.gitlab_url = QLineEdit()
         self.gitlab_url.setPlaceholderText("예: https://gitlab.example.com")
@@ -141,14 +142,12 @@ class SetupWizard(QDialog):
         card.body.addLayout(form)
         self.test_result = label("", "muted")
         card.body.addWidget(self.test_result)
-        card.body.addWidget(label("토큰 만들기: GitLab 오른쪽 위 프로필 → Preferences → Access tokens → "
-                                  "read_api 권한을 체크해 만듭니다. 토큰은 이 PC 의 Windows 자격 증명 관리자에만 저장됩니다.",
-                                  "muted"))
-        self.no_gitlab = QCheckBox("GitLab 을 쓰지 않습니다 (git 커밋이나 파일 목록으로만 배포)")
+        card.body.addWidget(label("토큰: GitLab 프로필 → Preferences → Access tokens, read_api 권한", "muted"))
+        self.no_gitlab = QCheckBox("GitLab 을 쓰지 않습니다")
+        self.no_gitlab.setToolTip("git 커밋이나 파일 목록으로만 배포합니다. GitHub 는 나중에 [연결] 메뉴에서 추가합니다.")
         self.no_gitlab.toggled.connect(self._toggle_gitlab)
         card.body.addWidget(self.no_gitlab)
         col.addWidget(card)
-        col.addWidget(label("GitHub 는 나중에 왼쪽 [연결] 메뉴에서 추가할 수 있습니다.", "muted"))
         col.addStretch(1)
         return w
 
@@ -156,8 +155,7 @@ class SetupWizard(QDialog):
         w = QWidget()
         col = QVBoxLayout(w)
         col.setContentsMargins(0, 0, 0, 0)
-        card = Card("패키지를 만들 위치", "배포할 때마다 이 폴더 아래에 프로젝트별·날짜별 폴더를 만들고 패키지를 넣습니다. "
-                                         "{project} 는 프로젝트 이름으로 바뀝니다.")
+        card = Card("패키지를 만들 위치")
         form = _form()
         self.output_field = PathField(placeholder="예: D:/deploy/{project}")
         self.output_field.edit.textChanged.connect(self._show_output_example)
@@ -177,8 +175,7 @@ class SetupWizard(QDialog):
         self.imported_note = label("", "muted")
         self.imported_note.hide()
         col.addWidget(self.imported_note)
-        card = Card("배포할 프로젝트", "로컬에 받아 둔 git 저장소 폴더를 고르면 나머지는 최대한 알아서 채웁니다. "
-                                      "반영 규칙 같은 자세한 설정은 나중에 [프로젝트] 메뉴에서 바꿉니다.")
+        card = Card("배포할 프로젝트")
         form = _form()
         self.root_field = PathField(placeholder="로컬 git 저장소 최상위 폴더")
         self.root_field.edit.textChanged.connect(self._inspect_root)

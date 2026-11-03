@@ -148,6 +148,10 @@ def test_first_run_wizard_new_user(qapp, tmp_path, monkeypatch, maven_project):
 
     def plan(wz):
         assert not wz.legacy_card.isVisibleTo(wz) and wz.output_field.text().endswith("{project}")
+        from shipkit.gui import guide_view
+        wz.guide_btn.click()                                       # 안내 창에서도 사용자 가이드를 볼 수 있다
+        assert guide_view._open is not None and guide_view._open.parent() is wz
+        guide_view._open.close()
         wz.next()                                                  # GitLab 주소 없음 -> 넘어가지 않음
         assert wz.step == STEP_CONNECT and "GitLab 주소" in wz.error.text()
         wz.gitlab_url.setText("https://gitlab.acme.local/")

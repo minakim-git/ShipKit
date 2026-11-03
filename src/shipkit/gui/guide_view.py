@@ -83,11 +83,13 @@ def show_guide(parent: Optional[QWidget]) -> GuideDialog:
     global _open
     if _open is not None:
         try:
-            _open.raise_()
-            _open.activateWindow()
-            return _open
+            if _open.isVisible():
+                _open.raise_()
+                _open.activateWindow()
+                return _open
         except RuntimeError:  # 이미 닫혀 지워진 창
-            _open = None
+            pass
+        _open = None  # 닫혔지만 아직 지워지지 않은 창(지우기는 이벤트 루프가 돌 때)은 새로 연다
     dialog = GuideDialog(parent)
     dialog.destroyed.connect(lambda *_: globals().__setitem__("_open", None))
     _open = dialog
