@@ -7,8 +7,8 @@ from __future__ import annotations
 import re
 from typing import Callable, Dict, List, Optional, Tuple
 
-from PySide6.QtCore import QSize, Qt
-from PySide6.QtGui import QColor
+from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtGui import QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QCheckBox, QComboBox, QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QStackedWidget, QTableWidget,
@@ -61,6 +61,7 @@ def _bar() -> QHBoxLayout:
 
 
 class DeployPage(QWidget):
+    add_project_requested = Signal()   # 빈 화면의 [프로젝트 추가]
     def __init__(self, ctx: AppContext):
         super().__init__()
         self.ctx = ctx
@@ -119,9 +120,24 @@ class DeployPage(QWidget):
         self.steps.addWidget(self._review_step())
         self.steps.addWidget(self._done_step())
         root.addWidget(self.steps, 1)
-        self.empty_label = label("", "muted")
+        # 프로젝트가 없을 때: 안내 글과 바로 갈 수 있는 버튼
+        self.empty_box = QWidget()
+        empty = QVBoxLayout(self.empty_box)
+        empty.setSpacing(12)
+        empty.addStretch(1)
+        self.empty_label = label("", "emptyText")
         self.empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        root.addWidget(self.empty_label, 1)
+        empty.addWidget(self.empty_label)
+        self.add_project_btn = button("프로젝트 추가", "primary")
+        self.add_project_btn.clicked.connect(self.add_project_requested.emit)
+        empty.addWidget(self.add_project_btn, 0, Qt.AlignmentFlag.AlignHCenter)
+        empty.addStretch(1)
+        root.addWidget(self.empty_box, 1)
+
+        # 단축키: Ctrl+Enter 다음 단계(미리보기 → 만들기), Esc 이전 단계 (② 확인에서만)
+        QShortcut(QKeySequence("Ctrl+Return"), self, activated=self.shortcut_next)
+        QShortcut(QKeySequence("Ctrl+Enter"), self, activated=self.shortcut_next)
+        QShortcut(QKeySequence("Escape"), self, activated=self.shortcut_back)
 
     def _preflight_bar(self) -> QWidget:
         self.preflight = QFrame()
@@ -434,6 +450,20 @@ class DeployPage(QWidget):
     def step(self) -> int:
         return self.steps.currentIndex()
 
+    def shortcut_next(self) -> None:
+        """Ctrl+Enter: ① 에서는 미리보기, ② 에서는 패키지 만들기 (만들 수 있을 때만)."""
+        if self.project is None or self.progress.isVisible():
+            return
+        if self.step == STEP_PICK:
+            self.preview()
+        elif self.step == STEP_REVIEW and self.make_btn.isEnabled():
+            self.make_package()
+
+    def shortcut_back(self) -> None:
+        """Esc: ② 확인에서 ① 고르기로."""
+        if self.project is not None and self.step == STEP_REVIEW and not self.progress.isVisible():
+            self.go_step(STEP_PICK)
+
     def _reachable(self) -> int:
         if self.last_result is not None:
             return STEP_DONE
@@ -483,11 +513,12 @@ class DeployPage(QWidget):
         has = p is not None
         self.steps.setVisible(has)
         self.stepper.setVisible(has)
-        self.empty_label.setVisible(not has)
+        self.empty_box.setVisible(not has)
         if not has:
             self.mode_label.setText("")
             self.empty_label.setText(f"설정 파일을 읽지 못했습니다.\n{self.ctx.load_error}" if self.ctx.load_error else
-                                     "왼쪽 위 프로젝트 목록에서 프로젝트를 추가하세요.")
+                                     "아직 프로젝트가 없습니다. 배포할 프로젝트를 먼저 등록하세요.")
+            self.add_project_btn.setVisible(not self.ctx.load_error)
             self.go_step(STEP_PICK)
             return
         self.mode_label.setText(f"{p.describe_mode}  ·  서버 경로 {p.server_path}")
@@ -896,7 +927,8 @@ class DeployPage(QWidget):
             b = self.filter_buttons[key]
             b.setText(f"{text}  {n}")
             b.setVisible(status is None or n > 0)
-        self.filter_buttons["all"].setChecked(True)
+        # 실패가 있으면 실패 항목부터 보여 준다 (고칠 것을 바로 보게)
+        self.filter_buttons["error" if shown[Status.ERROR] else "all"].setChecked(True)
         self._apply_filter()
         self.go_step(STEP_REVIEW)
         self.make_btn.setEnabled(bool(result.manifest or result.deletes))

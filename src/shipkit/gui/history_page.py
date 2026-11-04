@@ -8,7 +8,7 @@ from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional
 
 from PySide6.QtCore import QSize, Qt, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QIcon
+from PySide6.QtGui import QDesktopServices, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView, QDialog, QHBoxLayout, QLineEdit, QListWidget, QListWidgetItem, QStackedWidget, QTabWidget,
     QVBoxLayout, QWidget,
@@ -105,6 +105,7 @@ def _title(record: history.PackageRecord) -> str:
 
 
 class HistoryPage(QWidget):
+    deploy_requested = Signal()   # 빈 화면의 [배포 화면으로]
     remake_requested = Signal(object)  # PackageRecord: 같은 내용으로 다시 만들기
 
     def __init__(self, ctx: AppContext):
@@ -145,10 +146,20 @@ class HistoryPage(QWidget):
 
         self.body = QStackedWidget()
         self.body.addWidget(self._main())
+        self.empty_box = QWidget()
+        empty = QVBoxLayout(self.empty_box)
+        empty.setSpacing(12)
+        empty.addStretch(1)
         self.empty = label("", "emptyText")
         self.empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.body.addWidget(self.empty)
+        empty.addWidget(self.empty)
+        self.deploy_btn = button("배포 화면으로", "primary")
+        self.deploy_btn.clicked.connect(self.deploy_requested.emit)
+        empty.addWidget(self.deploy_btn, 0, Qt.AlignmentFlag.AlignHCenter)
+        empty.addStretch(1)
+        self.body.addWidget(self.empty_box)
         root.addWidget(self.body, 1)
+        QShortcut(QKeySequence("Ctrl+F"), self, activated=lambda: (self.search.setFocus(), self.search.selectAll()))
 
     def _main(self) -> QWidget:
         w = QWidget()
@@ -249,6 +260,7 @@ class HistoryPage(QWidget):
             self.current = None
             self.empty.setText("아직 만든 패키지가 없습니다.\n배포 화면에서 패키지를 만들면 여기에 쌓입니다." if p else
                                "왼쪽 위에서 프로젝트를 고르세요.")
+            self.deploy_btn.setVisible(p is not None)
             self.body.setCurrentIndex(1)
             return
         self.body.setCurrentIndex(0)

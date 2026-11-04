@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 from PySide6.QtCore import QCoreApplication, QSettings, QSize, Qt
-from PySide6.QtGui import QGuiApplication, QIcon
+from PySide6.QtGui import QGuiApplication, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMainWindow, QStackedWidget,
     QVBoxLayout, QWidget,
@@ -68,6 +68,10 @@ class MainWindow(QMainWindow):
         self.deploy_page.remote_panel.settings_requested.connect(self._open_server_settings)
         self.settings_page.setup_requested.connect(self.run_setup)
         self.settings_page.import_requested.connect(self._import_legacy)
+        self.deploy_page.add_project_requested.connect(self.add_project)
+        self.history_page.deploy_requested.connect(lambda: self.go(PAGE_DEPLOY))
+        for i in range(len(PAGES)):   # Ctrl+1 ~ Ctrl+5: 메뉴 이동
+            QShortcut(QKeySequence(f"Ctrl+{i + 1}"), self, activated=lambda page=i: self.go(page))
         for page in (self.deploy_page, self.history_page, self.projects_page, self.connections_page,
                      self.settings_page):
             self.stack.addWidget(page)
@@ -94,6 +98,18 @@ class MainWindow(QMainWindow):
         self.ctx.project_listeners.append(self._show_project)
         self.ctx.reload()
         self.nav.setCurrentRow(PAGE_DEPLOY if self.ctx.project else (PAGE_PROJECTS if self.ctx.cfg else PAGE_CONNECTIONS))
+        geometry = QSettings().value("ui/geometry")   # 지난번 창 크기·위치
+        if geometry is not None:
+            self.restoreGeometry(geometry)
+
+    def closeEvent(self, event) -> None:
+        QSettings().setValue("ui/geometry", self.saveGeometry())
+        super().closeEvent(event)
+
+    def add_project(self) -> None:
+        """프로젝트 화면으로 가서 새 프로젝트 추가 (전환기의 [+ 새 프로젝트 추가], 빈 배포 화면의 버튼)."""
+        self.go(PAGE_PROJECTS)
+        self.projects_page.add_project()
 
     # ------------------------------------------------------------------ 왼쪽
     def _sidebar(self) -> QWidget:
@@ -268,8 +284,7 @@ class MainWindow(QMainWindow):
         if data in (ADD_PROJECT, IMPORT_LEGACY):
             self._show_project()  # 동작 항목은 선택으로 남기지 않는다
             if data == ADD_PROJECT:
-                self.go(PAGE_PROJECTS)
-                self.projects_page.add_project()
+                self.add_project()
             else:
                 self._import_legacy()
             return

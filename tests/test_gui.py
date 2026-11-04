@@ -515,7 +515,9 @@ def test_history_lists_packages_and_remakes(qapp, tmp_path, maven_project):
     w = make_window(_config(tmp_path, maven_project))
     d, h = w.deploy_page, w.history_page
     w.go(PAGE_HISTORY)
-    assert h.body.currentWidget() is h.empty                  # 아직 패키지가 없음
+    assert h.body.currentWidget() is h.empty_box and h.deploy_btn.isVisibleTo(h)   # 아직 패키지가 없음
+    h.deploy_btn.click()                                     # 빈 화면의 [배포 화면으로]
+    assert w.nav.currentRow() == PAGE_DEPLOY
     w.go(PAGE_DEPLOY)
     d.files_edit.setPlainText("src/main/java/com/acme/User.java\nD\tsrc/main/webapp/old.jsp")
     d.preview()
@@ -596,6 +598,43 @@ def test_theme_switch(qapp, tmp_path, maven_project, monkeypatch):
         for key in ("ui/theme", "ui/theme_light", "ui/theme_dark"):
             QSettings().remove(key)
     assert not theme.is_dark() and theme.LIGHT["BG"] in qapp.styleSheet()
+
+
+def test_empty_deploy_page_shortcuts_and_geometry(qapp, tmp_path, maven_project):
+    """프로젝트가 없을 때의 [프로젝트 추가] 버튼, Ctrl+Enter/Esc 단계 이동, 실패 자동 필터, 창 크기 기억."""
+    path = tmp_path / "none" / "shipkit.yaml"
+    w = make_window(path)
+    d = w.deploy_page
+    assert d.empty_box.isVisibleTo(d) and d.add_project_btn.isVisibleTo(d) and "프로젝트가 없습니다" in d.empty_label.text()
+    w.projects_page.add_project = lambda: setattr(w, "_added", True)   # 프로젝트 화면의 추가 동작을 가짜로
+    d.add_project_btn.click()
+    assert w.nav.currentRow() == PAGE_PROJECTS and getattr(w, "_added", False)
+    w.go(PAGE_HISTORY)
+    assert w.history_page.body.currentWidget() is w.history_page.empty_box and not w.history_page.deploy_btn.isVisibleTo(w.history_page)
+
+    w = make_window(_config(tmp_path, maven_project))
+    d = w.deploy_page
+    d.files_edit.setPlainText("src/main/webapp/WEB-INF/views/user/list.jsp\nsrc/main/webapp/nope.jsp")
+    d.shortcut_next()                                        # Ctrl+Enter = 미리보기
+    assert d.step == STEP_REVIEW
+    assert d.filter_buttons["error"].isChecked() and d.filter_buttons["error"].text() == "실패  1"   # 실패가 있으면 실패부터
+    assert sum(1 for i in range(d.result_tree.topLevelItemCount()) if not d.result_tree.topLevelItem(i).isHidden()) == 1
+    d.shortcut_back()                                        # Esc = 이전 단계
+    assert d.step == STEP_PICK
+    d.files_edit.setPlainText("src/main/webapp/WEB-INF/views/user/list.jsp")
+    d.shortcut_next()
+    assert d.step == STEP_REVIEW and d.filter_buttons["all"].isChecked()
+    d.shortcut_next()                                        # Ctrl+Enter = 패키지 만들기
+    assert d.step == STEP_DONE and d.last_result is not None
+    d.shortcut_back()                                        # ③ 완료에서는 Esc 로 돌아가지 않는다
+    assert d.step == STEP_DONE
+
+    w.resize(1010, 700)                                      # 창을 닫으면 크기를 기억하고 다음 창이 그 크기로 뜬다 (화면 안 크기)
+    w.close()
+    assert QSettings().value("ui/geometry") is not None
+    again = make_window(_config(tmp_path, maven_project))
+    assert again.height() == 700 and again.width() >= 1000     # 너비는 offscreen 화면(800)보다 커서 최소 너비로 눌린다
+    QSettings().remove("ui/geometry")
 
 
 def test_toast_shows_and_hides(qapp, tmp_path, maven_project):
