@@ -6,11 +6,15 @@
 """
 from __future__ import annotations
 
+import re
 import shlex
 import threading
+import time
+from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QColor, QFont, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
     QComboBox, QHBoxLayout, QPlainTextEdit, QProgressBar, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
@@ -197,6 +201,9 @@ class RemoteClient:
         self.start(profile, make_step, lambda t: None, lambda a, b: None, finished, failed, cancelled)
 
 
+_STAGE_LINE = re.compile(r"^\$ (.+)$")   # remote.py 가 단계마다 찍는 "$ …" 줄
+
+
 class RemotePanel(Card):
     """배포 완료 화면의 '서버에 바로 반영' 카드."""
     settings_requested = Signal()  # 서버가 없을 때 [서버 등록하러 가기]
@@ -294,6 +301,7 @@ class RemotePanel(Card):
         self.log.setMinimumHeight(220)
         self.log.hide()
         col.addWidget(self.log)
+        self._reset_log()
         self.body.addWidget(self.main)
         self.server_combo.currentIndexChanged.connect(self._server_changed)
 
@@ -321,7 +329,7 @@ class RemotePanel(Card):
         self.empty_row.setVisible(not servers)
         self.main.setVisible(bool(servers))
         self.set_collapsed(not servers)  # 서버가 없으면 접어 두고, 펼치면 등록 안내가 보인다
-        self.log.clear()
+        self._reset_log()
         self.log.hide()
         self._server_changed()
 
@@ -386,10 +394,69 @@ class RemotePanel(Card):
             self.cancel_btn.setEnabled(True)
             self.cancel_btn.setText("취소")
 
-    def _append(self, text: str) -> None:
-        self.log.moveCursor(self.log.textCursor().MoveOperation.End)
-        self.log.insertPlainText(text.replace("\r\n", "\n"))
+    # ------------------------------------------------------------------ 로그: 단계 구분선·걸린 시간·실패 강조
+    # 서버 작업 출력에서 "$ 올리기: …", "$ check  (계정)" 줄이 단계의 시작이다 (remote.py). 그 줄을 시각이 붙은
+    # 구분선으로 바꾸고, 단계가 끝나면 걸린 시간을 한 줄 덧붙인다. ✓/✗/[오류]/[경고] 줄은 색으로 구분한다.
+    def _reset_log(self) -> None:
+        self.log.clear()
+        self._stage: Optional[Tuple[str, float]] = None   # (이름, 시작 시각 monotonic)
+        self._at_line_start = True
+        self._line_fmt: Optional[QTextCharFormat] = None
+
+    @staticmethod
+    def _fmt(color: str, bold: bool = False) -> QTextCharFormat:
+        fmt = QTextCharFormat()
+        fmt.setForeground(QColor(color))
+        if bold:
+            fmt.setFontWeight(QFont.Weight.Bold)
+        return fmt
+
+    @classmethod
+    def _line_format(cls, line: str) -> Optional[QTextCharFormat]:
+        s = line.lstrip()
+        if s.startswith("✓"):
+            return cls._fmt(theme.TONES["success"][0], True)
+        if s.startswith(("✗", "[오류]", "[취소]", "[실패]")):
+            return cls._fmt(theme.TONES["danger"][0], True)
+        if s.startswith(("[경고]", "[안내]")):
+            return cls._fmt(theme.TONES["warning"][0])
+        return None
+
+    def _insert(self, text: str, fmt: Optional[QTextCharFormat] = None) -> None:
+        cursor = self.log.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        cursor.insertText(text, fmt or QTextCharFormat())
+        self.log.setTextCursor(cursor)
         self.log.ensureCursorVisible()
+
+    def _append(self, text: str) -> None:
+        for piece in text.replace("\r\n", "\n").splitlines(keepends=True):
+            line = piece.rstrip("\n")
+            if self._at_line_start:
+                m = _STAGE_LINE.match(line)
+                if m:
+                    self._stage_header(m.group(1).strip())
+                    self._at_line_start = True
+                    continue
+                self._line_fmt = self._line_format(line)
+            self._insert(piece, self._line_fmt)
+            self._at_line_start = piece.endswith("\n")
+
+    def _stage_header(self, name: str) -> None:
+        self._close_stage()
+        self._stage = (name, time.monotonic())
+        self._insert(f"── {datetime.now():%H:%M:%S}  {name} ──────────\n", self._fmt(theme.PRIMARY, True))
+
+    def _close_stage(self) -> None:
+        """단계가 끝났을 때 걸린 시간을 덧붙인다 (다음 단계가 시작되거나 작업이 끝났을 때)."""
+        if self._stage is None:
+            return
+        _name, started = self._stage
+        self._stage = None
+        if not self._at_line_start:
+            self._insert("\n")
+            self._at_line_start = True
+        self._insert(f"   ⏱ {time.monotonic() - started:.1f}초\n", self._fmt(theme.MUTED))
 
     def show_check(self, result: Optional[remote.CheckResult]) -> None:
         """check 로그를 표로: 상태 배지 옆의 상태별 개수 배지와, 상태마다 접을 수 있는 파일 목록."""
@@ -450,16 +517,19 @@ class RemotePanel(Card):
 
         def failed(message: str) -> None:
             self.progress.hide()
+            self._close_stage()
             self._append(f"\n[오류] {message}\n")
             self._set_stage(prev)
             self.ctx.dialogs.error("서버 반영", message)
 
         def done(result) -> None:
             self.progress.hide()
+            self._close_stage()
             on_done(result)
 
         def cancelled() -> None:  # 비밀번호 입력을 취소했거나 [취소]로 끊었으면 이전 상태 그대로
             self.progress.hide()
+            self._close_stage()
             self._set_stage(prev)
 
         self.client.start(p, make_step, self._append, self._progress, done, failed, cancelled)

@@ -626,7 +626,7 @@ QLabel#code {{
 }}
 QFrame#cmdRow {{ background: {HEAD}; border: 1px solid {BORDER}; border-radius: 8px; }}
 QLabel#stepNum {{ background: {PRIMARY_SOFT}; color: {PRIMARY}; border-radius: 12px; font-size: 9pt; font-weight: 700; }}
-QLabel#doneTitle {{ font-size: 15pt; font-weight: 700; }}
+QLabel#doneTitle {{ font-size: 13pt; font-weight: 700; }}
 
 /* ---------- 기록 ---------- */
 QListWidget#records {{ background: transparent; border: none; outline: 0; }}

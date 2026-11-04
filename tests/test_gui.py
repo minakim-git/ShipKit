@@ -695,6 +695,9 @@ def test_remote_panel_upload_apply_rollback(qapp, tmp_path, maven_project, monke
 
     panel.upload_and_check()                                    # 처음: 지문 확인 + 비밀번호 입력(저장)
     assert panel.stage == "checked", panel.log.toPlainText()
+    text = panel.log.toPlainText()                              # 로그: "$ …" 줄이 시각 붙은 구분선으로, 단계마다 걸린 시간
+    assert "$ " not in text and "──" in text and "올리기:" in text and "check  (deployer 계정)" in text, text
+    assert text.count("⏱") == 2 and "초\n" in text, text         # 올리기·check 두 단계
     tree = panel.check_tree                                     # check 로그가 표로: 변경 1 (list.jsp 가 OLD -> 새 내용)
     assert panel.check_box.isVisibleTo(panel) and tree.topLevelItemCount() == 1
     assert tree.topLevelItem(0).text(0) == "변경 1" and tree.topLevelItem(0).child(0).text(1) == "WEB-INF/views/user/list.jsp"
@@ -712,6 +715,8 @@ def test_remote_panel_upload_apply_rollback(qapp, tmp_path, maven_project, monke
     panel.rollback()                                            # 저장한 비밀번호를 써서 다시 묻지 않음
     assert panel.stage == "rolled_back" and (server / "WEB-INF/views/user/list.jsp").read_text(encoding="utf-8") == "OLD"
     assert "반영한 기록이 이 PC 에는 없습니다" in panel.current_label.text()   # 되돌렸으니 지금 반영된 패키지가 아니다
+    text = panel.log.toPlainText()
+    assert text.count("──") >= 5 and "✓ 되돌렸습니다." in text and text.count("⏱") >= 5, text   # backup·apply·rollback 까지
     assert len([m for m in dialogs.messages if m[0] == "secret"]) == asked
 
     # 기록 화면: 서버 반영 이력이 기록 파일에 남고, 서버 상태 조회와 서버에서 되돌리기가 된다
