@@ -39,6 +39,14 @@ def _cfg(**over):
     return {"projects": {"erp": p}}
 
 
+def test_server_is_production_by_name():
+    from shipkit.config import ServerProfile
+    for name in ("운영", "운영 서버", "상용", "prod", "Production", "live-web", "REAL"):
+        assert ServerProfile(name, "h", "u").is_production, name
+    for name in ("개발", "dev", "staging", "테스트", "qa"):
+        assert not ServerProfile(name, "h", "u").is_production, name
+
+
 def test_update_location():
     assert parse_config(_cfg()).update_location == ""
     assert parse_config({"update_location": " \\\\fs\\tools\\ShipKit ", **_cfg()}).update_location == "\\\\fs\\tools\\ShipKit"

@@ -462,9 +462,16 @@ def test_deploy_github_pr_flow(qapp, tmp_path, maven_project, monkeypatch):
     d.req_table.item(0, 0).setCheckState(Qt.CheckState.Checked)
     d.preview()
     assert "GitHub PR #12" in d.summary_label.text()
+    assert d.req_table.item(0, 5).text() == ""                                  # 아직 배포 기록 없음
     d.make_package()
     report = (d.last_result.out_dir / "report.md").read_text(encoding="utf-8")
     assert "## Pull Request" in report
+    d.load_requests()                                                         # 패키지를 만든 뒤: '패키지 MM-DD'
+    assert d.req_table.item(0, 5).text().startswith("패키지 ") and "반영한 기록은 없음" in d.req_table.item(0, 5).toolTip()
+    from shipkit import history
+    history.append_deployment(d.last_result.out_dir, "운영", "a@h", "apply", 0, "/d/p", "/app/ROOT")
+    d.load_requests()                                                         # 서버에 반영한 뒤: '✓ 운영 MM-DD'
+    assert d.req_table.item(0, 5).text().startswith("✓ 운영 ")
 
 
 def test_deploy_sync_project_defaults_to_build_tab(qapp, tmp_path):
@@ -684,6 +691,7 @@ def test_remote_panel_upload_apply_rollback(qapp, tmp_path, maven_project, monke
     d.make_package()
     panel = d.remote_panel
     assert panel.main.isVisibleTo(panel) and panel.server_combo.currentText().startswith("개발")
+    assert not panel.prod_chip.isVisibleTo(panel) and "반영한 기록이 이 PC 에는 없습니다" in panel.current_label.text()
 
     panel.upload_and_check()                                    # 처음: 지문 확인 + 비밀번호 입력(저장)
     assert panel.stage == "checked", panel.log.toPlainText()
@@ -698,9 +706,12 @@ def test_remote_panel_upload_apply_rollback(qapp, tmp_path, maven_project, monke
     panel.apply()
     assert panel.stage == "applied", panel.log.toPlainText()
     assert (server / "WEB-INF/views/user/list.jsp").read_text(encoding="utf-8") == "<%-- jsp --%>"
+    assert dialogs.messages[-1][1] == "반영하기" or any(m[1] == "반영하기" for m in dialogs.messages)
+    assert f"지금 개발 서버에는 {d.last_result.out_dir.name} 패키지가 반영돼 있습니다" in panel.current_label.text()
     asked = len([m for m in dialogs.messages if m[0] == "secret"])
     panel.rollback()                                            # 저장한 비밀번호를 써서 다시 묻지 않음
     assert panel.stage == "rolled_back" and (server / "WEB-INF/views/user/list.jsp").read_text(encoding="utf-8") == "OLD"
+    assert "반영한 기록이 이 PC 에는 없습니다" in panel.current_label.text()   # 되돌렸으니 지금 반영된 패키지가 아니다
     assert len([m for m in dialogs.messages if m[0] == "secret"]) == asked
 
     # 기록 화면: 서버 반영 이력이 기록 파일에 남고, 서버 상태 조회와 서버에서 되돌리기가 된다

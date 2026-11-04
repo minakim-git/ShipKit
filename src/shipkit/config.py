@@ -204,6 +204,12 @@ class ServerProfile:
         return f"{self.user}@{self.host}" + ("" if self.port == 22 else f":{self.port}")
 
     @property
+    def is_production(self) -> bool:
+        """이름으로 보는 운영 서버 (운영·상용·prod·production·live·real). 화면에서 빨간 배지와 확인 창 경고에 쓴다."""
+        name = self.name.lower().replace(" ", "")
+        return any(word in name for word in ("운영", "상용", "prod", "live", "real"))
+
+    @property
     def runner(self) -> str:
         """서버 스크립트를 실행하는 계정."""
         return self.run_as or self.user

@@ -105,6 +105,21 @@ def test_record_written_and_listed(maven_project, tmp_path):
     again, _ = workflow.collect_lines(r.changes, "다시 만들기")
     assert {(c.path, c.change) for c in again} >= {("src/main/webapp/old.jsp", ChangeType.DELETED)}
 
+    # MR 별 배포 기록 (배포 화면의 '배포됨' 배지): 패키지만 만든 것과 서버에 반영한 것을 구분한다
+    hist = history.request_history(project, "gitlab")
+    assert hist[12]["package"] == second.out_dir.name and hist[12]["servers"] == [] and 15 in hist
+    assert history.request_history(project, "github") == {}
+    assert history.current_on_server(project, "운영") is None
+    history.append_deployment(second.out_dir, "운영", "a@h", "apply", 0, "/d/p", "/app/ROOT", when=datetime(2026, 10, 2, 10, 0))
+    assert history.request_history(project, "gitlab")[12]["servers"] == ["운영"]
+    rec, state = history.current_on_server(project, "운영")
+    assert rec.name == second.out_dir.name and state["at"].startswith("2026-10-02T10:00")
+    history.append_deployment(second.out_dir, "운영", "a@h", "rollback", 0, "/d/p", "/app/ROOT")   # 되돌리면 빠진다
+    assert history.current_on_server(project, "운영") is None
+    assert history.request_history(project, "gitlab")[12]["servers"] == []
+    history.append_deployment(first.out_dir, "운영", "a@h", "apply", 0, "/d/p", "/app/ROOT")
+    assert history.current_on_server(project, "운영")[0].name == first.out_dir.name
+
 
 def test_old_package_without_record(tmp_path):
     folder = tmp_path / "out" / "2026-09-30-1700"

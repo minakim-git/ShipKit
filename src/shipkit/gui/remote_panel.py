@@ -227,6 +227,19 @@ class RemotePanel(Card):
         col.setSpacing(8)
         self.target_label = label("", "muted")
         col.addWidget(self.target_label)
+        current_row = QHBoxLayout()
+        current_row.setSpacing(8)
+        self.prod_chip = Chip("운영 서버", "danger")
+        self.prod_chip.setToolTip("이름에 운영·상용·prod·live·real 이 들어간 서버는 운영 서버로 보고 반영 전에 한 번 더 확인합니다.")
+        self.prod_chip.hide()
+        self.current_label = label("", "muted")   # 이 PC 기록으로 보는, 지금 서버에 반영된 패키지
+        self.status_btn = button("서버 상태 보기", "ghost")
+        self.status_btn.setToolTip("서버의 반영 이력(history)을 읽어 지금 반영된 패키지를 확인합니다.")
+        self.status_btn.clicked.connect(self._show_server_status)
+        current_row.addWidget(self.prod_chip)
+        current_row.addWidget(self.current_label, 1)
+        current_row.addWidget(self.status_btn)
+        col.addLayout(current_row)
         buttons = QHBoxLayout()
         # 글자가 길면 세 버튼이 좁은 창(1000px)에 들어가지 않아서, 스크립트 명령 이름은 말풍선으로 뺐다
         self.check_btn = button("올리고 확인", "primary")
@@ -322,6 +335,31 @@ class RemotePanel(Card):
         target = p.server_path or self.project.server_path
         runner = f"{p.runner} 계정으로 실행 ({p.run_with})" if p.run_as else f"{p.user} 계정으로 실행"
         self.target_label.setText(f"올릴 위치 {p.upload_dir}/{self.result.out_dir.name}  ·  반영 경로 {target}  ·  {runner}")
+        self.prod_chip.setVisible(p.is_production)
+        self.refresh_current()
+
+    def refresh_current(self) -> None:
+        """'지금 이 서버에는 어떤 패키지가 반영돼 있나' 를 이 PC 의 패키지 기록으로 보여 준다 (서버 접속 없이)."""
+        p = self.profile
+        if p is None or self.project is None:
+            self.current_label.setText("")
+            return
+        try:
+            found = history.current_on_server(self.project, p.name)
+        except OSError:
+            found = None
+        if found is None:
+            self.current_label.setText(f"{p.name} 서버에 반영한 기록이 이 PC 에는 없습니다.")
+            return
+        record, state = found
+        when = str(state.get("at", ""))[:16].replace("T", " ")
+        self.current_label.setText(f"지금 {p.name} 서버에는 {record.name} 패키지가 반영돼 있습니다 ({when}, 이 PC 기록 기준)")
+
+    def _show_server_status(self) -> None:
+        from shipkit.gui.server_status import ServerStatusDialog
+        if self.project is None or not self.project.servers:
+            return
+        ServerStatusDialog(self.ctx, self.project, self, client=self.client).show()
 
     def _set_stage(self, stage: str, busy: bool = False) -> None:
         self.stage = stage
@@ -393,6 +431,7 @@ class RemotePanel(Card):
                                       p.server_path or self.project.server_path)
         except OSError as e:
             self._append(f"\n[경고] 반영 이력을 기록 파일에 남기지 못했습니다: {e}\n")
+        self.refresh_current()
 
     def _progress(self, sent: int, total: int) -> None:
         self.progress.show()
@@ -464,8 +503,10 @@ class RemotePanel(Card):
         if p is None or not self.remote_dir:
             return
         target = p.server_path or self.project.server_path
-        if not self.ctx.dialogs.ask("반영하기", f"{p.name} 서버({p.address})의 {target} 에 반영합니다.\n"
-                                              "먼저 바뀌거나 지워질 기존 파일을 백업한 뒤 반영합니다.\n\n계속할까요?"):
+        warn = "⚠ 운영 서버입니다. 사용자에게 바로 영향이 갑니다.\n\n" if p.is_production else ""
+        if not self.ctx.dialogs.ask("운영 서버에 반영하기" if p.is_production else "반영하기",
+                                    f"{warn}{p.name} 서버({p.address})의 {target} 에 반영합니다.\n"
+                                    "먼저 바뀌거나 지워질 기존 파일을 백업한 뒤 반영합니다.\n\n계속할까요?"):
             return
         run_hooks = self._hooks_answer(("pre_apply", "post_apply"))
         remote_dir = self.remote_dir
@@ -486,7 +527,9 @@ class RemotePanel(Card):
         p = self.profile
         if p is None or not self.remote_dir:
             return
-        if not self.ctx.dialogs.ask("되돌리기", f"{p.name} 서버({p.address})를 이번 반영 전으로 되돌릴까요?"):
+        warn = "⚠ 운영 서버입니다.\n\n" if p.is_production else ""
+        if not self.ctx.dialogs.ask("운영 서버 되돌리기" if p.is_production else "되돌리기",
+                                    f"{warn}{p.name} 서버({p.address})를 이번 반영 전으로 되돌릴까요?"):
             return
         run_hooks = self._hooks_answer(("post_rollback",))
         remote_dir = self.remote_dir

@@ -210,6 +210,35 @@ def _from_report(folder: Path, applied: List[str], deletes: List[str]) -> Packag
     )
 
 
+def request_history(project: ProjectConfig, kind: str) -> Dict[int, dict]:
+    """MR/PR 번호별로 이 PC 에서 만든 패키지·반영 기록: {iid: {"package", "when", "servers"}}.
+    서버에 반영한 기록이 있으면 그것을, 없으면 패키지만 만든 기록을 (가장 최근 것). 배포 화면의 '배포됨' 배지."""
+    seen: Dict[int, dict] = {}
+    for r in list_records(project):                      # 최근 것부터
+        if r.request_kind != kind:
+            continue
+        servers = [str(d.get("server", "")) for d in r.applied_servers()]
+        for req in r.requests:
+            try:
+                iid = int(req.get("iid"))
+            except (TypeError, ValueError):
+                continue
+            current = seen.get(iid)
+            if current is None or (servers and not current["servers"]):
+                seen[iid] = {"package": r.name, "when": r.created_at, "servers": servers}
+    return seen
+
+
+def current_on_server(project: ProjectConfig, server: str) -> Optional[Tuple[PackageRecord, dict]]:
+    """이 PC 기록으로 보는, 지금 그 서버에 반영돼 있는 패키지와 그 반영 이력 (없으면 None).
+    서버마다 마지막 이력이 성공한 apply 인 가장 최근 패키지. 되돌린 패키지는 건너뛴다."""
+    for r in list_records(project):
+        state = r.server_states().get(server)
+        if state and state.get("action") == "apply" and state.get("ok"):
+            return r, state
+    return None
+
+
 def previous_record(project: ProjectConfig, exclude: Optional[Path] = None) -> Optional[PackageRecord]:
     """가장 최근 패키지 기록 (exclude 는 지금 만든 패키지라 뺀다). 없으면 None."""
     for r in list_records(project, limit=2):

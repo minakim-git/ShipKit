@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QTableWidgetItem, QTabWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
-from shipkit import packager, preflight, report, workflow
+from shipkit import history, packager, preflight, report, workflow
 from shipkit.config import ProjectConfig
 from shipkit.gui import theme
 from shipkit.gui.context import AppContext
@@ -208,9 +208,9 @@ class DeployPage(QWidget):
         bar.addSpacing(8)
         bar.addWidget(self.extra_edit)
         layout.addLayout(bar)
-        self.req_table = _table(["", "번호", "제목", "작성자", "머지 / 수정 시각"])
+        self.req_table = _table(["", "번호", "제목", "작성자", "머지 / 수정 시각", "배포 기록"])
         self.req_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        for col, width in ((0, 44), (1, 76), (3, 96), (4, 150)):  # 목록을 불러오기 전에도 제목이 잘리지 않게
+        for col, width in ((0, 44), (1, 76), (3, 96), (4, 150), (5, 150)):  # 목록을 불러오기 전에도 제목이 잘리지 않게
             self.req_table.setColumnWidth(col, width)
         self.req_table.setTextElideMode(Qt.TextElideMode.ElideRight)
         self.req_table.cellClicked.connect(self._toggle_row)
@@ -742,12 +742,23 @@ class DeployPage(QWidget):
 
         def fetch():
             provider = providers.make_provider(cfg, project, kind)
-            return provider, provider.list(state=state, limit=50, search=search)
+            items = provider.list(state=state, limit=50, search=search)
+            return provider, items, history.request_history(project, kind)  # 이미 배포한 MR 표시용 (이 PC 기록)
 
         self.ctx.runner.run(fetch, self._show_requests, lambda msg: self.ctx.dialogs.error("목록 불러오기 실패", msg))
 
+    @staticmethod
+    def _deployed_text(entry: Optional[dict]) -> Tuple[str, str]:
+        """배포 기록 칸: (글, 말풍선). 서버에 반영했으면 '✓ 운영 11-02', 패키지만 만들었으면 '패키지 11-02'."""
+        if not entry:
+            return "", ""
+        when = entry["when"].strftime("%m-%d")
+        if entry["servers"]:
+            return f"✓ {', '.join(entry['servers'])} {when}", f"{entry['package']} 패키지로 {', '.join(entry['servers'])} 서버에 반영함"
+        return f"패키지 {when}", f"{entry['package']} 패키지에 담았지만 이 PC 에서 서버에 반영한 기록은 없음"
+
     def _show_requests(self, payload) -> None:
-        provider, items = payload
+        provider, items, deployed = payload
         self.req_table.blockSignals(True)
         self.req_table.setRowCount(0)
         for it in items:
@@ -758,17 +769,21 @@ class DeployPage(QWidget):
             check.setCheckState(Qt.CheckState.Unchecked)
             check.setData(Qt.ItemDataRole.UserRole, it["iid"])
             when = (it.get("merged_at") or it.get("updated_at") or "")[:16].replace("T", " ")
-            values = [f"{provider.prefix}{it['iid']}", it.get("title", ""), (it.get("author") or {}).get("name", ""), when]
+            done_text, done_tip = self._deployed_text(deployed.get(int(it["iid"])))
+            values = [f"{provider.prefix}{it['iid']}", it.get("title", ""), (it.get("author") or {}).get("name", ""), when,
+                      done_text]
             self.req_table.setItem(row, 0, check)
             for col, value in enumerate(values, 1):
                 item = QTableWidgetItem(value)
-                item.setToolTip(value)
+                item.setToolTip(done_tip if col == 5 else value)
                 if col == 1:
                     item.setForeground(QColor(theme.PRIMARY))
+                elif col == 5 and value:
+                    item.setForeground(theme.tone_color("success" if value.startswith("✓") else "warning"))
                 self.req_table.setItem(row, col, item)
         self.req_table.blockSignals(False)
         header = self.req_table.horizontalHeader()
-        for col in (1, 3, 4):
+        for col in (1, 3, 4, 5):
             self.req_table.resizeColumnToContents(col)
             self.req_table.setColumnWidth(col, max(self.req_table.columnWidth(col), header.sectionSizeHint(col)))
         self.req_table.setColumnWidth(0, 44)
