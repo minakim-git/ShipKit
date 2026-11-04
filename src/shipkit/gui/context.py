@@ -22,6 +22,7 @@ class AppContext:
     listeners: List[Callable[[], None]] = field(default_factory=list)          # 설정을 다시 읽었을 때
     project_listeners: List[Callable[[], None]] = field(default_factory=list)  # 작업 프로젝트가 바뀌었을 때
     connection_listeners: List[Callable[[], None]] = field(default_factory=list)  # 토큰을 저장·삭제했을 때
+    notify: Callable[[str, str], None] = lambda title, text: None   # Windows 알림 (창이 뒤에 있을 때 긴 작업이 끝나면)
 
     @property
     def project(self) -> Optional[ProjectConfig]:

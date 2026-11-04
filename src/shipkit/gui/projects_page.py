@@ -27,7 +27,7 @@ from shipkit.gui.context import AppContext
 from shipkit.gui.deploy_page import STATUS_TEXT, STATUS_TONE
 from shipkit.gui.project_widgets import INHERIT, LineList, OverrideBox, ProjectDialog, RowTable, form_layout
 from shipkit.gui.servers_tab import ServersTab
-from shipkit.gui.widgets import Card, Chip, PathField, StatusDelegate, button, label, page_header
+from shipkit.gui.widgets import Card, Chip, PathField, StatusDelegate, button, label, mark_invalid, page_header
 from shipkit.models import Status
 from shipkit.workflow import InputError
 
@@ -666,13 +666,23 @@ class ProjectsPage(QWidget):
             self.draft = None
             self.status_chip.set("설정 오류", "danger")
             self.status_text.setText(str(e))
+            self._mark_fields(str(e))
         else:
+            self._mark_fields("")
             p = self.draft
             server = f"{p.server_path}" + (" (Windows)" if p.server_os == "windows" else "")
             shared = f"  ·  {PROJECT_FILE} 사용" if p.project_file else ""
             self.status_chip.set("저장하지 않음" if self.dirty else "설정 정상", "warning" if self.dirty else "success")
             self.status_text.setText(f"{p.describe_mode}  ·  서버 {server}{shared}")
         self._update_buttons()
+
+    def _mark_fields(self, message: str) -> None:
+        """설정 오류 글에 든 키 이름으로 어느 칸이 잘못됐는지 표시한다 (칸 테두리 빨강 + 말풍선)."""
+        fields = (("server_path", self.server_edit), ("output_dir", self.output_field), ("root", self.root_field),
+                  ("gitlab_project", self.gitlab_edit), ("이름", self.name_edit))
+        hit = next((w for key, w in fields if message and key in message), None)
+        for _key, w in fields:
+            mark_invalid(w, message if w is hit else "")
 
     def _update_buttons(self) -> None:
         self.save_btn.setEnabled(self.dirty and self.draft is not None)

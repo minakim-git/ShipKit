@@ -363,6 +363,12 @@ class RemotePanel(Card):
         when = str(state.get("at", ""))[:16].replace("T", " ")
         self.current_label.setText(f"지금 {p.name} 서버에는 {record.name} 패키지가 반영돼 있습니다 ({when}, 이 PC 기록 기준)")
 
+    def _notify_background(self, title: str, text: str) -> None:
+        """창이 뒤에 있으면(다른 일을 하는 중) Windows 알림으로 끝났음을 알린다."""
+        window = self.window()
+        if window is not None and not window.isActiveWindow():
+            self.ctx.notify(title, text)
+
     def _show_server_status(self) -> None:
         from shipkit.gui.server_status import ServerStatusDialog
         if self.project is None or not self.project.servers:
@@ -589,6 +595,8 @@ class RemotePanel(Card):
             else:
                 self._append(f"\n✗ {res.action} 실패 (종료 코드 {res.code})\n")
                 self._set_stage("apply_failed" if res.action == "apply" else "checked")
+            self._notify_background(f"{self.project.name} → {p.name} 반영 " + ("완료" if res.ok else f"실패 ({res.action})"),
+                                    f"패키지 {self.result.out_dir.name}")
 
         self._run(lambda secrets: lambda conn, output, progress: remote.backup_and_apply(
             conn, p, secrets, remote_dir, output, run_hooks), done)
@@ -608,6 +616,8 @@ class RemotePanel(Card):
             self._record(p, res)
             self._append("\n✓ 되돌렸습니다.\n" if res.ok else f"\n✗ rollback 실패 (종료 코드 {res.code})\n")
             self._set_stage("rolled_back" if res.ok else "apply_failed")
+            self._notify_background(f"{self.project.name} → {p.name} 되돌리기 " + ("완료" if res.ok else "실패"),
+                                    f"패키지 {self.result.out_dir.name}")
 
         self._run(lambda secrets: lambda conn, output, progress: remote.run_action(
             conn, p, secrets, remote_dir, "rollback", output, yes=run_hooks, no_hooks=not run_hooks), done)

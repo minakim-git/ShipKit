@@ -225,7 +225,7 @@ def test_connections_and_app_settings_save_their_own_keys(qapp, tmp_path, maven_
     c.gitlab.url.setText("https://gitlab.acme.local/")
     c.save()
     s = w.settings_page
-    assert s.file_chip.text() == "있음" and str(path) == s.path_label.text()
+    assert s.file_chip.text() == "있음" and str(path) == s.path_label.full_text
     s.output_field.setText("D:/deploy/{project}")
     s.package_name.setText("%Y%m%d-%H%M")
     s.save()
@@ -637,6 +637,57 @@ def test_empty_deploy_page_shortcuts_and_geometry(qapp, tmp_path, maven_project)
     QSettings().remove("ui/geometry")
 
 
+def test_live_validation_sidebar_and_font_scale(qapp, tmp_path, maven_project):
+    """입력 중 검증(잘못된 칸 빨간 테두리), 사이드바 접기 기억, 글자 크기 배율."""
+    from shipkit.gui import theme
+    w = make_window(_config(tmp_path, maven_project, servers=[{"name": "개발", "host": "10.0.0.5", "user": "deployer"}]))
+    page = w.projects_page
+    page.server_edit.setText("relative/path")                # 서버 배포 경로가 잘못되면 그 칸만 빨갛게
+    assert page.server_edit.property("invalid") and "server_path" in page.server_edit.toolTip()
+    assert not page.root_field.edit.property("invalid")
+    page.server_edit.setText("/app/ROOT")
+    assert not page.server_edit.property("invalid") and page.server_edit.toolTip() == ""
+
+    tab = page.servers_tab
+    tab.server_list.setCurrentRow(0)
+    tab.srv_host.setText("")                                 # 서버 연결: 호스트를 비우면 바로 표시
+    assert tab.srv_host.property("invalid") and tab.srv_error.isVisibleTo(tab) and tab.srv_error.text()
+    tab.srv_host.setText("10.0.0.5")
+    assert not tab.srv_host.property("invalid") and not tab.srv_error.isVisibleTo(tab)
+
+    c = w.connections_page.gitlab
+    c.url.setText("gitlab.acme.local")                       # 주소는 http(s):// 로
+    assert c.url.property("invalid")
+    c.url.setText("https://gitlab.acme.local")
+    assert not c.url.property("invalid")
+
+    assert not w.sidebar_collapsed and w.nav.item(0).text().strip() == "배포"
+    w.set_sidebar_collapsed(True)                            # 접으면 아이콘만, 말풍선에 이름
+    assert w.sidebar.width() == 72 and w.nav.item(0).text() == "" and w.nav.item(0).toolTip() == "배포"
+    assert w.nav.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff   # 접어도 가로 스크롤 없음
+    assert not w.project_box.isVisibleTo(w) and QSettings().value("ui/sidebar_collapsed") == "true"
+    again = make_window(_config(tmp_path, maven_project))    # 다음 창도 접힌 채로
+    assert again.sidebar_collapsed and again.sidebar.width() == 72
+    again.set_sidebar_collapsed(False)
+    assert again.nav.item(0).text().strip() == "배포" and QSettings().value("ui/sidebar_collapsed") == "false"
+    w.set_sidebar_collapsed(False)
+
+    s = w.settings_page
+    s.set_font_scale("large")                                # 글자 크기: 스타일시트의 pt 값이 배율만큼 커진다
+    assert theme.FONT_SCALE == 1.15 and "11.50pt" in qapp.styleSheet() and QSettings().value("ui/font_scale") == "large"
+    assert s.font_buttons["large"].isChecked() and not s.font_buttons["normal"].isChecked()   # 고른 것만 눌림
+    s.font_buttons["large"].click()                          # 이미 고른 것을 다시 눌러도 풀리지 않는다
+    assert s.font_buttons["large"].isChecked() and theme.FONT_SCALE == 1.15
+    s.font_buttons["small"].click()
+    assert s.font_buttons["small"].isChecked() and not s.font_buttons["large"].isChecked() and theme.FONT_SCALE == 0.9
+    s.refresh()
+    assert s.font_buttons["small"].isChecked()
+    s.set_font_scale("normal")
+    assert theme.FONT_SCALE == 1.0 and "font-size: 10pt" in qapp.styleSheet()
+    QSettings().remove("ui/font_scale")
+    QSettings().remove("ui/sidebar_collapsed")
+
+
 def test_toast_shows_and_hides(qapp, tmp_path, maven_project):
     """확인이 필요 없는 소식은 창 대신 아래쪽 토스트로: 창마다 하나, 글이 바뀌며 다시 뜨고, 시간이 지나면 사라진다."""
     from shipkit.gui.widgets import Dialogs, Toast
@@ -766,9 +817,12 @@ def test_remote_panel_upload_apply_rollback(qapp, tmp_path, maven_project, monke
     assert chips == ["변경 1"] and panel.state_chip.text() == "확인 끝 · apply 때 바뀌는 파일 1개"  # 상태와 한 줄
     assert [m[1] for m in dialogs.messages if m[0] in ("ask", "secret")] == ["새 서버 확인", "비밀번호 입력"]
     assert keyring.store[("shipkit", f"ssh:login:deployer@127.0.0.1:{sshd.port}")] == LOGIN_PW
+    notes = []
+    w.ctx.notify = lambda title, text: notes.append((title, text))   # 창이 뒤에 있으면(offscreen 은 늘 비활성) Windows 알림
     panel.apply()
     assert panel.stage == "applied", panel.log.toPlainText()
     assert (server / "WEB-INF/views/user/list.jsp").read_text(encoding="utf-8") == "<%-- jsp --%>"
+    assert notes and notes[-1][0] == "erp → 개발 반영 완료" and notes[-1][1].startswith("패키지 ")
     assert dialogs.messages[-1][1] == "반영하기" or any(m[1] == "반영하기" for m in dialogs.messages)
     assert f"지금 개발 서버에는 {d.last_result.out_dir.name} 패키지가 반영돼 있습니다" in panel.current_label.text()
     asked = len([m for m in dialogs.messages if m[0] == "secret"])

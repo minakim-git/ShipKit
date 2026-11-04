@@ -14,6 +14,17 @@ from PySide6.QtWidgets import (
 from shipkit.gui import theme
 
 
+def mark_invalid(widget: QWidget, message: str = "") -> None:
+    """입력 칸을 잘못된 상태로(빨간 테두리 + 말풍선) 또는 정상으로 표시한다. message 가 비면 정상."""
+    if hasattr(widget, "edit"):   # PathField
+        widget = widget.edit
+    if bool(widget.property("invalid")) == bool(message) and widget.toolTip() == message:
+        return
+    widget.setProperty("invalid", bool(message))
+    widget.setToolTip(message)
+    repolish(widget)
+
+
 def label(text: str, name: str = "", wrap: bool = True) -> QLabel:
     w = QLabel(text)
     w.setWordWrap(wrap)

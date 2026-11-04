@@ -211,6 +211,28 @@ def themes(dark: bool) -> List[Theme]:
     return [t for t in THEMES.values() if t.dark == dark]
 
 FONT_FAMILY = '"Segoe UI Variable Text", "Segoe UI", "Malgun Gothic"'
+FONT_SCALES = (("small", "작게", 0.9), ("normal", "보통", 1.0), ("large", "크게", 1.15))   # 앱 설정의 글자 크기
+FONT_SCALE = 1.0
+_PT = re.compile(r"(\d+(?:\.\d+)?)pt\b")
+
+
+def set_font_scale(key_or_value) -> float:
+    """글자 크기 배율. 키(small/normal/large)나 숫자. 스타일시트의 모든 pt 값에 곱한다 (적용은 apply)."""
+    global FONT_SCALE
+    scale = dict((k, v) for k, _n, v in FONT_SCALES).get(key_or_value)
+    if scale is None:
+        try:
+            scale = float(key_or_value)
+        except (TypeError, ValueError):
+            scale = 1.0
+    FONT_SCALE = min(max(scale, 0.7), 1.6)
+    return FONT_SCALE
+
+
+def _scale_pts(css: str) -> str:
+    if FONT_SCALE == 1.0:
+        return css
+    return _PT.sub(lambda m: f"{float(m.group(1)) * FONT_SCALE:.2f}pt", css)
 
 # 지금 쓰는 색 (use() 가 바꾼다). 편집기가 이름을 알 수 있게 밝은 테마 값으로 먼저 둔다.
 MODE = "light"      # light / dark (지금 테마가 어두운지)
@@ -468,6 +490,10 @@ def report_colors() -> Dict[str, object]:
 
 
 def stylesheet() -> str:
+    return _scale_pts(_stylesheet())
+
+
+def _stylesheet() -> str:
     chips = "\n".join(
         f'QLabel#chip[tone="{name}"] {{ color: {fg}; background: {bg}; }}' for name, (fg, bg) in TONES.items())
     return f"""
@@ -521,6 +547,8 @@ QPlainTextEdit {{
     font-family: "Cascadia Mono", Consolas, "Malgun Gothic"; font-size: 9.5pt;
 }}
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QPlainTextEdit:focus {{ border: 1px solid {PRIMARY}; }}
+QLineEdit[invalid="true"], QSpinBox[invalid="true"] {{ border: 1px solid {TONES['danger'][0]}; }}
+QLabel#fieldError {{ color: {TONES['danger'][0]}; font-size: 9pt; }}
 QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled, QPlainTextEdit:disabled {{
     background: {HEAD}; color: {SUBTLE}; border-color: {BORDER};
 }}

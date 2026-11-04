@@ -10,7 +10,7 @@ from PySide6.QtWidgets import QCheckBox, QFormLayout, QHBoxLayout, QLineEdit, QS
 from shipkit import config_store
 from shipkit.config import GITHUB_API_URL, ConfigError, GitHubConfig, GitLabConfig
 from shipkit.gui.context import AppContext
-from shipkit.gui.widgets import Card, Chip, PathField, button, label, page_header
+from shipkit.gui.widgets import Card, Chip, PathField, button, label, mark_invalid, page_header
 from shipkit.secrets import SecretError, delete_token, get_token, set_token, token_source
 from shipkit.sources.github import GitHubClient
 from shipkit.sources.gitlab import GitLabClient
@@ -34,6 +34,7 @@ class ServiceBox(Card):
         super().__init__(title, right=self.enabled)
         self.page, self.key, self.default_url = page, key, default_url
         self.url = QLineEdit()
+        self.url.textChanged.connect(self._check_url)
         self.url.setPlaceholderText(url_hint)
         self.verify = QCheckBox("SSL 인증서 검증 (권장)")
         self.verify.setChecked(True)
@@ -93,6 +94,11 @@ class ServiceBox(Card):
         out["ca_bundle"] = self.ca.text() or None
         out["timeout"] = self.timeout.value()
         return out
+
+    def _check_url(self, text: str) -> None:
+        text = text.strip()
+        bad = bool(text) and not text.lower().startswith(("http://", "https://"))
+        mark_invalid(self.url, "주소는 http:// 또는 https:// 로 시작해야 합니다." if bad else "")
 
     def service_config(self):
         url = (self.url.text().strip() or self.default_url).rstrip("/")

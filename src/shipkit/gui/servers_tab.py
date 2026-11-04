@@ -16,7 +16,7 @@ from shipkit.config import ConfigError, ServerProfile, parse_servers
 from shipkit.gui.context import AppContext
 from shipkit.gui.project_widgets import form_layout as _form
 from shipkit.gui.remote_panel import RemoteClient
-from shipkit.gui.widgets import Card, PathField, button, label
+from shipkit.gui.widgets import Card, PathField, button, label, mark_invalid
 
 
 class ServersTab(QWidget):
@@ -120,6 +120,9 @@ class ServersTab(QWidget):
         buttons.addWidget(forget_key)
         buttons.addStretch(1)
         right.addLayout(buttons)
+        self.srv_error = label("", "fieldError")   # 입력 중 검증: 잘못된 칸과 이유
+        self.srv_error.hide()
+        right.addWidget(self.srv_error)
         split.addWidget(self.server_form_box, 1)
         card.body.addLayout(split)
         col.addWidget(card)
@@ -217,7 +220,24 @@ class ServersTab(QWidget):
         item = self.server_list.item(self._server_row)
         if item is not None:
             item.setText(self.servers[self._server_row]["name"] or "(이름 없음)")
+        self._validate_form()
         self.changed.emit()
+
+    def _validate_form(self) -> None:
+        """폼 값을 바로 검사해 잘못된 칸을 빨갛게, 이유를 아래에 보여 준다 (저장 때까지 기다리지 않게)."""
+        fields = (("host", self.srv_host), ("user", self.srv_user), ("name", self.srv_name), ("port", self.srv_port),
+                  ("upload_dir", self.srv_upload), ("key_file", self.srv_key), ("server_path", self.srv_path),
+                  ("run_as", self.srv_run_as), ("이름", self.srv_name), ("호스트", self.srv_host), ("계정", self.srv_user))
+        message = ""
+        try:
+            parse_servers([self.servers[self._server_row]], "서버", self.server_os())
+        except ConfigError as e:
+            message = str(e)
+        hit = next((w for key, w in fields if message and key in message), None)
+        for _key, w in fields:
+            mark_invalid(w, message if w is hit else "")
+        self.srv_error.setText(message)
+        self.srv_error.setVisible(bool(message))
 
     def add_server(self) -> None:
         self.servers.append({"name": f"서버 {len(self.servers) + 1}", "host": "", "user": ""})

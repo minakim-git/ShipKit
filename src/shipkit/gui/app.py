@@ -7,8 +7,9 @@ from typing import Optional, Sequence
 
 from PySide6.QtCore import QCoreApplication, QSettings, QSize, Qt
 from PySide6.QtGui import QGuiApplication, QIcon, QKeySequence, QShortcut
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
-    QApplication, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMainWindow, QStackedWidget,
+    QApplication, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMainWindow, QStackedWidget, QSystemTrayIcon,
     QVBoxLayout, QWidget,
 )
 
@@ -90,6 +91,8 @@ class MainWindow(QMainWindow):
         layout.addWidget(page_area, 1)
         self.setCentralWidget(central)
 
+        self.ctx.notify = self.notify
+        self.tray: Optional[QSystemTrayIcon] = None
         self.ctx.listeners.append(self._refresh_projects)
         self.ctx.listeners.append(self._refresh_status)
         self.ctx.listeners.append(self._check_update)
@@ -126,17 +129,20 @@ class MainWindow(QMainWindow):
         brand_row.setSpacing(10)
         logo = QLabel()
         theme.bind_logo(logo, 30, frame=False)  # 사이드바에서는 네모 없이 공구 선만, 테마 색으로
-        texts = QVBoxLayout()
+        self.brand_texts = QWidget()
+        texts = QVBoxLayout(self.brand_texts)
+        texts.setContentsMargins(0, 0, 0, 0)
         texts.setSpacing(0)
         texts.addWidget(label(__app_name__, "brand", wrap=False))
         texts.addWidget(label(f"v{__version__}", "brandSub", wrap=False))
         brand_row.addWidget(logo)
-        brand_row.addLayout(texts, 1)
+        brand_row.addWidget(self.brand_texts, 1)
         side.addLayout(brand_row)
         side.addSpacing(24)
 
         # 작업할 프로젝트: 고르면 모든 화면이 이 프로젝트 기준으로 바뀐다
-        box = QVBoxLayout()
+        self.project_box = QWidget()
+        box = QVBoxLayout(self.project_box)
         box.setContentsMargins(16, 0, 16, 0)
         box.setSpacing(5)
         box.addWidget(label("작업할 프로젝트", "sideCaption", wrap=False))
@@ -145,13 +151,14 @@ class MainWindow(QMainWindow):
         self.project_switcher.setCursor(Qt.CursorShape.PointingHandCursor)
         self.project_switcher.activated.connect(self._on_switch)
         box.addWidget(self.project_switcher)
-        side.addLayout(box)
+        side.addWidget(self.project_box)
         side.addSpacing(18)
 
         self.nav = QListWidget()
         self.nav.setObjectName("nav")
         self.nav.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.nav.setIconSize(QSize(18, 18))
+        self.nav.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)  # 접었을 때 가로 스크롤이 생기지 않게
         for text, _icon in PAGES:
             self.nav.addItem(QListWidgetItem(f"  {text}"))
         self._nav_icons()
@@ -185,11 +192,59 @@ class MainWindow(QMainWindow):
         side.addLayout(update_row)
 
         # 연결 상태 (연결 화면에서 바꾼 내용이 바로 반영된다)
-        self.status_box = QVBoxLayout()
+        self.status_widget = QWidget()
+        self.status_box = QVBoxLayout(self.status_widget)
         self.status_box.setContentsMargins(22, 0, 16, 0)
         self.status_box.setSpacing(4)
-        side.addLayout(self.status_box)
+        side.addWidget(self.status_widget)
+
+        # 사이드바 접기 (아이콘만 남긴다). 이 PC 에 기억
+        self.collapse_btn = button("접기", "sideLink")
+        theme.bind_icon(self.collapse_btn, "chevron-left.svg", "MUTED", 16)
+        self.collapse_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.collapse_btn.clicked.connect(lambda: self.set_sidebar_collapsed(not self.sidebar_collapsed))
+        collapse_row = QHBoxLayout()
+        collapse_row.setContentsMargins(16, 10, 16, 0)
+        collapse_row.addWidget(self.collapse_btn)
+        collapse_row.addStretch(1)
+        side.addLayout(collapse_row)
+        self.sidebar = sidebar
+        self.sidebar_collapsed = False
+        if str(QSettings().value("ui/sidebar_collapsed", "false")).lower() == "true":
+            self.set_sidebar_collapsed(True, remember=False)
         return sidebar
+
+    def set_sidebar_collapsed(self, collapsed: bool, remember: bool = True) -> None:
+        """사이드바를 아이콘만 남기고 접거나 다시 편다."""
+        self.sidebar_collapsed = collapsed
+        self.sidebar.setFixedWidth(72 if collapsed else 236)
+        for w in (self.brand_texts, self.project_box, self.status_widget):
+            w.setVisible(not collapsed)
+        for i, (text, _icon) in enumerate(PAGES):
+            item = self.nav.item(i)
+            item.setText("" if collapsed else f"  {text}")
+            item.setToolTip(text if collapsed else "")
+        self.guide_btn.setText("" if collapsed else "사용자 가이드")
+        self.guide_btn.setToolTip("사용자 가이드" if collapsed else "")
+        if self.update_info is not None:
+            self.update_btn.setText("" if collapsed else f"새 버전 v{self.update_info.version}")
+        self.collapse_btn.setText("" if collapsed else "접기")
+        self.collapse_btn.setToolTip("사이드바 펴기" if collapsed else "사이드바 접기")
+        theme.bind_icon(self.collapse_btn, "chevron-right.svg" if collapsed else "chevron-left.svg", "MUTED", 16)
+        if remember:
+            QSettings().setValue("ui/sidebar_collapsed", "true" if collapsed else "false")
+
+    def notify(self, title: str, text: str) -> None:
+        """Windows 알림 (트레이 풍선). 트레이를 쓸 수 없는 환경이면 조용히 넘어간다."""
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return
+        if self.tray is None:
+            self.tray = QSystemTrayIcon(QIcon(theme.logo_pixmap(32, mode="light")), self)
+            self.tray.setToolTip(__app_name__)
+            self.tray.activated.connect(lambda *_: (self.showNormal(), self.raise_(), self.activateWindow()))
+        self.tray.show()
+        self.tray.showMessage(title, text, QSystemTrayIcon.MessageIcon.Information, 6000)
+        QTimer.singleShot(15000, lambda: self.tray is not None and self.tray.hide())
 
     # ------------------------------------------------------------------ 새 버전
     def _check_update(self) -> None:
@@ -211,7 +266,7 @@ class MainWindow(QMainWindow):
         if info is None:
             self.update_btn.hide()
             return
-        self.update_btn.setText(f"새 버전 v{info.version}")
+        self.update_btn.setText("" if self.sidebar_collapsed else f"새 버전 v{info.version}")
         self.update_btn.setToolTip((info.notes + "\n\n" if info.notes else "") + f"지금 v{__version__}. 눌러서 받는 곳을 엽니다.")
         self.update_btn.show()
 
@@ -340,6 +395,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     diagnostics.install_excepthook(lambda: holder["window"].ctx.dialogs if "window" in holder else None)
     app = QApplication.instance() or QApplication(list(argv) if argv is not None else sys.argv)
     app.setStyle("Fusion")
+    theme.set_font_scale(str(QSettings().value("ui/font_scale", "normal")))
     theme.apply(app, current_theme_setting())
     # '시스템 설정 따르기'일 때는 Windows 에서 밝게/어둡게를 바꾸면 바로 따라간다
     QGuiApplication.styleHints().colorSchemeChanged.connect(

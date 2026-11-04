@@ -13,7 +13,7 @@ from shipkit.config import ConfigError
 from shipkit.gui import diagnostics, theme
 from shipkit.gui.context import AppContext
 from shipkit.gui.guide_view import show_guide
-from shipkit.gui.widgets import Card, Chip, PathField, button, label, open_location, open_path, page_header
+from shipkit.gui.widgets import Card, Chip, ElidedLabel, PathField, button, label, open_location, open_path, page_header
 
 
 def _form() -> QFormLayout:
@@ -48,6 +48,20 @@ class SettingsPage(QWidget):
         self.follow_system = QCheckBox("Windows 의 밝게/어둡게 설정 따르기 (밝을 때와 어두울 때 쓸 테마를 하나씩 고릅니다)")
         self.follow_system.toggled.connect(self._toggle_follow)
         look.body.addWidget(self.follow_system)
+        size_row = QHBoxLayout()
+        size_row.setSpacing(6)
+        size_row.addWidget(label("글자 크기", "fieldLabel", wrap=False))
+        self.font_buttons = {}
+        for key, text, _scale in theme.FONT_SCALES:
+            b = QPushButton(text)
+            b.setObjectName("seg")
+            b.setCheckable(True)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.clicked.connect(lambda _=False, key=key: self.set_font_scale(key))
+            self.font_buttons[key] = b
+            size_row.addWidget(b)
+        size_row.addStretch(1)
+        look.body.addLayout(size_row)
         self.theme_buttons = {}
         for caption, dark in (("밝은 테마", False), ("어두운 테마", True)):
             look.body.addWidget(label(caption, "fieldLabel", wrap=False))
@@ -78,8 +92,7 @@ class SettingsPage(QWidget):
 
         self.file_chip = Chip("", "neutral")
         files = Card("설정 파일", right=self.file_chip)
-        self.path_label = label("", "code")
-        self.path_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.path_label = ElidedLabel("code")   # 경로가 길어도(글자를 키워도) 카드 폭을 밀어내지 않게 가운데를 줄인다
         files.body.addWidget(self.path_label)
         row = QHBoxLayout()
         self.open_file_btn = button("파일 열기", "ghost")
@@ -178,6 +191,20 @@ class SettingsPage(QWidget):
             setting = key
         self._apply(setting)
 
+    def set_font_scale(self, key: str) -> None:
+        """글자 크기(작게/보통/크게)를 바로 바꾸고 이 PC 에 기억한다. 고른 단추 하나만 눌린 상태로 둔다."""
+        QSettings().setValue("ui/font_scale", key)
+        theme.set_font_scale(key)
+        self._sync_font_buttons()
+        self._apply(str(QSettings().value("ui/theme", "system")))
+
+    def _sync_font_buttons(self) -> None:
+        size = str(QSettings().value("ui/font_scale", "normal"))
+        if size not in self.font_buttons:
+            size = "normal"
+        for key, b in self.font_buttons.items():
+            b.setChecked(key == size)
+
     def _toggle_follow(self, on: bool) -> None:
         settings = QSettings()
         if on:
@@ -204,6 +231,7 @@ class SettingsPage(QWidget):
             b.setChecked(key in checked)
 
     def refresh(self) -> None:
+        self._sync_font_buttons()
         current = str(QSettings().value("ui/theme", "system"))
         self.follow_system.blockSignals(True)
         self.follow_system.setChecked(current not in theme.THEMES and current not in theme.ALIASES)
