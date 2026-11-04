@@ -521,12 +521,33 @@ def test_history_lists_packages_and_remakes(qapp, tmp_path, maven_project):
     d.preview()
     d.make_package()
     w.go(PAGE_HISTORY)                                       # 화면을 열면 새로 만든 패키지가 보인다
-    assert h.list.count() == 1 and h.current.path == d.last_result.out_dir
+    assert h.list.count() == 2 and h.current.path == d.last_result.out_dir   # 날짜 머리글('오늘') + 패키지 한 줄
+    assert h.list.itemWidget(h.list.item(0)).text() == "오늘" and not (h.list.item(0).flags() & Qt.ItemFlag.ItemIsSelectable)
+    assert h.list.itemWidget(h.list.item(1)).badges == []     # 서버 연결이 없는 프로젝트는 배지 없음
     assert h.tabs.tabText(0) == "파일 4" and h.files.item(3).text() == "(삭제) old.jsp"
     h.search.setText("user$inner")                           # 파일 경로로 찾기
-    assert not h.list.item(0).isHidden()
+    assert not h.list.item(0).isHidden() and not h.list.item(1).isHidden()
     h.search.setText("nothing-like-this")
-    assert h.list.item(0).isHidden() and h.count_label.text() == "0개 찾음 / 전체 1개"
+    assert h.list.item(0).isHidden() and h.list.item(1).isHidden() and h.count_label.text() == "0개 찾음 / 전체 1개"
+    h.search.setText("")
+    assert h.compare_with() is None and w.ctx.dialogs.messages[-1][2] == "비교할 다른 패키지가 없습니다."
+
+    w.go(PAGE_DEPLOY)                                        # 패키지를 하나 더 만들어 비교한다
+    d.start_over()
+    d.files_edit.setPlainText("src/main/webapp/WEB-INF/views/user/list.jsp")
+    d.preview()
+    d.make_package()
+    w.go(PAGE_HISTORY)
+    assert h.list.count() == 3 and h.records[0].path == d.last_result.out_dir   # 고른 줄은 그대로(이전 패키지)
+    h.list.setCurrentRow(h._row_of[0])
+    assert h.current.path == d.last_result.out_dir
+    dialog = h.compare_with(h.records[1])
+    assert dialog.windowTitle() == "패키지 비교" and dialog.result.only_a == ["WEB-INF/views/user/list.jsp"]
+    assert dialog.lists["only_b"].count() == 3 and dialog.lists["changed"].item(0).text() == "(없음)"
+    assert "B 에서만 지움: old.jsp" in dialog.deletes_label.text()
+    dialog.close()
+    h.list.setCurrentRow(2)                                  # 목록 줄 -> 기록 번호 (머리글을 건너뛴다)
+    assert h.current.path == h.records[1].path
 
     h.remake_btn.click()                                     # 같은 내용으로 다시 만들기 -> 배포 ① 에 채움
     assert w.nav.currentRow() == PAGE_DEPLOY and d.step == STEP_PICK and d.tabs.currentIndex() == TAB_FILES
@@ -727,6 +748,7 @@ def test_remote_panel_upload_apply_rollback(qapp, tmp_path, maven_project, monke
     assert h.deploy_list.count() == 3 and "되돌림" in h.tabs.tabText(2) or h.tabs.tabText(2) == "서버 반영 3"
     chips = [h.chips.itemAt(i).widget().text() for i in range(h.chips.count()) if h.chips.itemAt(i).widget()]
     assert any(c.startswith("개발  되돌림") for c in chips)
+    assert h.list.itemWidget(h.list.item(1)).badges == [("개발 되돌림", "warning")]   # 목록 줄의 상태 배지
     assert h.rollback_btn.isVisibleTo(h) and not h.rollback_btn.isEnabled()   # 되돌린 뒤라 반영된 서버가 없음
 
     w.go(PAGE_DEPLOY)                                           # 새 패키지를 만들어 반영하면 기록 화면에서 되돌릴 수 있다
@@ -748,7 +770,7 @@ def test_remote_panel_upload_apply_rollback(qapp, tmp_path, maven_project, monke
     assert "지난 패키지" in ask[2] and "post_apply 추가: echo restarted" in ask[2]
     assert panel.stage == "applied", panel.log.toPlainText()
     w.go(PAGE_HISTORY)
-    h.list.setCurrentRow(0)                                     # 가장 최근 패키지 (이전 선택은 유지되므로 직접 고름)
+    h.list.setCurrentRow(h._row_of[0])                                     # 가장 최근 패키지 (이전 선택은 유지되므로 직접 고름)
     assert h.current.path == d.last_result.out_dir
     assert h.rollback_btn.isEnabled() and (server / "WEB-INF/views/user/list.jsp").read_text(encoding="utf-8") == "<%-- jsp --%>"
     h.rollback_on_server()

@@ -630,6 +630,7 @@ QLabel#doneTitle {{ font-size: 13pt; font-weight: 700; }}
 
 /* ---------- 기록 ---------- */
 QListWidget#records {{ background: transparent; border: none; outline: 0; }}
+QLabel#groupHeader {{ color: {SUBTLE}; font-size: 8.5pt; font-weight: 600; padding: 8px 10px 0; background: transparent; }}
 QListWidget#records::item {{ border-radius: 8px; margin: 1px 0; }}
 QListWidget#records::item:hover {{ background: {HOVER}; }}
 QListWidget#records::item:selected {{ background: {PRIMARY_SOFT}; }}

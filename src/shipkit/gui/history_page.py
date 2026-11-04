@@ -4,12 +4,13 @@
 """
 from __future__ import annotations
 
-from typing import List, Optional
+from datetime import date, datetime, timedelta
+from typing import Dict, List, Optional
 
 from PySide6.QtCore import QSize, Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QIcon
 from PySide6.QtWidgets import (
-    QAbstractItemView, QHBoxLayout, QLineEdit, QListWidget, QListWidgetItem, QStackedWidget, QTabWidget,
+    QAbstractItemView, QDialog, QHBoxLayout, QLineEdit, QListWidget, QListWidgetItem, QStackedWidget, QTabWidget,
     QVBoxLayout, QWidget,
 )
 
@@ -27,6 +28,9 @@ SOURCE_LABEL = {"gitlab-mr": "GitLab MR", "github-pr": "GitHub PR", "git-diff": 
                 "build": "빌드 결과", "unknown": "예전 패키지"}
 
 
+INDEX_ROLE = Qt.ItemDataRole.UserRole + 1   # 목록 항목 -> records 의 번호 (날짜 머리글 항목에는 없다)
+
+
 def _clear(layout) -> None:
     while layout.count():
         item = layout.takeAt(0)
@@ -35,10 +39,25 @@ def _clear(layout) -> None:
             item.widget().deleteLater()
 
 
-class RecordRow(QWidget):
-    """목록 한 줄: 시각 · 출처 배지 · 파일 수 / 아래에 설명."""
+def group_name(when: datetime, today: Optional[date] = None) -> str:
+    """목록의 날짜 묶음 이름: 오늘 / 어제 / 이번 주(최근 7일) / 이번 달 / YYYY년 M월."""
+    today = today or date.today()
+    day = when.date()
+    if day == today:
+        return "오늘"
+    if day == today - timedelta(days=1):
+        return "어제"
+    if day > today - timedelta(days=7):
+        return "이번 주"
+    if (day.year, day.month) == (today.year, today.month):
+        return "이번 달"
+    return f"{day.year}년 {day.month}월"
 
-    def __init__(self, record: history.PackageRecord):
+
+class RecordRow(QWidget):
+    """목록 한 줄: 시각 · 파일 수 / 아래에 설명과 서버 반영 상태 배지(현재 · 반영됨 · 되돌림 · 실패 · 안 올림)."""
+
+    def __init__(self, record: history.PackageRecord, current_servers: List[str] = (), has_servers: bool = False):
         super().__init__()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 9, 12, 9)
@@ -55,6 +74,25 @@ class RecordRow(QWidget):
         desc = label(_title(record), "muted", wrap=False)
         desc.setToolTip(record.description)
         layout.addWidget(desc)
+        self.badges = []   # (글, 색) — 테스트·검색용
+        for server, d in record.server_states().items():
+            if server in current_servers:
+                self.badges.append((f"현재 · {server}", "primary"))
+            elif not d.get("ok"):
+                self.badges.append((f"{server} 실패", "danger"))
+            elif d.get("action") == "apply":
+                self.badges.append((f"{server} 반영됨", "success"))
+            else:
+                self.badges.append((f"{server} 되돌림", "warning"))
+        if not self.badges and has_servers:
+            self.badges.append(("안 올림", "neutral"))
+        if self.badges:
+            row = QHBoxLayout()
+            row.setSpacing(6)
+            for text, tone in self.badges:
+                row.addWidget(Chip(text, tone))
+            row.addStretch(1)
+            layout.addLayout(row)
 
 
 def _title(record: history.PackageRecord) -> str:
@@ -182,12 +220,16 @@ class HistoryPage(QWidget):
         self.report_btn.clicked.connect(lambda: self.current and show_report(self, self.current.report))
         self.rollback_btn = button("서버에서 되돌리기", "danger")
         self.rollback_btn.clicked.connect(self.rollback_on_server)
+        self.compare_btn = button("다른 패키지와 비교", "ghost")
+        self.compare_btn.setToolTip("다른 패키지를 골라 파일 목록과 내용(체크섬)을 비교합니다.")
+        self.compare_btn.clicked.connect(lambda: self.compare_with())
         self.remake_btn = button("같은 내용으로 다시 만들기", "primary")
         self.remake_btn.setToolTip("배포 화면에 같은 MR·파일을 채워 넣습니다. 지금 로컬 파일로 새 패키지를 만듭니다.")
         self.remake_btn.clicked.connect(lambda: self.current and self.remake_requested.emit(self.current))
         bar.addWidget(self.open_btn)
         bar.addWidget(self.report_btn)
         bar.addWidget(self.rollback_btn)
+        bar.addWidget(self.compare_btn)
         bar.addStretch(1)
         bar.addWidget(self.remake_btn)
         right.body.addLayout(bar)
@@ -210,34 +252,65 @@ class HistoryPage(QWidget):
             self.body.setCurrentIndex(1)
             return
         self.body.setCurrentIndex(0)
+        current = history.current_by_server(self.records)           # 서버마다 지금 반영된 패키지 -> '현재' 배지
+        has_servers = bool(p.servers)
         self.list.blockSignals(True)
         self.list.clear()
-        for record in self.records:
+        self._row_of: Dict[int, int] = {}                           # records 번호 -> 목록 줄
+        group = None
+        for index, record in enumerate(self.records):
+            name = group_name(record.created_at)
+            if name != group:                                       # 날짜 묶음 머리글 (고를 수 없는 줄)
+                group = name
+                header = QListWidgetItem()
+                header.setFlags(Qt.ItemFlag.NoItemFlags)
+                caption = label(name, "groupHeader", wrap=False)
+                header.setSizeHint(QSize(0, caption.sizeHint().height() + 12))
+                self.list.addItem(header)
+                self.list.setItemWidget(header, caption)
             item = QListWidgetItem()
-            item.setData(Qt.ItemDataRole.UserRole, record.search_text())
-            row = RecordRow(record)
+            servers_here = [s for s, n in current.items() if n == record.name]
+            row = RecordRow(record, servers_here, has_servers)
+            item.setData(Qt.ItemDataRole.UserRole, record.search_text() + " " + " ".join(t for t, _ in row.badges).lower())
+            item.setData(INDEX_ROLE, index)
             item.setSizeHint(QSize(0, row.sizeHint().height()))
+            self._row_of[index] = self.list.count()
             self.list.addItem(item)
             self.list.setItemWidget(item, row)
         self.list.blockSignals(False)
         index = next((i for i, r in enumerate(self.records) if r.path == selected), 0)
         self._apply_search()
-        self.list.setCurrentRow(index)
-        self._on_select(index)
+        self.list.setCurrentRow(self._row_of[index])
+        self._select_record(index)
 
     def _apply_search(self) -> None:
         words = self.search.text().lower().split()
         shown = 0
+        header, visible_in_group = None, 0
         for i in range(self.list.count()):
             item = self.list.item(i)
+            if item.data(INDEX_ROLE) is None:                       # 머리글: 묶음에 보이는 항목이 없으면 같이 숨긴다
+                if header is not None:
+                    header.setHidden(visible_in_group == 0)
+                header, visible_in_group = item, 0
+                continue
             hit = all(w in item.data(Qt.ItemDataRole.UserRole) for w in words)
             item.setHidden(not hit)
             shown += hit
+            visible_in_group += hit
+        if header is not None:
+            header.setHidden(visible_in_group == 0)
         total = len(self.records)
         self.count_label.setText(f"{shown}개 찾음 / 전체 {total}개" if words else
                                  f"전체 {total}개" + ("  (최근 것만 표시)" if total >= history.LIST_LIMIT else ""))
 
     def _on_select(self, row: int) -> None:
+        item = self.list.item(row)
+        index = item.data(INDEX_ROLE) if item is not None else None
+        if index is not None:
+            self._select_record(int(index))
+
+    def _select_record(self, row: int) -> None:
         if not 0 <= row < len(self.records):
             return
         r = self.current = self.records[row]
@@ -258,12 +331,14 @@ class HistoryPage(QWidget):
             facts.append((f"압축 {r.archive.name}", "neutral"))
         if not r.has_record:
             facts.append(("예전 패키지 (보고서에서 읽음)", "neutral"))
-        for server, d in r.server_states().items():  # 서버마다 마지막 상태: 반영됨 / 되돌림 / 실패
+        current = history.current_by_server(self.records)
+        for server, d in r.server_states().items():  # 서버마다 마지막 상태: 현재 / 반영됨 / 되돌림 / 실패
             when = str(d.get("at", ""))[5:16].replace("T", " ")
             if not d.get("ok"):
                 facts.append((f"{server}  {ACTION_TEXT.get(d.get('action'), d.get('action'))} 실패  {when}", "danger"))
             elif d.get("action") == "apply":
-                facts.append((f"{server}  반영됨  {when}", "success"))
+                facts.append((f"{server}  {'지금 반영돼 있음' if current.get(server) == r.name else '반영됨'}  {when}",
+                              "primary" if current.get(server) == r.name else "success"))
             else:
                 facts.append((f"{server}  되돌림  {when}", "warning"))
         for text, tone in facts:
@@ -328,6 +403,26 @@ class HistoryPage(QWidget):
                                      + ", ".join(t[0].name for t in targets) if targets else
                                      "이 패키지가 지금 반영돼 있는 서버가 없습니다 (또는 서버 연결 설정에서 지워짐).")
 
+    # ------------------------------------------------------------------ 비교
+    def compare_with(self, other: Optional[history.PackageRecord] = None) -> Optional["CompareDialog"]:
+        """[다른 패키지와 비교]: 다른 패키지를 골라 파일 목록·내용 차이를 보여 준다."""
+        a = self.current
+        if a is None:
+            return None
+        if other is None:
+            others = [r for r in self.records if r.path != a.path][:30]
+            if not others:
+                self.ctx.dialogs.toast("비교할 다른 패키지가 없습니다.", "info")
+                return None
+            names = [f"{r.name}  ·  {_title(r)}"[:80] for r in others]
+            choice = self.ctx.dialogs.choose("패키지 비교", f"{a.name} 과 비교할 패키지를 고르세요.", names)
+            if choice is None:
+                return None
+            other = others[names.index(choice)]
+        dialog = CompareDialog(self, a, other, history.compare_records(a, other))
+        dialog.show()
+        return dialog
+
     # ------------------------------------------------------------------ 서버
     def _rollback_targets(self, r: history.PackageRecord) -> List[tuple]:
         """(서버 연결, 이력): 이 패키지가 반영돼 있고 서버 연결이 아직 설정에 있는 것."""
@@ -374,3 +469,72 @@ class HistoryPage(QWidget):
         self.rollback_dialog = RemoteRunDialog(self.ctx, r, p, profile, deployment, self, client=self.client,
                                                on_finished=self.refresh)
         self.rollback_dialog.start(run_hooks)
+
+
+class CompareDialog(QDialog):
+    """두 패키지 비교: A 에만 / B 에만 있는 파일, 양쪽에 있지만 내용이 다른 파일, 지울 파일 차이."""
+
+    def __init__(self, parent: QWidget, a: history.PackageRecord, b: history.PackageRecord, result: history.CompareResult):
+        super().__init__(parent)
+        self.setWindowTitle("패키지 비교")
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        self.resize(900, 560)
+        self.result = result
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(22, 20, 22, 16)
+        layout.setSpacing(12)
+        head = QHBoxLayout()
+        head.setSpacing(16)
+        for tag, r in (("A", a), ("B", b)):
+            col = QVBoxLayout()
+            col.setSpacing(2)
+            col.addWidget(label(f"{tag}  {r.name}", "cardTitle"))
+            col.addWidget(label(f"{r.created_at:%Y-%m-%d %H:%M}  ·  {_title(r)}", "muted"))
+            head.addLayout(col, 1)
+        layout.addLayout(head)
+        chips = QHBoxLayout()
+        chips.setSpacing(6)
+        for text, tone in ((f"같은 파일 {result.same}", "neutral"), (f"내용 다름 {len(result.changed)}", "warning"),
+                           (f"A 에만 {len(result.only_a)}", "info"), (f"B 에만 {len(result.only_b)}", "info")):
+            chips.addWidget(Chip(text, tone))
+        chips.addStretch(1)
+        layout.addLayout(chips)
+        lists = QHBoxLayout()
+        lists.setSpacing(14)
+        self.lists: Dict[str, QListWidget] = {}
+        for key, title, paths, tone in (("only_a", "A 에만 있는 파일", result.only_a, None),
+                                        ("only_b", "B 에만 있는 파일", result.only_b, None),
+                                        ("changed", "양쪽에 있지만 내용이 다른 파일", result.changed, "warning")):
+            col = QVBoxLayout()
+            col.setSpacing(4)
+            col.addWidget(label(title, "fieldLabel", wrap=False))
+            lw = QListWidget()
+            lw.setObjectName("fileList")
+            lw.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+            for path in paths:
+                item = QListWidgetItem(path)
+                if tone:
+                    item.setForeground(theme.tone_color(tone))
+                lw.addItem(item)
+            if not paths:
+                none = QListWidgetItem("(없음)")
+                none.setForeground(theme.tone_color("neutral"))
+                lw.addItem(none)
+            col.addWidget(lw, 1)
+            lists.addLayout(col, 1)
+            self.lists[key] = lw
+        layout.addLayout(lists, 1)
+        deletes = []
+        if result.deletes_only_a:
+            deletes.append("A 에서만 지움: " + ", ".join(result.deletes_only_a))
+        if result.deletes_only_b:
+            deletes.append("B 에서만 지움: " + ", ".join(result.deletes_only_b))
+        self.deletes_label = label("  /  ".join(deletes), "muted")
+        self.deletes_label.setVisible(bool(deletes))
+        layout.addWidget(self.deletes_label)
+        bar = QHBoxLayout()
+        bar.addStretch(1)
+        close = button("닫기")
+        close.clicked.connect(self.close)
+        bar.addWidget(close)
+        layout.addLayout(bar)

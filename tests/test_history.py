@@ -121,6 +121,30 @@ def test_record_written_and_listed(maven_project, tmp_path):
     assert history.current_on_server(project, "운영")[0].name == first.out_dir.name
 
 
+def test_compare_records_and_current_by_server(maven_project, tmp_path):
+    """두 패키지 비교: 한쪽에만 있는 파일, 내용이 다른 파일(체크섬), 지울 파일 차이. 서버별 현재 패키지."""
+    out = tmp_path / "out"
+    jsp = "src/main/webapp/WEB-INF/views/user/list.jsp"
+    project, a = _package(maven_project, out, [jsp, "src/main/java/com/acme/User.java", "D\tsrc/main/webapp/old.jsp"],
+                          now=datetime(2026, 10, 1, 9, 0))
+    write(maven_project / jsp, "<%-- changed --%>")
+    _, b = _package(maven_project, out, [jsp, "src/main/resources/mapper/user.xml"], now=datetime(2026, 10, 2, 9, 0))
+    ra, rb = history.read_record(a.out_dir), history.read_record(b.out_dir)
+    cmp = history.compare_records(ra, rb)
+    assert cmp.changed == ["WEB-INF/views/user/list.jsp"] and cmp.same == 0
+    assert all(p.startswith("WEB-INF/classes/com/acme/User") for p in cmp.only_a) and cmp.only_b == ["WEB-INF/classes/mapper/user.xml"]
+    assert cmp.deletes_only_a == ["old.jsp"] and cmp.deletes_only_b == []
+    same = history.compare_records(ra, ra)
+    assert same.changed == [] and same.only_a == [] and same.same == len(ra.applied)
+
+    records = history.list_records(project)
+    assert history.current_by_server(records) == {}
+    history.append_deployment(a.out_dir, "운영", "a@h", "apply", 0, "/d/p", "/app/ROOT")
+    history.append_deployment(b.out_dir, "개발", "a@h", "apply", 0, "/d/p", "/app/ROOT")
+    history.append_deployment(b.out_dir, "운영", "a@h", "apply", 1, "/d/p", "/app/ROOT")   # 실패한 반영은 현재가 아니다
+    assert history.current_by_server(history.list_records(project)) == {"개발": b.out_dir.name, "운영": a.out_dir.name}
+
+
 def test_old_package_without_record(tmp_path):
     folder = tmp_path / "out" / "2026-09-30-1700"
     write(folder / "manifest.txt", "WEB-INF/a.jsp\nWEB-INF/b.jsp\n")

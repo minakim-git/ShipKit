@@ -229,6 +229,49 @@ def request_history(project: ProjectConfig, kind: str) -> Dict[int, dict]:
     return seen
 
 
+def current_by_server(records: List[PackageRecord]) -> Dict[str, str]:
+    """목록(최근 것부터)에서 서버마다 지금 반영돼 있는 패키지 이름: {서버: 패키지 이름}. 기록 화면의 '현재' 배지."""
+    current: Dict[str, str] = {}
+    for r in records:
+        for server, state in r.server_states().items():
+            if server not in current and state.get("action") == "apply" and state.get("ok"):
+                current[server] = r.name
+    return current
+
+
+@dataclass
+class CompareResult:
+    """두 패키지의 파일 목록 비교 (내용은 checksums.sha256 으로 비교)."""
+    only_a: List[str]
+    only_b: List[str]
+    changed: List[str]          # 양쪽에 있지만 내용이 다른 파일
+    same: int                   # 양쪽에 있고 내용도 같은(또는 체크섬이 없어 비교 못 한) 파일 수
+    deletes_only_a: List[str]
+    deletes_only_b: List[str]
+
+
+def _checksums(folder: Path) -> Dict[str, str]:
+    path = folder / "checksums.sha256"
+    if not path.is_file():
+        return {}
+    result = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        digest, _, rel = line.partition("  ")
+        rel = rel.strip()
+        if digest and rel.startswith("files/"):          # 서버에 반영할 파일은 패키지의 files/ 아래 (manifest 경로와 맞춘다)
+            result[rel[len("files/"):]] = digest.strip()
+    return result
+
+
+def compare_records(a: PackageRecord, b: PackageRecord) -> CompareResult:
+    sa, sb = set(a.applied), set(b.applied)
+    ha, hb = _checksums(a.path), _checksums(b.path)
+    common = sorted(sa & sb)
+    changed = [p for p in common if ha.get(p) and hb.get(p) and ha[p] != hb[p]]
+    return CompareResult(sorted(sa - sb), sorted(sb - sa), changed, len(common) - len(changed),
+                         sorted(set(a.deletes) - set(b.deletes)), sorted(set(b.deletes) - set(a.deletes)))
+
+
 def current_on_server(project: ProjectConfig, server: str) -> Optional[Tuple[PackageRecord, dict]]:
     """이 PC 기록으로 보는, 지금 그 서버에 반영돼 있는 패키지와 그 반영 이력 (없으면 None).
     서버마다 마지막 이력이 성공한 apply 인 가장 최근 패키지. 되돌린 패키지는 건너뛴다."""
