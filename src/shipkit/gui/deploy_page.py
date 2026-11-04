@@ -570,7 +570,7 @@ class DeployPage(QWidget):
         def done(count: int) -> None:
             finish()
             if not count:
-                self.ctx.dialogs.info("pull 받기", "이미 최신입니다.")
+                self.ctx.dialogs.toast("이미 최신입니다.", "info")
                 return
             self.load_commits()
             self._refresh_since()
@@ -723,12 +723,12 @@ class DeployPage(QWidget):
         """[지난 배포 이후]: 지난 패키지 때의 HEAD..HEAD 를 범위에 넣는다."""
         last = self.last_package
         if last is None:
-            self.ctx.dialogs.info("지난 배포 이후", "지난 패키지 기록에 커밋 정보가 없습니다.")
+            self.ctx.dialogs.toast("지난 패키지 기록에 커밋 정보가 없습니다.", "warning")
             return
         self._uncheck_commits()
         self.range_edit.setText(last.rev_range)
         if last.ahead == 0:
-            self.ctx.dialogs.info("지난 배포 이후", f"{last.name} 을 만든 뒤 새 커밋이 없습니다.")
+            self.ctx.dialogs.toast(f"{last.name} 을 만든 뒤 새 커밋이 없습니다.", "info")
         self._invalidate()
 
     # ------------------------------------------------------------------ MR/PR 목록

@@ -51,6 +51,9 @@ class FakeDialogs:
     def info(self, title, text):
         self.messages.append(("info", title, text))
 
+    def toast(self, text, kind="success"):  # 토스트: (kind, 글) 로 남긴다
+        self.messages.append(("toast", kind, text))
+
     def error(self, title, text):
         self.messages.append(("error", title, text))
 
@@ -567,6 +570,29 @@ def test_theme_switch(qapp, tmp_path, maven_project, monkeypatch):
     assert not theme.is_dark() and theme.LIGHT["BG"] in qapp.styleSheet()
 
 
+def test_toast_shows_and_hides(qapp, tmp_path, maven_project):
+    """확인이 필요 없는 소식은 창 대신 아래쪽 토스트로: 창마다 하나, 글이 바뀌며 다시 뜨고, 시간이 지나면 사라진다."""
+    from shipkit.gui.widgets import Dialogs, Toast
+    w = make_window(_config(tmp_path, maven_project))
+    w.resize(1000, 700)
+    w.show()
+    dialogs = Dialogs(w.settings_page)                         # 안쪽 위젯이 부모여도 토스트는 창에 붙는다
+    dialogs.toast("앱 설정을 저장했습니다.")
+    toast = w.findChild(Toast)
+    assert toast is not None and toast.isVisible() and toast.text.text() == "앱 설정을 저장했습니다."
+    assert toast.mark.text() == "✓" and toast.timer.isActive()
+    assert abs((toast.x() + toast.width() // 2) - w.width() // 2) <= 1 and toast.y() + toast.height() < w.height()
+    dialogs.toast("확인 위치를 먼저 넣으세요.", "warning")
+    assert w.findChild(Toast) is toast and toast.text.text() == "확인 위치를 먼저 넣으세요." and toast.mark.text() == "!"
+    w.resize(1200, 800)                                        # 창 크기가 바뀌면 따라 움직인다 (최소 크기 1000 이라 키운다)
+    qapp.processEvents()
+    assert abs((toast.x() + toast.width() // 2) - 600) <= 1
+    toast.timer.stop()
+    toast.timer.timeout.emit()
+    assert not toast.isVisible()
+    w.close()
+
+
 def test_message_dialog_layout_and_buttons(qapp):
     """확인 창: 한국어 단추, 마지막 단추가 기본, 예/아니요 가 accept/reject 로 이어진다."""
     from shipkit.gui.widgets import MessageDialog
@@ -827,10 +853,10 @@ def test_update_notice_and_settings(qapp, tmp_path, maven_project, monkeypatch):
 
     update.write_version_file(share / "version.txt", "0.0.1")               # 더 새 버전이 없으면 숨긴다
     s.check_update()
-    assert w.ctx.dialogs.messages[-1][:2] == ("info", "새 버전 확인") and "최신" in w.ctx.dialogs.messages[-1][2]
+    assert w.ctx.dialogs.messages[-1][:2] == ("toast", "success") and "최신" in w.ctx.dialogs.messages[-1][2]
     s.update_location.setText(str(tmp_path / "none"))                       # 읽지 못하면 시작 때는 로그만, [지금 확인] 은 오류 창
     s.save()
-    assert w.ctx.dialogs.messages[-1][:2] == ("info", "앱 설정")
+    assert w.ctx.dialogs.messages[-1] == ("toast", "success", "앱 설정을 저장했습니다.")
     assert not w.update_btn.isVisibleTo(w)
     s.check_update()
     assert w.ctx.dialogs.messages[-1][:2] == ("error", "새 버전 확인") and "읽지 못했습니다" in w.ctx.dialogs.messages[-1][2]

@@ -146,18 +146,18 @@ class SettingsPage(QWidget):
         if path.is_file():
             open_path(path)
         else:
-            self.ctx.dialogs.info("로그 파일", f"아직 로그 파일이 없습니다.\n{path}")
+            self.ctx.dialogs.toast("아직 로그 파일이 없습니다.", "info")
 
     def check_update(self) -> None:
         """[지금 확인]: 칸에 적힌 위치(저장 전이어도)의 version.txt 를 읽어 결과를 알린다."""
         location = self.update_location.text().strip()
         if not location:
-            self.ctx.dialogs.info("새 버전 확인", "확인 위치를 먼저 넣으세요.")
+            self.ctx.dialogs.toast("확인 위치를 먼저 넣으세요.", "warning")
             return
 
         def done(info):
             if info is None:
-                self.ctx.dialogs.info("새 버전 확인", f"지금 쓰는 v{__version__} 이 최신입니다.")
+                self.ctx.dialogs.toast(f"지금 쓰는 v{__version__} 이 최신입니다.")
             elif self.ctx.dialogs.ask("새 버전 확인", f"새 버전 v{info.version} 이 있습니다 (지금 v{__version__}).\n"
                                       + (info.notes + "\n\n" if info.notes else "\n") + "받는 곳을 열까요?"):
                 open_location(info.location)
@@ -248,4 +248,4 @@ class SettingsPage(QWidget):
             return
         if data != before or not before:
             self.ctx.reload()
-        self.ctx.dialogs.info("앱 설정", "저장했습니다.")
+        self.ctx.dialogs.toast("앱 설정을 저장했습니다.")

@@ -278,13 +278,13 @@ class ServersTab(QWidget):
                                     "관리자에게 확인한 뒤 지우세요."):
             return
         removed = remote.forget_host_key(profile)
-        self.ctx.dialogs.info("서버 지문 잊기", "지문을 지웠습니다. 다음 접속 때 다시 확인합니다." if removed
-                              else "기억한 지문이 없습니다.")
+        self.ctx.dialogs.toast("지문을 지웠습니다. 다음 접속 때 다시 확인합니다." if removed else "기억한 지문이 없습니다.",
+                               "success" if removed else "info")
 
     def forget_server_secrets(self) -> None:
         profile = self._current_profile()
         if profile is None:
             return
         removed = self.client.forget(profile)
-        self.ctx.dialogs.info("비밀번호 지우기", f"저장된 비밀번호 {removed}개를 지웠습니다." if removed
-                              else "저장된 비밀번호가 없습니다.")
+        self.ctx.dialogs.toast(f"저장된 비밀번호 {removed}개를 지웠습니다." if removed else "저장된 비밀번호가 없습니다.",
+                               "success" if removed else "info")

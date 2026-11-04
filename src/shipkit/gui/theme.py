@@ -474,6 +474,8 @@ def stylesheet() -> str:
 * {{ font-family: {FONT_FAMILY}; font-size: 10pt; color: {TEXT}; }}
 QMainWindow, QDialog, QWidget#pageArea {{ background: {BG}; }}
 QToolTip {{ background: {TIP_BG}; color: white; border: none; padding: 6px 8px; border-radius: 6px; }}
+QFrame#toast {{ background: {TIP_BG}; border: none; border-radius: 10px; }}
+QLabel#toastText {{ color: white; font-weight: 500; background: transparent; }}
 
 /* ---------- 사이드바 ---------- */
 QWidget#sidebar {{ background: {SURFACE}; border-right: 1px solid {BORDER}; }}

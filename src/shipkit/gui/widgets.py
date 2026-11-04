@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable, List, Optional, Sequence, Tuple
 
-from PySide6.QtCore import QRectF, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QEvent, QRectF, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QFont, QFontMetrics, QGuiApplication, QPainter, QPainterPath
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QDialog, QFileDialog, QStyleOptionComboBox, QStylePainter, QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton, QSizePolicy, QStyle, QStyledItemDelegate,
@@ -532,6 +532,51 @@ class MessageDialog(QDialog):
         self.accept() if accept else self.reject()
 
 
+class Toast(QFrame):
+    """창 아래 가운데에 잠깐 떠 있다 사라지는 알림. 확인을 누를 필요가 없는 소식(저장했습니다 등)에 쓴다.
+    창마다 하나를 두고, 새 소식이 오면 글만 바꿔 다시 띄운다."""
+
+    def __init__(self, window: QWidget):
+        super().__init__(window)
+        self.setObjectName("toast")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(14, 9, 18, 9)
+        row.setSpacing(10)
+        self.mark = QLabel()
+        self.mark.setFixedSize(18, 18)
+        self.mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.text = QLabel()
+        self.text.setObjectName("toastText")
+        row.addWidget(self.mark)
+        row.addWidget(self.text)
+        self.timer = QTimer(self)
+        self.timer.setSingleShot(True)
+        self.timer.timeout.connect(self.hide)
+        window.installEventFilter(self)
+        self.hide()
+
+    def show_message(self, text: str, kind: str = "success") -> None:
+        color = theme.TONES.get(kind, theme.TONES["info"])[0]
+        self.mark.setText(_MESSAGE_MARK.get(kind, "i"))
+        self.mark.setStyleSheet(f"background: {color}; color: white; border-radius: 9px; font-weight: 700; font-size: 8pt;")
+        self.text.setText(text)
+        self._place()
+        self.show()
+        self.raise_()
+        self.timer.start(2400 + 30 * len(text))  # 긴 글은 조금 더 오래
+
+    def _place(self) -> None:
+        self.adjustSize()
+        parent = self.parentWidget()
+        self.move((parent.width() - self.width()) // 2, parent.height() - self.height() - 26)
+
+    def eventFilter(self, obj, event) -> bool:
+        if event.type() == QEvent.Type.Resize and self.isVisible():
+            self._place()
+        return False
+
+
 class Dialogs:
     """메시지 창. 테스트에서는 창을 띄우지 않는 대역으로 바꿔 끼운다."""
 
@@ -540,6 +585,18 @@ class Dialogs:
 
     def info(self, title: str, text: str) -> None:
         MessageDialog(self.parent, title, text, "info").exec()
+
+    def toast(self, text: str, kind: str = "success") -> None:
+        """확인이 필요 없는 짧은 소식: 창 대신 아래쪽에 잠깐 띄운다. kind: success / info / warning."""
+        window = self.parent.window() if self.parent is not None else None
+        if window is None:
+            MessageDialog(self.parent, "알림", text, "info").exec()
+            return
+        toast = getattr(window, "_shipkit_toast", None)
+        if toast is None:
+            toast = Toast(window)
+            window._shipkit_toast = toast
+        toast.show_message(text, kind)
 
     def error(self, title: str, text: str) -> None:
         MessageDialog(self.parent, title, text, "danger").exec()

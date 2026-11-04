@@ -136,7 +136,7 @@ class ServiceBox(Card):
             return
         self.update_token_status()
         self.page.ctx.connections_changed()
-        dialogs.info("토큰 저장", f"{cfg.label} 토큰을 Windows 자격 증명 관리자에 저장했습니다.")
+        dialogs.toast(f"{cfg.label} 토큰을 저장했습니다 (Windows 자격 증명 관리자).")
 
     def remove_token(self) -> None:
         dialogs = self.page.ctx.dialogs
@@ -144,7 +144,7 @@ class ServiceBox(Card):
             cfg = self.service_config()
             if dialogs.ask("토큰 삭제", f"{cfg.url} 의 {cfg.label} 토큰을 지울까요?"):
                 removed = delete_token(cfg)
-                dialogs.info("토큰 삭제", "삭제했습니다." if removed else "저장된 토큰이 없습니다.")
+                dialogs.toast(f"{cfg.label} 토큰을 지웠습니다." if removed else "저장된 토큰이 없습니다.", "success" if removed else "info")
         except (ConfigError, SecretError) as e:
             dialogs.error("토큰 삭제 실패", str(e))
         self.update_token_status()
@@ -232,4 +232,4 @@ class ConnectionsPage(QWidget):
         self.gitlab.update_token_status()
         self.github.update_token_status()
         self.ctx.connections_changed()
-        self.ctx.dialogs.info("연결 저장", "연결 설정을 저장했습니다.")
+        self.ctx.dialogs.toast("연결 설정을 저장했습니다.")
