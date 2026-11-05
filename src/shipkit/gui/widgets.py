@@ -5,9 +5,11 @@ from pathlib import Path
 from typing import Callable, List, Optional, Sequence, Tuple
 
 from PySide6.QtCore import QEvent, QRectF, QSize, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QColor, QDesktopServices, QFont, QFontMetrics, QGuiApplication, QPainter, QPainterPath
+from PySide6.QtGui import (
+    QColor, QDesktopServices, QFont, QFontMetrics, QGuiApplication, QPainter, QPainterPath, QTextCursor,
+)
 from PySide6.QtWidgets import (
-    QApplication, QComboBox, QDialog, QFileDialog, QStyleOptionComboBox, QStylePainter, QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton, QSizePolicy, QStyle, QStyledItemDelegate,
+    QApplication, QComboBox, QDialog, QFileDialog, QStyleOptionComboBox, QStylePainter, QFrame, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QPushButton, QSizePolicy, QStyle, QStyledItemDelegate,
     QStyleOptionViewItem, QVBoxLayout, QWidget,
 )
 
@@ -438,6 +440,58 @@ class ProjectSwitcher(QComboBox):
         widest = max((self.fontMetrics().horizontalAdvance(self.itemText(i)) for i in range(self.count())), default=0)
         self.view().setMinimumWidth(max(self.width(), widest + 90))  # 펼친 목록에서는 전체 이름
         super().showPopup()
+
+
+class DropFileList(QPlainTextEdit):
+    """파일 목록 입력칸. 탐색기에서 파일·폴더를 끌어다 놓으면(또는 붙여 넣으면) 저장소 기준 상대 경로로 바꿔 한 줄씩 넣는다.
+    폴더는 안의 파일을 모두 넣고, 저장소 밖 파일은 빼고 알린다. added(넣은 수, 저장소 밖 경로 목록) 신호."""
+    added = Signal(int, list)
+    LIMIT = 2000   # 폴더를 떨어뜨렸을 때 넣는 최대 파일 수
+
+    def __init__(self, root_provider: Callable[[], Optional[Path]]):
+        super().__init__()
+        self.root_provider = root_provider
+        self.setAcceptDrops(True)
+
+    def canInsertFromMimeData(self, source) -> bool:  # noqa: N802
+        return source.hasUrls() or super().canInsertFromMimeData(source)
+
+    def insertFromMimeData(self, source) -> None:  # noqa: N802
+        if source.hasUrls():
+            self.add_paths([u.toLocalFile() for u in source.urls() if u.isLocalFile()])
+            return
+        super().insertFromMimeData(source)
+
+    def add_paths(self, paths: Sequence[str]) -> Tuple[int, List[str]]:
+        """절대 경로들을 저장소 기준 상대 경로로 바꿔 목록 끝에 더한다. 반환: (넣은 수, 저장소 밖 경로)."""
+        root = self.root_provider()
+        existing = {line.strip() for line in self.toPlainText().splitlines() if line.strip()}
+        lines: List[str] = []
+        outside: List[str] = []
+        for raw in paths:
+            p = Path(raw)
+            files = [p]
+            if p.is_dir():
+                files = sorted((f for f in p.rglob("*") if f.is_file()), key=lambda f: f.as_posix())[: self.LIMIT]
+            for f in files:
+                try:
+                    rel = f.resolve().relative_to(root.resolve()).as_posix() if root else None
+                except (ValueError, OSError):
+                    rel = None
+                if rel is None:
+                    outside.append(str(f))
+                    continue
+                if rel not in existing:
+                    existing.add(rel)
+                    lines.append(rel)
+        if lines:
+            text = self.toPlainText()
+            if text and not text.endswith("\n"):
+                text += "\n"
+            self.setPlainText(text + "\n".join(lines) + "\n")
+            self.moveCursor(QTextCursor.MoveOperation.End)
+        self.added.emit(len(lines), outside)
+        return len(lines), outside
 
 
 class PathField(QWidget):

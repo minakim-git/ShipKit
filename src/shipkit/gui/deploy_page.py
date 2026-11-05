@@ -5,13 +5,14 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
 from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtGui import QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QCheckBox, QComboBox, QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-    QListWidget, QListWidgetItem, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QStackedWidget, QTableWidget,
+    QListWidget, QListWidgetItem, QProgressBar, QPushButton, QScrollArea, QStackedWidget, QTableWidget,
     QTableWidgetItem, QTabWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -22,7 +23,7 @@ from shipkit.gui.context import AppContext
 from shipkit.gui.remote_panel import RemotePanel
 from shipkit.gui.report_view import show_report
 from shipkit.gui.widgets import (
-    Card, Chip, CommandRow, ElidedLabel, StatusDelegate, Stepper, button, label, open_path,
+    Card, Chip, CommandRow, DropFileList, ElidedLabel, StatusDelegate, Stepper, button, label, open_path,
 )
 from shipkit.models import FileChange, SourceInfo, Status
 from shipkit.sources import git_local, providers
@@ -278,12 +279,13 @@ class DeployPage(QWidget):
         w = QWidget()
         layout = QVBoxLayout(w)
         layout.setContentsMargins(0, 4, 0, 0)
-        self.files_edit = QPlainTextEdit()
+        self.files_edit = DropFileList(lambda: self.project.root if self.project else None)
         self.files_edit.setPlaceholderText(
-            "한 줄에 경로 하나씩 붙여넣으세요.\n"
+            "한 줄에 경로 하나씩 붙여넣거나, 탐색기에서 파일·폴더를 여기에 끌어다 놓으세요.\n"
             "src/main/webapp/WEB-INF/jsp/a.jsp\n"
             "git diff --name-status 결과도 됩니다 (D<TAB>경로 = 삭제)")
         self.files_edit.textChanged.connect(self._invalidate)
+        self.files_edit.added.connect(self._files_dropped)
         layout.addWidget(self.files_edit, 1)
         return w
 
@@ -449,6 +451,16 @@ class DeployPage(QWidget):
     @property
     def step(self) -> int:
         return self.steps.currentIndex()
+
+    def _files_dropped(self, count: int, outside: list) -> None:
+        """끌어다 놓은 결과를 토스트로: 넣은 수와, 저장소 밖이라 뺀 파일."""
+        if outside:
+            shown = ", ".join(Path(p).name for p in outside[:3]) + (f" 외 {len(outside) - 3}개" if len(outside) > 3 else "")
+            self.ctx.dialogs.toast(f"파일 {count}개를 넣었습니다. 저장소 밖 파일 {len(outside)}개는 뺐습니다: {shown}", "warning")
+        elif count:
+            self.ctx.dialogs.toast(f"파일 {count}개를 넣었습니다.")
+        else:
+            self.ctx.dialogs.toast("이미 목록에 있는 파일입니다.", "info")
 
     def shortcut_next(self) -> None:
         """Ctrl+Enter: ① 에서는 미리보기, ② 에서는 패키지 만들기 (만들 수 있을 때만)."""

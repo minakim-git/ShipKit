@@ -688,6 +688,37 @@ def test_live_validation_sidebar_and_font_scale(qapp, tmp_path, maven_project):
     QSettings().remove("ui/sidebar_collapsed")
 
 
+def test_files_tab_drag_and_drop(qapp, tmp_path, maven_project):
+    """탐색기에서 끌어다 놓은 파일·폴더를 저장소 기준 경로로 넣고, 저장소 밖 파일은 빼고 알린다."""
+    from PySide6.QtCore import QMimeData, QUrl
+    dialogs = FakeDialogs()
+    w = make_window(_config(tmp_path, maven_project), dialogs)
+    d = w.deploy_page
+    outside = tmp_path / "outside.txt"
+    outside.write_text("x", encoding="utf-8")
+    count, skipped = d.files_edit.add_paths([str(maven_project / "src/main/java/com/acme/User.java"), str(outside),
+                                             str(maven_project / "src/main/webapp")])
+    lines = d.files_edit.toPlainText().splitlines()
+    webapp = sorted(f.relative_to(maven_project).as_posix()                     # 폴더는 안의 파일을 모두 넣는다
+                    for f in (maven_project / "src/main/webapp").rglob("*") if f.is_file())
+    assert count == 1 + len(webapp) and skipped == [str(outside)]
+    assert lines == ["src/main/java/com/acme/User.java"] + webapp and "src/main/webapp/WEB-INF/views/user/list.jsp" in webapp
+    assert dialogs.messages[-1][:2] == ("toast", "warning") and "outside.txt" in dialogs.messages[-1][2]
+    assert d.pick_summary.text() == f"파일 {count}개"
+
+    mime = QMimeData()                                       # 실제 드롭·붙여넣기는 mime 의 URL 로 들어온다
+    mime.setUrls([QUrl.fromLocalFile(str(maven_project / "src/main/resources/mapper/user.xml")),
+                  QUrl.fromLocalFile(str(maven_project / "src/main/java/com/acme/User.java"))])   # 이미 있는 건 건너뜀
+    assert d.files_edit.canInsertFromMimeData(mime)
+    d.files_edit.insertFromMimeData(mime)
+    assert d.files_edit.toPlainText().splitlines()[-1] == "src/main/resources/mapper/user.xml"
+    assert dialogs.messages[-1] == ("toast", "success", "파일 1개를 넣었습니다.")
+    d.files_edit.insertFromMimeData(mime)
+    assert dialogs.messages[-1][2] == "이미 목록에 있는 파일입니다."
+    d.preview()
+    assert d.step == STEP_REVIEW and d.result_tree.topLevelItemCount() == count + 1
+
+
 def test_toast_shows_and_hides(qapp, tmp_path, maven_project):
     """확인이 필요 없는 소식은 창 대신 아래쪽 토스트로: 창마다 하나, 글이 바뀌며 다시 뜨고, 시간이 지나면 사라진다."""
     from shipkit.gui.widgets import Dialogs, Toast
