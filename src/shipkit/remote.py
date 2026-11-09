@@ -166,11 +166,18 @@ class Connection(Protocol):
 
 
 def key_needs_passphrase(key_file: str) -> bool:
+    """SSH 개인 키 파일이 암호로 잠겨 있는지. 없거나 읽을 수 없으면 RemoteError."""
     import paramiko
     try:
         paramiko.PKey.from_path(Path(key_file).expanduser())
     except paramiko.PasswordRequiredException:
         return True
+    except TypeError as e:
+        # paramiko 3.2+ 는 OpenSSH 형식 키를 cryptography 로 읽는데, 암호가 걸려 있으면 PasswordRequiredException 대신
+        # TypeError("Key is password-protected, but password was not provided.") 가 난다 (paramiko 5.1 까지 확인)
+        if "password" in str(e).lower():
+            return True
+        raise RemoteError(f"SSH 키 파일을 읽지 못했습니다 ({key_file}): {e}") from e
     except FileNotFoundError as e:
         raise RemoteError(f"SSH 키 파일이 없습니다: {key_file}") from e
     except (paramiko.SSHException, ValueError) as e:

@@ -118,6 +118,35 @@ def test_notify_config_compose_and_send(monkeypatch):
         notify.send(slack, "x")
 
 
+def write_ssh_key(path: Path, passphrase: str = "") -> Path:
+    """테스트용 OpenSSH 형식 ed25519 개인 키 파일 (passphrase 가 있으면 암호로 잠근다)."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ed25519
+    encryption = (serialization.BestAvailableEncryption(passphrase.encode()) if passphrase
+                  else serialization.NoEncryption())
+    path.write_bytes(ed25519.Ed25519PrivateKey.generate().private_bytes(
+        serialization.Encoding.PEM, serialization.PrivateFormat.OpenSSH, encryption))
+    return path
+
+
+def test_key_needs_passphrase(tmp_path):
+    """SSH 키 파일의 암호 여부. paramiko 5 는 암호 걸린 OpenSSH 키에 PasswordRequiredException 대신 TypeError 를 내므로
+    그것도 '암호 필요'로 본다 (안 그러면 연결 시험이 예외로 끊겨 단추가 '시험 중…' 에 멈춘다)."""
+    plain = write_ssh_key(tmp_path / "plain")
+    locked = write_ssh_key(tmp_path / "locked", "secret")
+    assert remote.key_needs_passphrase(str(plain)) is False
+    assert remote.key_needs_passphrase(str(locked)) is True
+    with pytest.raises(remote.RemoteError, match="없습니다"):
+        remote.key_needs_passphrase(str(tmp_path / "nope"))
+    (tmp_path / "junk").write_text("not a key", encoding="utf-8")
+    with pytest.raises(remote.RemoteError, match="읽지 못했습니다"):
+        remote.key_needs_passphrase(str(tmp_path / "junk"))
+    # 어떤 비밀번호를 물을지: 암호 걸린 키면 키 암호 하나, 아니면 묻지 않는다
+    slots = remote.secret_slots(ServerProfile("개발", "h", "harami", port=1979, auth="key", key_file=str(locked)))
+    assert [(s[0], s[1]) for s in slots] == [("login", "ssh:passphrase:harami@h:1979")] and "SSH 키 암호" in slots[0][2]
+    assert remote.secret_slots(ServerProfile("개발", "h", "harami", auth="key", key_file=str(plain))) == []
+
+
 def test_commands_for_each_account_mode():
     plain = ServerProfile("a", "h", "app")
     assert remote.script_command(plain, "/home/app/deploy/p", "check") == \

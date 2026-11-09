@@ -1121,6 +1121,84 @@ def test_remote_panel_upload_apply_rollback(qapp, tmp_path, maven_project, monke
     assert [s["name"] for s in config_store.load_raw(path)["projects"]["erp"]["servers"]] == ["개발", "서버 2"]
 
 
+def test_task_runner_callback_error_reported_as_failure(qapp):
+    """작업은 성공했는데 화면 쪽 뒤처리에서 예외가 나면 실패 처리로 넘어간다 (단추가 '…중' 에 멈춘 채 남지 않게)."""
+    import time
+    from shipkit.gui.tasks import TaskRunner
+    runner = TaskRunner()
+    got, busy = [], []
+    runner.busy_changed.connect(busy.append)
+
+    def on_done(_result):
+        raise TypeError("Key is password-protected, but password was not provided.")
+
+    runner.run(lambda: 1, on_done, got.append)
+    deadline = time.monotonic() + 10
+    while not got and time.monotonic() < deadline:
+        qapp.processEvents()
+        time.sleep(0.01)
+    assert got == ["예상하지 못한 오류: TypeError: Key is password-protected, but password was not provided."]
+    assert busy == [True, False]                                            # 잠금도 풀린다
+
+
+def test_server_test_passphrase_key_elapsed_and_cancel(qapp, tmp_path, maven_project, monkeypatch):
+    """연결 시험: 암호 걸린 SSH 키면 키 암호를 묻고 저장하며, 진행 시간이 단추에 보이고, [취소]하면 바로 되돌아오며 늦게 온 결과는 무시한다."""
+    import time
+    from shipkit import remote
+    from test_remote import write_ssh_key
+    keyring = FakeKeyring()
+    monkeypatch.setattr("shipkit.secrets._keyring", lambda: keyring)
+    key = write_ssh_key(tmp_path / "id_ed25519", "secret")
+    dialogs = FakeDialogs(password="secret")
+    w = make_window(_config(tmp_path, maven_project, servers=[
+        {"name": "개발", "host": "10.0.0.5", "port": 1979, "user": "harami", "auth": "key", "key_file": key.as_posix()}]), dialogs)
+    w.go(PAGE_PROJECTS)
+    tab = w.projects_page.servers_tab
+    tab.client.host_key_checker = lambda profile: remote.HostKeyStatus("known", "ssh-ed25519", "SHA256:x")
+    seen = {}
+
+    class FakeConn:
+        def __init__(self, profile, secrets):
+            seen["secrets"] = secrets
+
+        def home(self):
+            return "/home/harami"
+
+        def run(self, command, output, password=None, pty=False):
+            output("harami\n")
+            return 0
+
+        def cancel(self):
+            seen["cancelled"] = True
+
+        def close(self):
+            pass
+
+    tab.client.connection_factory = FakeConn
+    tab.test_server()
+    secret = [m for m in dialogs.messages if m[0] == "secret"][-1]
+    assert secret[1] == "비밀번호 입력" and secret[2].startswith("개발 서버: SSH 키 암호 (")
+    assert seen["secrets"].login == "secret" and keyring.store[("shipkit", "ssh:passphrase:harami@10.0.0.5:1979")] == "secret"
+    assert dialogs.messages[-1][:2] == ("info", "연결 시험") and "접속 성공: harami@10.0.0.5:1979" in dialogs.messages[-1][2]
+    assert tab.server_test_btn.isEnabled() and tab.server_test_btn.text() == "연결 시험" and not tab.test_cancel_btn.isVisibleTo(tab)
+
+    class CancellingConn(FakeConn):                                       # 접속하는 동안 사용자가 [취소]를 누른 상황
+        def __init__(self, profile, secrets):
+            super().__init__(profile, secrets)
+            tab._test_started = time.monotonic() - 25
+            tab._tick_test()
+            seen["button"] = (tab.server_test_btn.text(), tab.server_test_btn.isEnabled(), tab.test_cancel_btn.isVisibleTo(tab))
+            tab.cancel_test()
+
+    tab.client.connection_factory = CancellingConn
+    before = len(dialogs.messages)
+    tab.test_server()                                                      # 저장한 키 암호를 써서 다시 묻지 않는다
+    assert seen["button"][0].startswith("시험 중…  25초") and "10분" in seen["button"][0] and seen["button"][1:] == (False, True)
+    assert dialogs.messages[before:] == [("toast", "info", "연결 시험을 취소했습니다.")]   # 늦게 온 '접속 성공'은 무시
+    assert tab.server_test_btn.isEnabled() and tab.server_test_btn.text() == "연결 시험" and not tab.test_cancel_btn.isVisibleTo(tab)
+    assert not tab._test_timer.isActive()
+
+
 def test_user_guide_dialog(qapp, tmp_path, maven_project):
     """화면 설명글 대신 여는 사용자 가이드: 패키지에 든 문서를 보여 주고, 목차 링크로 그 자리로 가며, 한 창만 연다."""
     from PySide6.QtCore import QUrl

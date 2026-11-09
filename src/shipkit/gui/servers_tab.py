@@ -6,9 +6,10 @@
 from __future__ import annotations
 
 import copy
+import time
 from typing import Any, Callable, Dict, List, Optional
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import QTimer, Signal
 from PySide6.QtWidgets import QCheckBox, QComboBox, QHBoxLayout, QLineEdit, QListWidget, QSpinBox, QVBoxLayout, QWidget
 
 from shipkit import notify, remote
@@ -35,6 +36,11 @@ class ServersTab(QWidget):
         self.servers: List[Dict[str, Any]] = []
         self._server_row = -1
         self._loading = False
+        self._test_run = 0            # 진행 중인 연결 시험 번호 (취소한 뒤 늦게 온 결과는 무시)
+        self._test_started = 0.0
+        self._test_timer = QTimer(self)
+        self._test_timer.setInterval(1000)
+        self._test_timer.timeout.connect(self._tick_test)
         self._build()
 
     @staticmethod
@@ -125,6 +131,10 @@ class ServersTab(QWidget):
         buttons = QHBoxLayout()
         self.server_test_btn = button("연결 시험")
         self.server_test_btn.clicked.connect(self.test_server)
+        self.test_cancel_btn = button("취소", "ghost")   # 연결 시험 중에만 보인다
+        self.test_cancel_btn.setToolTip("연결 시험을 그만둡니다. 접속을 기다리는 중이면 결과가 와도 무시합니다.")
+        self.test_cancel_btn.clicked.connect(self.cancel_test)
+        self.test_cancel_btn.hide()
         self.notify_test_btn = button("알림 시험", "ghost")
         self.notify_test_btn.setToolTip("웹훅 주소로 시험 메시지를 하나 보내 채널에 잘 도착하는지 확인합니다.")
         self.notify_test_btn.clicked.connect(self.test_notify)
@@ -134,6 +144,7 @@ class ServersTab(QWidget):
         forget_key.setToolTip("서버를 다시 설치해 지문이 바뀌었을 때. 다음 접속 때 새 지문을 보여 주고 다시 묻습니다.")
         forget_key.clicked.connect(self.forget_host_key)
         buttons.addWidget(self.server_test_btn)
+        buttons.addWidget(self.test_cancel_btn)
         buttons.addWidget(self.notify_test_btn)
         buttons.addWidget(forget)
         buttons.addWidget(forget_key)
@@ -304,22 +315,50 @@ class ServersTab(QWidget):
         profile = self._current_profile()
         if profile is None:
             return
+        self._test_run += 1
+        run = self._test_run
+        self._test_started = time.monotonic()
         self.server_test_btn.setEnabled(False)
-        self.server_test_btn.setText("시험 중…")
+        self.server_test_btn.setText("시험 중…  0초")
+        self.test_cancel_btn.show()
+        self._test_timer.start()
 
         def finish() -> None:
-            self.server_test_btn.setEnabled(True)
-            self.server_test_btn.setText("연결 시험")
+            if run == self._test_run:
+                self._finish_test()
 
         def done(text: str) -> None:
+            if run != self._test_run:   # 취소한 뒤 늦게 온 결과
+                return
             finish()
             self.ctx.dialogs.info("연결 시험", text)
 
         def failed(text: str) -> None:
+            if run != self._test_run:
+                return
             finish()
             self.ctx.dialogs.error("연결 시험 실패", text)
 
         self.client.test(profile, done, failed, finish)  # 비밀번호 입력을 취소하면 finish
+
+    def _tick_test(self) -> None:
+        """연결 시험이 얼마나 걸리고 있는지 단추에 보여 준다 (멈춘 것인지 기다리는 중인지 알 수 있게)."""
+        elapsed = int(time.monotonic() - self._test_started)
+        hint = "  (접속은 15초, 명령은 출력이 없으면 10분까지 기다립니다)" if elapsed >= 20 else ""
+        self.server_test_btn.setText(f"시험 중…  {elapsed}초{hint}")
+
+    def _finish_test(self) -> None:
+        self._test_timer.stop()
+        self.test_cancel_btn.hide()
+        self.server_test_btn.setEnabled(True)
+        self.server_test_btn.setText("연결 시험")
+
+    def cancel_test(self) -> None:
+        """[취소]: 진행 중인 접속·명령을 끊고 단추를 바로 되돌린다. 아직 접속 중이라 끊을 수 없으면 결과가 와도 무시한다."""
+        self._test_run += 1
+        self._finish_test()
+        self.client.cancel()
+        self.ctx.dialogs.toast("연결 시험을 취소했습니다.", "info")
 
     def test_notify(self) -> None:
         """[알림 시험]: 웹훅으로 시험 메시지를 하나 보낸다 (서버 접속은 하지 않는다)."""

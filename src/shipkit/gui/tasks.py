@@ -91,7 +91,14 @@ class TaskRunner(QObject):
 
         def done(result: Any) -> None:
             finish()
-            on_done(result)
+            try:
+                on_done(result)
+            except Exception as e:  # 화면 쪽 뒤처리에서 난 오류도 실패로 알린다 (단추가 '…중' 에 멈춘 채 남지 않게)
+                log.error("작업 결과를 처리하는 중 오류", exc_info=e)
+                if on_failed:
+                    on_failed(error_text(e))
+                else:
+                    raise
 
         def failed(message: str) -> None:
             finish()
