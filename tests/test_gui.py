@@ -604,6 +604,54 @@ def test_history_cleanup_dialog(qapp, tmp_path, maven_project):
     dialog.close()
 
 
+def test_settings_export_and_import(qapp, tmp_path, maven_project):
+    """앱 설정의 [내보내기…]/[가져오기…]: 설정 파일 내용과 화면 설정을 파일 하나로. 합치기는 같은 이름을 지키고, 바꾸기는 전부 교체."""
+    from shipkit import settings_io
+    from shipkit.gui import theme
+    dialogs = FakeDialogs()
+    path = _config(tmp_path, maven_project, servers=[{"name": "운영", "host": "prod", "user": "app"}])
+    w = make_window(path, dialogs)
+    s = w.settings_page
+    QSettings().setValue("ui/font_scale", "large")
+    QSettings().setValue("ui/theme", "sky")
+    out = s.export_settings(tmp_path / "export.yaml")
+    assert out == tmp_path / "export.yaml" and dialogs.messages[-1][:2] == ("toast", "success")
+    assert "프로젝트 1개, 서버 연결 1개" in dialogs.messages[-1][2]
+    bundle = settings_io.read(out)
+    assert bundle["ui"] == {"font_scale": "large", "theme": "sky"} and bundle["config"]["projects"]["erp"]["servers"][0]["host"] == "prod"
+
+    data = config_store.load_raw(path)                           # 다른 PC 흉내: 설정이 다르고 글자 크기도 보통
+    data["projects"]["crm"] = {"root": maven_project.as_posix(), "server_path": "/app/CRM"}
+    data["projects"]["erp"]["server_path"] = "/app/MINE"
+    config_store.save_raw(path, data)
+    w.ctx.reload()
+    QSettings().setValue("ui/font_scale", "normal")
+    QSettings().setValue("ui/theme", "ivory")
+    theme.set_font_scale("normal")
+    s._apply("ivory")
+
+    assert s.import_settings(out, mode="merge", apply_ui=False)
+    assert sorted(w.ctx.cfg.projects) == ["crm", "erp"] and w.ctx.cfg.projects["erp"].server_path == "/app/MINE"
+    assert dialogs.messages[-1] == ("toast", "info", "프로젝트 0개를 더했습니다. 같은 이름 1개는 건너뛰었습니다: erp")
+    assert QSettings().value("ui/font_scale") == "normal" and theme.THEME == "ivory"
+
+    assert s.import_settings(out, mode="replace", apply_ui=True)
+    assert sorted(w.ctx.cfg.projects) == ["erp"] and w.ctx.cfg.projects["erp"].server_path == "/app/ROOT"
+    assert dialogs.messages[-1] == ("toast", "success", "설정을 파일 내용으로 바꿨습니다 (프로젝트 1개).")
+    assert QSettings().value("ui/font_scale") == "large" and theme.FONT_SCALE == 1.15 and s.font_buttons["large"].isChecked()
+    assert QSettings().value("ui/theme") == "sky" and theme.THEME == "sky"
+    assert "crm" in config_store.load_raw(path.with_name(path.name + ".bak"))["projects"]   # 이전 설정은 .bak
+
+    bad = tmp_path / "bad.yaml"                                  # 내보낸 파일이 아니면 오류 창, 설정은 그대로
+    bad.write_text("defaults: {}", encoding="utf-8")
+    assert not s.import_settings(bad, mode="merge") and dialogs.messages[-1][0] == "error"
+    assert "설정 내보내기 파일이 아닙니다" in dialogs.messages[-1][2] and sorted(w.ctx.cfg.projects) == ["erp"]
+    s.set_font_scale("normal")
+    QSettings().remove("ui/font_scale")
+    QSettings().remove("ui/theme")
+    s._apply("system")
+
+
 def test_theme_switch(qapp, tmp_path, maven_project, monkeypatch):
     from shipkit.gui import theme
     w = make_window(_config(tmp_path, maven_project))

@@ -2,18 +2,24 @@
 from __future__ import annotations
 
 import copy
+from datetime import date
+from pathlib import Path
+from typing import Optional
 
 from PySide6.QtCore import QSettings, Qt, Signal
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QFormLayout, QHBoxLayout, QLineEdit, QPushButton, QScrollArea, QVBoxLayout, QWidget,
+    QApplication, QCheckBox, QFileDialog, QFormLayout, QHBoxLayout, QLineEdit, QPushButton, QRadioButton, QScrollArea,
+    QVBoxLayout, QWidget,
 )
 
-from shipkit import __app_name__, __tagline__, __version__, config_store, update
+from shipkit import __app_name__, __tagline__, __version__, config_store, settings_io, update
 from shipkit.config import ConfigError
 from shipkit.gui import diagnostics, theme
 from shipkit.gui.context import AppContext
 from shipkit.gui.guide_view import show_guide
-from shipkit.gui.widgets import Card, Chip, ElidedLabel, PathField, button, label, open_location, open_path, page_header
+from shipkit.gui.widgets import (
+    Card, Chip, ElidedLabel, MessageDialog, PathField, button, label, open_location, open_path, page_header,
+)
 
 
 def _form() -> QFormLayout:
@@ -102,7 +108,18 @@ class SettingsPage(QWidget):
         row.addWidget(self.open_file_btn)
         row.addWidget(open_dir)
         row.addStretch(1)
+        self.export_btn = button("내보내기…")
+        self.export_btn.setToolTip("프로젝트·서버 연결·GitLab/GitHub 주소·패키지 기본값·화면 설정을 파일 하나로 저장합니다.\n"
+                                   "토큰·비밀번호는 들어가지 않습니다.")
+        self.export_btn.clicked.connect(lambda: self.export_settings())
+        self.import_btn = button("가져오기…")
+        self.import_btn.setToolTip("내보낸 파일을 읽어 지금 설정에 합치거나, 지금 설정을 파일 내용으로 바꿉니다.")
+        self.import_btn.clicked.connect(lambda: self.import_settings())
+        row.addWidget(self.export_btn)
+        row.addWidget(self.import_btn)
         files.body.addLayout(row)
+        files.body.addWidget(label("내보내기·가져오기: 다른 PC 로 옮기거나 팀원과 프로젝트·서버 연결 설정을 나눌 때. "
+                                   "토큰·비밀번호는 파일에 들어가지 않으니 가져온 뒤 연결 화면에서 다시 저장하세요.", "muted"))
         layout.addWidget(files)
 
         start = Card("시작하기")
@@ -160,6 +177,112 @@ class SettingsPage(QWidget):
             open_path(path)
         else:
             self.ctx.dialogs.toast("아직 로그 파일이 없습니다.", "info")
+
+    # ------------------------------------------------------------------ 내보내기·가져오기
+    def _ui_settings(self) -> dict:
+        settings = QSettings()
+        return {key: settings.value(f"ui/{key}") for key in settings_io.UI_KEYS if settings.contains(f"ui/{key}")}
+
+    def export_settings(self, path: Optional[Path] = None) -> Optional[Path]:
+        """[내보내기…]: 개인 설정 파일 내용과 화면 설정을 YAML 파일 하나로."""
+        if path is None:
+            start = str(Path.home() / f"shipkit-settings-{date.today():%Y-%m-%d}.yaml")
+            chosen, _ = QFileDialog.getSaveFileName(self, "설정 내보내기", start, "ShipKit 설정 (*.yaml)")
+            if not chosen:
+                return None
+            path = Path(chosen)
+        try:
+            bundle = settings_io.build(config_store.load_raw(self.ctx.config_path), self._ui_settings())
+            settings_io.write(path, bundle)
+        except (ConfigError, OSError) as e:
+            self.ctx.dialogs.error("설정 내보내기", f"내보내지 못했습니다.\n\n{e}")
+            return None
+        summary = settings_io.summarize(bundle)
+        self.ctx.dialogs.toast(f"설정을 내보냈습니다: {path.name}  (프로젝트 {len(summary.projects)}개, 서버 연결 {summary.servers}개)")
+        return path
+
+    def import_settings(self, path: Optional[Path] = None, mode: Optional[str] = None,
+                        apply_ui: Optional[bool] = None) -> bool:
+        """[가져오기…]: 내보낸 파일을 읽어 내용을 보여 주고, 합치기(없는 프로젝트만 추가) 또는 바꾸기(전체 교체)로 저장한다.
+        mode / apply_ui 를 주면(테스트) 묻지 않는다."""
+        if path is None:
+            chosen, _ = QFileDialog.getOpenFileName(self, "설정 가져오기", str(Path.home()), "ShipKit 설정 (*.yaml);;모든 파일 (*)")
+            if not chosen:
+                return False
+            path = Path(chosen)
+        try:
+            bundle = settings_io.read(path)
+        except ConfigError as e:
+            self.ctx.dialogs.error("설정 가져오기", f"이 파일은 가져올 수 없습니다.\n\n{e}")
+            return False
+        summary = settings_io.summarize(bundle)
+        if mode is None:
+            choice = self._ask_import(path, summary)
+            if choice is None:
+                return False
+            mode, apply_ui = choice
+        if apply_ui is None:
+            apply_ui = bool(summary.ui)
+        try:
+            _cfg, added, skipped = settings_io.apply(self.ctx.config_path, bundle, mode)
+        except ConfigError as e:
+            self.ctx.dialogs.error("설정 가져오기", f"파일의 설정이 올바르지 않아 가져오지 못했습니다. 지금 설정은 그대로입니다.\n\n{e}")
+            return False
+        self.ctx.reload(select=added[0] if added and mode == "replace" else None)
+        if apply_ui and summary.ui:
+            self._apply_ui_settings(summary.ui)
+        text = (f"설정을 파일 내용으로 바꿨습니다 (프로젝트 {len(added)}개)." if mode == "replace" else
+                f"프로젝트 {len(added)}개를 더했습니다." + (f" 같은 이름 {len(skipped)}개는 건너뛰었습니다: {', '.join(skipped[:4])}"
+                                                      + (" …" if len(skipped) > 4 else "") if skipped else ""))
+        self.ctx.dialogs.toast(text, "success" if added or mode == "replace" else "info")
+        return True
+
+    def _ask_import(self, path: Path, summary: settings_io.Summary) -> Optional[tuple]:
+        """가져올 내용과 방법(합치기/바꾸기, 화면 설정 포함)을 묻는다. 취소하면 None."""
+        has_current = bool((self.ctx.cfg and self.ctx.cfg.projects) or self.ctx.config_path.is_file())
+        lines = summary.lines()
+        if summary.exported_at or summary.computer:
+            lines.append(f"내보낸 곳: {summary.computer or '?'}  ·  {summary.exported_at[:16].replace('T', ' ')}"
+                         + (f"  ·  v{summary.app}" if summary.app else ""))
+        text = f"{path.name}\n\n" + "\n".join(f"- {line}" for line in lines)
+        if summary.missing_roots:
+            text += "\n\n이 PC 에 없는 로컬 경로가 있습니다. 가져온 뒤 프로젝트 화면에서 고치세요:\n" + "\n".join(
+                f"- {name}: {root}" for name, root in summary.missing_roots[:5])
+        extra = QWidget()
+        col = QVBoxLayout(extra)
+        col.setContentsMargins(0, 4, 0, 0)
+        col.setSpacing(6)
+        merge = QRadioButton("합치기 — 없는 프로젝트만 더하고 지금 설정은 그대로 둡니다")
+        replace = QRadioButton("바꾸기 — 지금 설정을 파일 내용으로 전부 바꿉니다 (이전 파일은 .bak)")
+        (merge if has_current else replace).setChecked(True)
+        ui_check = QCheckBox("화면 설정(테마·글자 크기·사이드바)도 가져오기")
+        ui_check.setChecked(bool(summary.ui))
+        ui_check.setVisible(bool(summary.ui))
+        col.addWidget(merge)
+        col.addWidget(replace)
+        col.addWidget(ui_check)
+        dialog = MessageDialog(self, "설정 가져오기", text, "question", [("취소", False), ("가져오기", True)], extra=extra)
+        if not dialog.exec():
+            return None
+        return ("replace" if replace.isChecked() else "merge"), ui_check.isChecked()
+
+    def _apply_ui_settings(self, ui: dict) -> None:
+        """가져온 화면 설정을 이 PC 에 기억하고 바로 적용한다."""
+        settings = QSettings()
+        for key, value in ui.items():
+            if key == "theme" and not (value == "system" or value in theme.THEMES or value in theme.ALIASES):
+                continue
+            if key in ("theme_light", "theme_dark") and value not in theme.THEMES:
+                continue
+            if key == "font_scale" and value not in dict((k, t) for k, t, _s in theme.FONT_SCALES):
+                continue
+            settings.setValue(f"ui/{key}", value)
+        theme.set_font_scale(str(settings.value("ui/font_scale", "normal")))
+        self._apply(str(settings.value("ui/theme", "system")))
+        window = self.window()
+        if hasattr(window, "set_sidebar_collapsed") and "sidebar_collapsed" in ui:
+            window.set_sidebar_collapsed(str(ui["sidebar_collapsed"]).lower() == "true")
+        self.refresh()
 
     def check_update(self) -> None:
         """[지금 확인]: 칸에 적힌 위치(저장 전이어도)의 version.txt 를 읽어 결과를 알린다."""
