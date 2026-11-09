@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 from shipkit import history, remote
 from shipkit.config import ProjectConfig, ServerProfile
 from shipkit.gui.context import AppContext
-from shipkit.gui.remote_panel import HOOK_TEXT, RemoteClient
+from shipkit.gui.remote_panel import HOOK_TEXT, RemoteClient, notify_messenger
 from shipkit.gui.widgets import Chip, button, label
 
 ACTION_TEXT = {"check": "확인", "backup": "백업", "apply": "반영", "rollback": "되돌림"}
@@ -208,6 +208,7 @@ class RemoteRunDialog(QDialog):
                 self._append(f"\n[경고] 반영 이력을 기록 파일에 남기지 못했습니다: {e}\n")
             self._append("\n✓ 되돌렸습니다.\n" if res.ok else f"\n✗ rollback 실패 (종료 코드 {res.code})\n")
             self._finish("되돌림" if res.ok else "되돌리기 실패", "warning" if res.ok else "danger")
+            notify_messenger(self.ctx, p, self.project.name, self.record.name, res, self._append)
 
         def failed(message: str) -> None:
             self._append(f"\n[오류] {message}\n")

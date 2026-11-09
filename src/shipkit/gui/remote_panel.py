@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QComboBox, QHBoxLayout, QPlainTextEdit, QProgressBar, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
-from shipkit import history, remote
+from shipkit import history, notify, remote
 from shipkit.config import ProjectConfig, ServerProfile
 from shipkit.gui import theme
 from shipkit.gui.context import AppContext
@@ -30,6 +30,26 @@ HOOK_TEXT = {"pre_apply": "반영 전", "post_apply": "반영 후", "post_rollba
 
 
 _secret_slots = remote.secret_slots   # 어떤 비밀번호가 필요한지는 명령어(shipkit deploy)와 같은 규칙
+
+
+def notify_messenger(ctx: AppContext, profile: ServerProfile, project: str, package: str, res: remote.StepResult,
+                     append: Callable[[str], None], files: Optional[int] = None) -> None:
+    """반영·되돌리기가 끝났을 때 서버 연결에 메신저 웹훅이 있으면 결과를 한 줄 보낸다.
+
+    백그라운드에서 보내고(메신저가 느려도 화면이 멈추지 않게) 결과는 로그에 한 줄 남긴다. 실패해도 반영 결과는 그대로다."""
+    cfg = profile.notify
+    if cfg is None:
+        return
+    text = notify.compose(project, profile.name, res.action, package, res.ok, res.code, files)
+
+    def done(_result) -> None:
+        append(f"📣 {cfg.label} 알림을 보냈습니다: {text}\n")
+
+    def failed(message: str) -> None:
+        append(f"[경고] {message}\n")
+        ctx.dialogs.toast(message, "warning")
+
+    ctx.runner.run(lambda: notify.send(cfg, text), done, failed, quiet=True)
 
 
 class RemoteClient:
@@ -597,6 +617,8 @@ class RemotePanel(Card):
                 self._set_stage("apply_failed" if res.action == "apply" else "checked")
             self._notify_background(f"{self.project.name} → {p.name} 반영 " + ("완료" if res.ok else f"실패 ({res.action})"),
                                     f"패키지 {self.result.out_dir.name}")
+            notify_messenger(self.ctx, p, self.project.name, self.result.out_dir.name, res, self._append,
+                             files=len(self.result.manifest) + len(self.result.deletes))
 
         self._run(lambda secrets: lambda conn, output, progress: remote.backup_and_apply(
             conn, p, secrets, remote_dir, output, run_hooks), done)
@@ -618,6 +640,7 @@ class RemotePanel(Card):
             self._set_stage("rolled_back" if res.ok else "apply_failed")
             self._notify_background(f"{self.project.name} → {p.name} 되돌리기 " + ("완료" if res.ok else "실패"),
                                     f"패키지 {self.result.out_dir.name}")
+            notify_messenger(self.ctx, p, self.project.name, self.result.out_dir.name, res, self._append)
 
         self._run(lambda secrets: lambda conn, output, progress: remote.run_action(
             conn, p, secrets, remote_dir, "rollback", output, yes=run_hooks, no_hooks=not run_hooks), done)

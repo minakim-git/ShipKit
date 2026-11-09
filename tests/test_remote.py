@@ -62,6 +62,62 @@ def test_servers_config():
             parse_config({"projects": {"a": dict(base, servers=[bad])}})
 
 
+def test_notify_config_compose_and_send(monkeypatch):
+    """메신저 알림: 서버 연결의 notify 설정 검증, 형식별 JSON 키, 메시지 글, 웹훅 전송(성공·거부·네트워크 오류)."""
+    from shipkit import notify
+    from conftest import FakeResponse
+    base = {"root": "x", "output_dir": "y", "server_path": "/srv/app"}
+
+    def server(**notify_cfg):
+        return parse_config({"projects": {"a": dict(base, servers=[
+            {"name": "운영", "host": "h", "user": "u", "notify": notify_cfg}])}}).project("a").servers[0]
+
+    plain = parse_config({"projects": {"a": dict(base, servers=[{"name": "운영", "host": "h", "user": "u"}])}}).project("a")
+    assert plain.servers[0].notify is None
+    slack = server(url="https://hooks.slack.com/services/T/B/x").notify           # 형식을 비우면 slack
+    assert (slack.format, slack.field, slack.label) == ("slack", "text", "Slack")
+    assert server(url="https://jandi.example/x", format="jandi").notify.field == "body"
+    assert server(url="https://discord.com/api/webhooks/x", format="Discord").notify.field == "content"
+    custom = server(url="http://10.0.0.9/hook", format="custom", key="message").notify
+    assert custom.field == "message" and custom.label == "직접 입력"
+    for bad, msg in [({"format": "slack"}, "notify.url"), ({"url": "hooks.slack.com/x"}, "notify.url"),
+                     ({"url": "https://h/x", "format": "kakao"}, "notify.format"),
+                     ({"url": "https://h/x", "format": "custom"}, "notify.key"),
+                     ({"url": "https://h/x", "format": "custom", "key": "my-key"}, "notify.key")]:
+        with pytest.raises(ConfigError, match=msg):
+            server(**bad)
+
+    assert notify.compose("erp", "운영", "apply", "2026-11-04-1430", True, files=12, sender="mina") == \
+        "✅ erp 운영에 2026-11-04-1430 반영, 파일 12개 (mina)"
+    assert notify.compose("erp", "운영", "backup", "p", False, code=3, sender="") == "❌ erp 운영 반영 실패 (백업, 종료 코드 3): p"
+    assert notify.compose("erp", "운영", "rollback", "p", True, sender="") == "↩️ erp 운영 되돌리기: p (반영 전 상태로)"
+    assert notify.compose("erp", "운영", "rollback", "p", False, code=1, sender="") == "❌ erp 운영 되돌리기 실패 (종료 코드 1): p"
+    if notify.who():                                                              # 보낸 사람은 이 PC 의 로그인 이름
+        assert notify.compose("erp", "운영", "apply", "p", True).endswith(f"({notify.who()})")
+
+    posts, responses = [], [FakeResponse(200, "ok")]
+
+    def fake_post(url, json=None, timeout=None):
+        posts.append((url, json, timeout))
+        return responses.pop(0)
+
+    monkeypatch.setattr("requests.post", fake_post)
+    notify.send(slack, "hi")
+    assert posts == [("https://hooks.slack.com/services/T/B/x", {"text": "hi"}, notify.TIMEOUT)]
+    responses.append(FakeResponse(403, "invalid_token"))
+    with pytest.raises(notify.NotifyError, match="HTTP 403.*invalid_token"):
+        notify.send(custom, "hi")
+    assert posts[-1][1] == {"message": "hi"}
+    import requests
+
+    def refused(*_a, **_k):
+        raise requests.ConnectionError("refused")
+
+    monkeypatch.setattr("requests.post", refused)
+    with pytest.raises(notify.NotifyError, match="보내지 못했습니다.*refused"):
+        notify.send(slack, "x")
+
+
 def test_commands_for_each_account_mode():
     plain = ServerProfile("a", "h", "app")
     assert remote.script_command(plain, "/home/app/deploy/p", "check") == \

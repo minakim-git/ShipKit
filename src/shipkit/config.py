@@ -192,6 +192,28 @@ RUN_WITH = ("sudo", "su")               # 다른 계정으로 실행하는 방�
 _HOST_RE = re.compile(r"^[A-Za-z0-9._:\[\]-]+$")
 _ACCOUNT_RE = re.compile(r"^[A-Za-z0-9._][A-Za-z0-9._-]*$")
 
+# 메신저 알림(웹훅) 형식: 메시지 글을 담을 JSON 키. custom 은 key 를 직접 적는다
+NOTIFY_FORMATS = {"slack": "text", "mattermost": "text", "teams": "text", "jandi": "body", "discord": "content"}
+NOTIFY_LABELS = {"slack": "Slack", "mattermost": "Mattermost", "teams": "Teams", "jandi": "잔디", "discord": "Discord",
+                 "custom": "직접 입력"}
+_JSON_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+@dataclass(frozen=True)
+class NotifyConfig:
+    """반영·되돌리기가 끝나면 메신저(웹훅)로 알리는 설정. URL 로 JSON 하나를 POST 한다."""
+    url: str
+    format: str = "slack"     # NOTIFY_FORMATS 의 키 또는 custom
+    key: str = ""             # custom 일 때 메시지 글을 담을 JSON 키
+
+    @property
+    def field(self) -> str:
+        return self.key if self.format == "custom" else NOTIFY_FORMATS[self.format]
+
+    @property
+    def label(self) -> str:
+        return NOTIFY_LABELS.get(self.format, self.format)
+
 
 @dataclass
 class ServerProfile:
@@ -209,6 +231,7 @@ class ServerProfile:
     chown: bool = False                 # 올린 패키지 폴더 소유자를 실행 계정으로 바꾼다
     server_path: Optional[str] = None   # 이 서버만 배포 경로가 다르면 (비우면 프로젝트 server_path)
     server_os: str = "linux"            # linux: bash 로 shipkit.sh / windows: OpenSSH 서버에서 PowerShell 로 shipkit.ps1
+    notify: Optional[NotifyConfig] = None   # 반영·되돌리기가 끝나면 알릴 메신저 웹훅 (비우면 알리지 않음)
 
     @property
     def address(self) -> str:
@@ -721,8 +744,28 @@ def parse_servers(raw: Any, where: str, server_os: str) -> List[ServerProfile]:
             run_as=None if run_as == user else run_as, run_with=run_with,
             run_password=bool(item.get("run_password", False)), chown=bool(item.get("chown", False)),
             server_path=_parse_server_path(path, at, server_os) if path else None, server_os=server_os,
+            notify=_parse_notify(item.get("notify"), at),
         ))
     return servers
+
+
+def _parse_notify(raw: Any, where: str) -> Optional[NotifyConfig]:
+    """servers[].notify: {url, format, key}. notify 가 없으면(또는 비어 있으면) 알리지 않는다."""
+    if not raw:
+        return None
+    raw = _require_dict(raw, f"{where}.notify")
+    url = str(raw.get("url") or "").strip()
+    if not url:
+        raise ConfigError(f"{where}.notify.url (메신저 웹훅 주소)가 필요합니다. 알리지 않으려면 notify 를 지우세요.")
+    if not re.match(r"^https?://[^\s\"'<>]+$", url):
+        raise ConfigError(f"{where}.notify.url 은 http:// 또는 https:// 로 시작하는 웹훅 주소여야 합니다: {url}")
+    fmt = str(raw.get("format") or "slack").strip().lower()
+    if fmt not in NOTIFY_FORMATS and fmt != "custom":
+        raise ConfigError(f"{where}.notify.format 은 {', '.join(NOTIFY_FORMATS)}, custom 중 하나여야 합니다: {fmt}")
+    key = str(raw.get("key") or "").strip()
+    if fmt == "custom" and not _JSON_KEY_RE.match(key):
+        raise ConfigError(f"{where}.notify.key (메시지를 담을 JSON 키, 예: text)가 필요합니다. 영문·숫자·_ 만 쓸 수 있습니다.")
+    return NotifyConfig(url=url, format=fmt, key=key if fmt == "custom" else "")
 
 
 def _parse_server_path(value: Any, where: str, server_os: str = "linux") -> str:

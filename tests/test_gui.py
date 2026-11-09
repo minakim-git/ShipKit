@@ -982,7 +982,10 @@ def test_remote_panel_upload_apply_rollback(qapp, tmp_path, maven_project, monke
     write(server / "WEB-INF/views/user/list.jsp", "OLD")
     path = _config(tmp_path, maven_project, server_path=bash_path(server),
                    server={"history_file": bash_path(tmp_path / "home/.shipkit/history.log")},  # 진짜 홈을 안 건드리게
-                   servers=[{"name": "개발", "host": "127.0.0.1", "port": sshd.port, "user": "deployer"}])
+                   servers=[{"name": "개발", "host": "127.0.0.1", "port": sshd.port, "user": "deployer",
+                             "notify": {"url": "https://hooks.slack.com/services/T/B/x", "format": "slack"}}])
+    posts = []                                                  # 메신저 알림(웹훅)은 가짜 requests.post 로 받는다
+    monkeypatch.setattr("requests.post", lambda url, json=None, timeout=None: (posts.append(json), FakeResponse(200, "ok"))[1])
     dialogs = FakeDialogs(password=LOGIN_PW)
     w = make_window(path, dialogs)
     d = w.deploy_page
@@ -1008,16 +1011,20 @@ def test_remote_panel_upload_apply_rollback(qapp, tmp_path, maven_project, monke
     assert keyring.store[("shipkit", f"ssh:login:deployer@127.0.0.1:{sshd.port}")] == LOGIN_PW
     notes = []
     w.ctx.notify = lambda title, text: notes.append((title, text))   # 창이 뒤에 있으면(offscreen 은 늘 비활성) Windows 알림
+    assert not posts                                            # 올리고 확인만으로는 메신저에 알리지 않는다
     panel.apply()
     assert panel.stage == "applied", panel.log.toPlainText()
     assert (server / "WEB-INF/views/user/list.jsp").read_text(encoding="utf-8") == "<%-- jsp --%>"
     assert notes and notes[-1][0] == "erp → 개발 반영 완료" and notes[-1][1].startswith("패키지 ")
+    assert len(posts) == 1 and posts[0]["text"].startswith(f"✅ erp 개발에 {d.last_result.out_dir.name} 반영, 파일 1개")
+    assert "📣 Slack 알림을 보냈습니다: ✅ erp 개발에" in panel.log.toPlainText()
     assert dialogs.messages[-1][1] == "반영하기" or any(m[1] == "반영하기" for m in dialogs.messages)
     assert f"지금 개발 서버에는 {d.last_result.out_dir.name} 패키지가 반영돼 있습니다" in panel.current_label.text()
     asked = len([m for m in dialogs.messages if m[0] == "secret"])
     panel.rollback()                                            # 저장한 비밀번호를 써서 다시 묻지 않음
     assert panel.stage == "rolled_back" and (server / "WEB-INF/views/user/list.jsp").read_text(encoding="utf-8") == "OLD"
     assert "반영한 기록이 이 PC 에는 없습니다" in panel.current_label.text()   # 되돌렸으니 지금 반영된 패키지가 아니다
+    assert len(posts) == 2 and posts[1]["text"].startswith(f"↩️ erp 개발 되돌리기: {d.last_result.out_dir.name} (반영 전 상태로)")
     text = panel.log.toPlainText()
     assert text.count("──") >= 5 and "✓ 되돌렸습니다." in text and text.count("⏱") >= 5, text   # backup·apply·rollback 까지
     assert len([m for m in dialogs.messages if m[0] == "secret"]) == asked
@@ -1055,9 +1062,12 @@ def test_remote_panel_upload_apply_rollback(qapp, tmp_path, maven_project, monke
     h.list.setCurrentRow(h._row_of[0])                                     # 가장 최근 패키지 (이전 선택은 유지되므로 직접 고름)
     assert h.current.path == d.last_result.out_dir
     assert h.rollback_btn.isEnabled() and (server / "WEB-INF/views/user/list.jsp").read_text(encoding="utf-8") == "<%-- jsp --%>"
+    sent = len(posts)
     h.rollback_on_server()
     assert h.rollback_dialog.result is not None and h.rollback_dialog.result.ok, h.rollback_dialog.log.toPlainText()
     assert (server / "WEB-INF/views/user/list.jsp").read_text(encoding="utf-8") == "OLD"
+    assert len(posts) == sent + 1 and posts[-1]["text"].startswith("↩️ erp 개발 되돌리기: ")   # 기록 화면의 되돌리기도 알린다
+    assert "📣 Slack 알림을 보냈습니다" in h.rollback_dialog.log.toPlainText()
     assert h.current.deployments[-1]["action"] == "rollback" and not h.rollback_btn.isEnabled()
 
     assert h.status_btn.isVisibleTo(h)
@@ -1079,6 +1089,23 @@ def test_remote_panel_upload_apply_rollback(qapp, tmp_path, maven_project, monke
     page.servers_tab.srv_mode.setCurrentIndex(1)                            # 다른 계정으로 실행 -> 칸이 나타남
     assert page.servers_tab.server_form.isRowVisible(page.servers_tab.srv_run_as)
     page.servers_tab.srv_mode.setCurrentIndex(0)
+    tab = page.servers_tab                                                  # 메신저 알림: 형식·웹훅 URL 칸과 [알림 시험]
+    assert tab.srv_notify.currentData() == "slack" and tab.srv_webhook.text() == "https://hooks.slack.com/services/T/B/x"
+    assert tab.server_form.isRowVisible(tab.srv_webhook) and not tab.server_form.isRowVisible(tab.srv_notify_key)
+    sent = len(posts)
+    tab.test_notify()
+    assert len(posts) == sent + 1 and posts[-1]["text"].startswith("🔔 ShipKit 알림 시험: erp 개발 서버의")
+    assert dialogs.messages[-1][:2] == ("info", "알림 시험") and "Slack 채널로 보냈습니다" in dialogs.messages[-1][2]
+    tab.srv_notify.setCurrentIndex(tab.srv_notify.findData("custom"))     # 직접 입력: JSON 키 칸이 나타나고, 비어 있으면 빨갛게
+    assert tab.server_form.isRowVisible(tab.srv_notify_key) and tab.srv_notify_key.property("invalid")
+    assert tab.srv_error.isVisibleTo(tab) and "notify.key" in tab.srv_error.text()
+    tab.srv_notify_key.setText("message")
+    assert not tab.srv_error.isVisibleTo(tab)
+    assert tab.servers[0]["notify"] == {"url": "https://hooks.slack.com/services/T/B/x", "format": "custom", "key": "message"}
+    tab.srv_webhook.setText("")                                             # 형식을 골랐는데 URL 이 비면 그 칸이 빨갛게
+    assert tab.srv_webhook.property("invalid") and "notify.url" in tab.srv_error.text()
+    tab.srv_notify.setCurrentIndex(0)                                       # 알리지 않음: 설정에서 빠지고 시험 단추도 숨는다
+    assert "notify" not in tab.servers[0] and not tab.srv_error.isVisibleTo(tab) and not tab.notify_test_btn.isVisibleTo(tab)
     page.servers_tab.test_server()
     assert dialogs.messages[-1][:2] == ("info", "연결 시험") and "접속 성공" in dialogs.messages[-1][2], dialogs.messages[-1]
     page.servers_tab.forget_host_key()                                      # 서버 지문 잊기 (확인 후 지움)

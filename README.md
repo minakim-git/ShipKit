@@ -371,11 +371,13 @@ GUI 테스트는 화면 없이(`QT_QPA_PLATFORM=offscreen`) 실제 위젯을 조
 | 올릴 위치 | 패키지 폴더를 올릴 곳 (기본 `~/deploy`) |
 | 실행 계정 | 접속한 계정 그대로 / 다른 계정으로 실행 (`sudo -u 계정` 또는 `su - 계정`, 필요하면 비밀번호, 올린 폴더 소유자 바꾸기) |
 | 서버 배포 경로 | 서버마다 다르면 따로 (비우면 프로젝트 값) |
+| 메신저 알림 | 반영·되돌리기가 끝나면 웹훅으로 한 줄: Slack·Mattermost·Teams(`text`) / 잔디(`body`) / Discord(`content`) / 직접 입력(JSON 키 지정). **알림 시험**으로 채널에 도착하는지 확인 |
 
 - 비밀번호·키 암호는 처음 접속할 때 묻고, 저장을 고르면 Windows 자격 증명 관리자에 넣어 다음부터 묻지 않습니다. 설정 파일에는 들어가지 않습니다. 로그인에 실패하면 저장한 비밀번호를 지우고 다음에 다시 묻습니다.
 - 처음 접속하는 서버는 지문(host key)을 보여 주고 확인을 받은 뒤 `%APPDATA%\shipkit\known_hosts` 에 기억합니다. 지문이 바뀌면 접속하지 않습니다. 서버를 다시 설치했다면 서버 연결 탭의 **서버 지문 잊기**(명령어는 `--forget-host-key`)로 지운 뒤 다시 확인합니다.
 - 올리고 확인(check)이 끝나면 로그 위에 결과가 표로 정리됩니다: apply 때 바뀌는 파일 수와, 신규·변경·동일·삭제예정·이미없음·정리예정별 파일 목록.
 - 반영·되돌리기 전에 항상 확인을 받고, 서버 명령(hooks)이 있으면 함께 실행할지 묻습니다.
+- 서버 연결에 웹훅을 적어 두면 반영·되돌리기가 끝났을 때(실패도) 메신저 채널에 한 줄 보냅니다: `✅ erp 운영에 2026-11-06-1430_에디터_호환성_추가 반영, 파일 12개 (minakim)`. 메신저가 받지 못해도 반영 결과는 바뀌지 않고 경고만 남습니다. 기록 화면의 **서버에서 되돌리기**도 알립니다(명령어는 `--no-notify` 로 끌 수 있음).
 - 진행 중에는 **취소** 버튼으로 올리기·실행을 끊을 수 있습니다(서버에서 이미 시작된 명령은 끝까지 돌 수 있습니다). 서버 출력이 10분 동안 없으면 네트워크가 끊긴 것으로 보고 저절로 중단합니다.
 - 명령어로도 같은 일을 할 수 있습니다(Jenkins 등). 처음 접속하는 서버는 `--accept-host-key`로 지문을 기억하고, 비밀번호는 환경변수 `SHIPKIT_SSH_PASSWORD`(접속)·`SHIPKIT_RUN_PASSWORD`(sudo/su)나 화면에서 저장한 키링 값을 씁니다. 터미널에서는 없으면 물어봅니다.
 
@@ -383,6 +385,7 @@ GUI 테스트는 화면 없이(`QT_QPA_PLATFORM=offscreen`) 실제 위젯을 조
   shipkit deploy -p erp --server 개발                       # 가장 최근 패키지를 올리고 check 만
   shipkit deploy -p erp --server 개발 --apply --no-hooks    # check 뒤 backup → apply (--hooks: 서버 명령도 실행)
   shipkit deploy -p erp --server 개발 --rollback            # 올려 둔 패키지 폴더에서 rollback
+  shipkit deploy -p erp --server 개발 --apply --no-hooks --no-notify   # 메신저 알림 없이 (설정돼 있어도)
   shipkit deploy -p erp --server 개발 --package D:/deploy/erp/2026-10-30-1523   # 특정 패키지
   shipkit server-status -p erp --server 개발               # 지금 반영된 패키지와 최근 이력
   ```
@@ -406,6 +409,10 @@ projects:
                                # su 는 서버 로케일과 상관없이 암호 질문을 알아챕니다 (LC_ALL=C 로 띄우고, 번역된 질문도 인식)
         chown: true            # 올린 패키지 폴더 소유자를 실행 계정으로
         upload_dir: /home/app/deploy
+        notify:                # 반영·되돌리기가 끝나면 메신저로 한 줄 (비우면 알리지 않음)
+          url: https://hooks.slack.com/services/T000/B000/xxxx
+          format: slack        # slack | mattermost | teams ({"text"}) / jandi ({"body"}) / discord ({"content"}) / custom (key 지정)
+          # key: message       # custom 일 때 메시지를 담을 JSON 키
 ```
 
 ## 알려진 제한

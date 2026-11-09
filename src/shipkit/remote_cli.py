@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 from typing import List, Optional
 
-from shipkit import history, remote
+from shipkit import history, notify, remote
 from shipkit.config import ProjectConfig, ServerProfile
 from shipkit.secrets import SecretError, get_secret, set_secret
 
@@ -130,6 +130,26 @@ def _record(package: Path, profile: ServerProfile, project: ProjectConfig, res: 
         _out(f"[경고] 반영 이력을 기록 파일에 남기지 못했습니다: {e}\n")
 
 
+def _notify(project: ProjectConfig, profile: ServerProfile, package: Path, res: remote.StepResult,
+            enabled: bool = True) -> None:
+    """반영·되돌리기가 끝나면 서버 연결의 메신저 웹훅으로 한 줄 알린다 (--no-notify 로 끔). 실패해도 경고만."""
+    cfg = profile.notify
+    if cfg is None or not enabled:
+        return
+    files = None
+    if res.action != "rollback":
+        record = history.read_record(package)
+        if record is not None:
+            files = len(record.applied) + len(record.deletes)
+    text = notify.compose(project.name, profile.name, res.action, package.name, res.ok, res.code, files)
+    try:
+        notify.send(cfg, text)
+    except notify.NotifyError as e:
+        _out(f"[경고] {e}\n")
+    else:
+        _out(f"[알림] {cfg.label} 채널에 알렸습니다: {text}\n")
+
+
 def connect(profile: ServerProfile, secrets: remote.Secrets) -> remote.Connection:
     try:
         import paramiko  # noqa: F401
@@ -139,8 +159,9 @@ def connect(profile: ServerProfile, secrets: remote.Secrets) -> remote.Connectio
 
 
 def deploy(project: ProjectConfig, profile: ServerProfile, package: Path, action: str, secrets: remote.Secrets,
-           run_hooks: Optional[bool]) -> int:
-    """check: 올리고 확인 / apply: 올리고 확인 뒤 backup·apply / rollback: 올려 둔 패키지 폴더에서 rollback. 반환: 종료 코드."""
+           run_hooks: Optional[bool], notify_enabled: bool = True) -> int:
+    """check: 올리고 확인 / apply: 올리고 확인 뒤 backup·apply / rollback: 올려 둔 패키지 폴더에서 rollback. 반환: 종료 코드.
+    notify_enabled: 반영·되돌리기가 끝나면 서버 연결의 메신저 웹훅으로 알린다 (설정돼 있을 때)."""
     conn = connect(profile, secrets)
     try:
         if action == "rollback":
@@ -149,6 +170,7 @@ def deploy(project: ProjectConfig, profile: ServerProfile, package: Path, action
                                     yes=bool(run_hooks), no_hooks=not run_hooks)
             _record(package, profile, project, res)
             _out("\n되돌렸습니다.\n" if res.ok else f"\nrollback 실패 (종료 코드 {res.code})\n")
+            _notify(project, profile, package, res, notify_enabled)
             return 0 if res.ok else 1
 
         last = [0]
@@ -178,6 +200,7 @@ def deploy(project: ProjectConfig, profile: ServerProfile, package: Path, action
         res = remote.backup_and_apply(conn, profile, secrets, res.remote_dir, _out, run_hooks)
         _record(package, profile, project, res)
         _out("\n반영했습니다.\n" if res.ok else f"\n{res.action} 실패 (종료 코드 {res.code})\n")
+        _notify(project, profile, package, res, notify_enabled)
         return 0 if res.ok else 1
     finally:
         conn.close()

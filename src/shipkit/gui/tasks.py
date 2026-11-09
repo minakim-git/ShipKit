@@ -7,6 +7,7 @@ from typing import Any, Callable, Optional, Set
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 
 from shipkit.config import ConfigError
+from shipkit.notify import NotifyError
 from shipkit.remote import RemoteError
 from shipkit.secrets import SecretError
 from shipkit.sources.git_local import GitError
@@ -17,7 +18,7 @@ from shipkit.workflow import InputError
 
 # 사용자에게 메시지만 보여주면 되는 예상된 오류
 EXPECTED_ERRORS = (ConfigError, SecretError, GitError, GitHubError, GitLabError, ProviderError, InputError,
-                   RemoteError)
+                   RemoteError, NotifyError)
 
 Emit = Callable[[Any], None]
 log = logging.getLogger("shipkit.tasks")

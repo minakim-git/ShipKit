@@ -11,8 +11,8 @@ from typing import Any, Callable, Dict, List, Optional
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QCheckBox, QComboBox, QHBoxLayout, QLineEdit, QListWidget, QSpinBox, QVBoxLayout, QWidget
 
-from shipkit import remote
-from shipkit.config import ConfigError, ServerProfile, parse_servers
+from shipkit import notify, remote
+from shipkit.config import NOTIFY_LABELS, ConfigError, ServerProfile, parse_servers
 from shipkit.gui.context import AppContext
 from shipkit.gui.project_widgets import form_layout as _form
 from shipkit.gui.remote_panel import RemoteClient
@@ -22,13 +22,16 @@ from shipkit.gui.widgets import Card, PathField, button, label, mark_invalid
 class ServersTab(QWidget):
     changed = Signal()  # 사용자가 서버를 고치거나 더하거나 지웠을 때
 
-    def __init__(self, ctx: AppContext, project_path: Callable[[], str], server_os: Callable[[], str]):
-        """project_path: 프로젝트의 서버 배포 경로(비워 둔 칸의 안내용), server_os: 지금 설정의 서버 OS (검증용)."""
+    def __init__(self, ctx: AppContext, project_path: Callable[[], str], server_os: Callable[[], str],
+                 project_name: Callable[[], str] = lambda: ""):
+        """project_path: 프로젝트의 서버 배포 경로(비워 둔 칸의 안내용), server_os: 지금 설정의 서버 OS (검증용),
+        project_name: 알림 시험 메시지에 넣을 프로젝트 이름."""
         super().__init__()
         self.ctx = ctx
         self.client = RemoteClient(ctx)
         self.project_path = project_path
         self.server_os = server_os
+        self.project_name = project_name
         self.servers: List[Dict[str, Any]] = []
         self._server_row = -1
         self._loading = False
@@ -100,22 +103,38 @@ class ServersTab(QWidget):
         self.srv_run_password.setToolTip("끄면 비밀번호 없이 실행합니다. 서버가 비밀번호를 물으면 기다리지 않고 바로 실패합니다.")
         self.srv_chown = QCheckBox("올린 패키지 폴더의 소유자를 실행 계정으로 바꿉니다 (chown)")
         self.srv_path = QLineEdit()
+        self.srv_notify = QComboBox()                 # 메신저 알림: 반영·되돌리기가 끝나면 웹훅으로 한 줄
+        self.srv_notify.addItem("알리지 않음", "")
+        for fmt, text in NOTIFY_LABELS.items():
+            self.srv_notify.addItem(f"{text} (JSON 키를 직접 적음)" if fmt == "custom" else text, fmt)
+        self.srv_notify.setToolTip("반영·되돌리기가 끝나면 이 서버의 메신저 채널에 결과를 한 줄 보냅니다.\n"
+                                   "Slack·Mattermost·Teams 는 {\"text\": …}, 잔디는 {\"body\": …}, Discord 는 {\"content\": …} 로 보냅니다.")
+        self.srv_webhook = QLineEdit()
+        self.srv_webhook.setPlaceholderText("https://hooks.slack.com/services/…   (메신저에서 만든 수신 웹훅 주소)")
+        self.srv_notify_key = QLineEdit()
+        self.srv_notify_key.setPlaceholderText("메시지 글을 담을 JSON 키 (예: text)")
+        self.srv_notify_key.setMaximumWidth(260)
         for text, widget in (("이름", self.srv_name), ("호스트", self.srv_host), ("포트", self.srv_port),
                              ("접속 계정", self.srv_user), ("인증", self.srv_auth), ("키 파일", self.srv_key),
                              ("올릴 위치", self.srv_upload), ("실행 계정", self.srv_mode), ("계정 이름", self.srv_run_as),
                              ("전환 방법", self.srv_run_with), ("", self.srv_run_password), ("", self.srv_chown),
-                             ("서버 배포 경로", self.srv_path)):
+                             ("서버 배포 경로", self.srv_path), ("메신저 알림", self.srv_notify), ("웹훅 URL", self.srv_webhook),
+                             ("JSON 키", self.srv_notify_key)):
             form.addRow(label(text, "fieldLabel", wrap=False), widget)
         right.addLayout(form)
         buttons = QHBoxLayout()
         self.server_test_btn = button("연결 시험")
         self.server_test_btn.clicked.connect(self.test_server)
+        self.notify_test_btn = button("알림 시험", "ghost")
+        self.notify_test_btn.setToolTip("웹훅 주소로 시험 메시지를 하나 보내 채널에 잘 도착하는지 확인합니다.")
+        self.notify_test_btn.clicked.connect(self.test_notify)
         forget = button("저장된 비밀번호 지우기", "ghost")
         forget.clicked.connect(self.forget_server_secrets)
         forget_key = button("서버 지문 잊기", "ghost")
         forget_key.setToolTip("서버를 다시 설치해 지문이 바뀌었을 때. 다음 접속 때 새 지문을 보여 주고 다시 묻습니다.")
         forget_key.clicked.connect(self.forget_host_key)
         buttons.addWidget(self.server_test_btn)
+        buttons.addWidget(self.notify_test_btn)
         buttons.addWidget(forget)
         buttons.addWidget(forget_key)
         buttons.addStretch(1)
@@ -129,9 +148,9 @@ class ServersTab(QWidget):
         col.addStretch(1)
 
         for edit in (self.srv_name, self.srv_host, self.srv_user, self.srv_upload, self.srv_run_as, self.srv_path,
-                     self.srv_key.edit):
+                     self.srv_key.edit, self.srv_webhook, self.srv_notify_key):
             edit.textChanged.connect(self._server_edited)
-        for combo in (self.srv_auth, self.srv_mode, self.srv_run_with):
+        for combo in (self.srv_auth, self.srv_mode, self.srv_run_with, self.srv_notify):
             combo.currentIndexChanged.connect(self._server_edited)
         self.srv_port.valueChanged.connect(self._server_edited)
         self.srv_run_password.toggled.connect(self._server_edited)
@@ -173,6 +192,10 @@ class ServersTab(QWidget):
         self.srv_run_password.setChecked(bool(s.get("run_password")))
         self.srv_chown.setChecked(bool(s.get("chown")))
         self.srv_path.setText(str(s.get("server_path", "")))
+        notify_cfg = s.get("notify") if isinstance(s.get("notify"), dict) else {}
+        self._select(self.srv_notify, (notify_cfg.get("format") or "slack") if notify_cfg else "")
+        self.srv_webhook.setText(str(notify_cfg.get("url", "")))
+        self.srv_notify_key.setText(str(notify_cfg.get("key", "")))
         self._loading = was
         self._server_rows()
 
@@ -189,6 +212,10 @@ class ServersTab(QWidget):
                                            if windows else "~/deploy   (이 아래에 날짜 폴더로 올립니다)")
         project_path = self.project_path()
         self.srv_path.setPlaceholderText(f"비우면 프로젝트 값: {project_path}" if project_path else "")
+        fmt = self.srv_notify.currentData()
+        form.setRowVisible(self.srv_webhook, bool(fmt))
+        form.setRowVisible(self.srv_notify_key, fmt == "custom")
+        self.notify_test_btn.setVisible(bool(fmt))
 
     def _server_form_dict(self) -> Dict[str, Any]:
         """폼의 값 (기본값과 같은 칸은 저장하지 않는다)."""
@@ -210,6 +237,11 @@ class ServersTab(QWidget):
                 d["chown"] = True
         if self.srv_path.text().strip():
             d["server_path"] = self.srv_path.text().strip()
+        fmt = self.srv_notify.currentData()
+        if fmt:
+            d["notify"] = {"url": self.srv_webhook.text().strip(), "format": fmt}
+            if fmt == "custom":
+                d["notify"]["key"] = self.srv_notify_key.text().strip()
         return d
 
     def _server_edited(self, *_args) -> None:
@@ -227,7 +259,8 @@ class ServersTab(QWidget):
         """폼 값을 바로 검사해 잘못된 칸을 빨갛게, 이유를 아래에 보여 준다 (저장 때까지 기다리지 않게)."""
         fields = (("host", self.srv_host), ("user", self.srv_user), ("name", self.srv_name), ("port", self.srv_port),
                   ("upload_dir", self.srv_upload), ("key_file", self.srv_key), ("server_path", self.srv_path),
-                  ("run_as", self.srv_run_as), ("이름", self.srv_name), ("호스트", self.srv_host), ("계정", self.srv_user))
+                  ("run_as", self.srv_run_as), ("notify.key", self.srv_notify_key), ("notify", self.srv_webhook),
+                  ("이름", self.srv_name), ("호스트", self.srv_host), ("계정", self.srv_user))
         message = ""
         try:
             parse_servers([self.servers[self._server_row]], "서버", self.server_os())
@@ -287,6 +320,33 @@ class ServersTab(QWidget):
             self.ctx.dialogs.error("연결 시험 실패", text)
 
         self.client.test(profile, done, failed, finish)  # 비밀번호 입력을 취소하면 finish
+
+    def test_notify(self) -> None:
+        """[알림 시험]: 웹훅으로 시험 메시지를 하나 보낸다 (서버 접속은 하지 않는다)."""
+        profile = self._current_profile()
+        if profile is None:
+            return
+        if profile.notify is None:
+            self.ctx.dialogs.error("알림 시험", "웹훅 URL 을 먼저 적으세요.")
+            return
+        cfg = profile.notify
+        text = notify.test_message(self.project_name() or "프로젝트", profile.name)
+        self.notify_test_btn.setEnabled(False)
+        self.notify_test_btn.setText("보내는 중…")
+
+        def finish() -> None:
+            self.notify_test_btn.setEnabled(True)
+            self.notify_test_btn.setText("알림 시험")
+
+        def done(_result) -> None:
+            finish()
+            self.ctx.dialogs.info("알림 시험", f"{cfg.label} 채널로 보냈습니다. 메신저에서 확인하세요:\n\n{text}")
+
+        def failed(message: str) -> None:
+            finish()
+            self.ctx.dialogs.error("알림 시험 실패", message)
+
+        self.ctx.runner.run(lambda: notify.send(cfg, text), done, failed, quiet=True)
 
     def forget_host_key(self) -> None:
         profile = self._current_profile()

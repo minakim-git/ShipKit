@@ -16,7 +16,7 @@ from test_remote import bash_path, needs_bash, sshd  # noqa: E402,F401
 from test_gui import FakeKeyring  # noqa: E402
 
 
-def _setup(tmp_path, maven_project, sshd, monkeypatch):
+def _setup(tmp_path, maven_project, sshd, monkeypatch, notify=None):
     keyring = FakeKeyring()
     monkeypatch.setattr("shipkit.secrets._keyring", lambda: keyring)
     monkeypatch.setattr("shipkit.remote.known_hosts_path", lambda: tmp_path / "known_hosts")
@@ -27,7 +27,8 @@ def _setup(tmp_path, maven_project, sshd, monkeypatch):
     cfg.write_text(yaml.safe_dump({"projects": {"erp": {
         "root": maven_project.as_posix(), "output_dir": (tmp_path / "out").as_posix(),
         "server_path": bash_path(server), "server": {"history_file": bash_path(tmp_path / "home/.shipkit/history.log")},
-        "servers": [{"name": "개발", "host": "127.0.0.1", "port": sshd.port, "user": "deployer"}]}}}), encoding="utf-8")
+        "servers": [dict({"name": "개발", "host": "127.0.0.1", "port": sshd.port, "user": "deployer"},
+                         **({"notify": notify} if notify else {}))]}}}), encoding="utf-8")
     return cfg, server, keyring
 
 
@@ -67,7 +68,11 @@ def test_deploy_changed_host_key_and_forget(tmp_path, maven_project, sshd, monke
 
 @needs_bash
 def test_deploy_check_apply_rollback_and_status(tmp_path, maven_project, sshd, monkeypatch, capsys):
-    cfg, server, keyring = _setup(tmp_path, maven_project, sshd, monkeypatch)
+    from conftest import FakeResponse
+    cfg, server, keyring = _setup(tmp_path, maven_project, sshd, monkeypatch,
+                                  notify={"url": "https://hooks.example/jandi", "format": "jandi"})
+    posts, responses = [], []                                   # 메신저 알림(웹훅)은 가짜 requests.post 로 받는다
+    monkeypatch.setattr("requests.post", lambda url, json=None, timeout=None: (posts.append(json), responses.pop(0))[1])
     jsp = "src/main/webapp/WEB-INF/views/user/list.jsp"
     assert cli.main(["package", "-c", str(cfg), "-p", "erp", jsp]) == 0
     capsys.readouterr()
@@ -83,8 +88,12 @@ def test_deploy_check_apply_rollback_and_status(tmp_path, maven_project, sshd, m
 
     assert cli.main(["deploy", "-c", str(cfg), "-p", "erp", "--apply"]) == 2             # hooks 결정이 없으면 멈춤
     assert "--hooks 또는 --no-hooks" in capsys.readouterr().err
+    assert not posts                                                                    # check 만으로는 알리지 않는다
+    responses.append(FakeResponse(200, "ok"))
     assert cli.main(["deploy", "-c", str(cfg), "-p", "erp", "--apply", "--no-hooks"]) == 0
-    assert "반영했습니다" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "반영했습니다" in out and "[알림] 잔디 채널에 알렸습니다" in out
+    assert len(posts) == 1 and posts[0]["body"].startswith("✅ erp 개발에 ") and ", 파일 1개" in posts[0]["body"]
     assert (server / "WEB-INF/views/user/list.jsp").read_text(encoding="utf-8") == "<%-- jsp --%>"
 
     assert cli.main(["server-status", "-c", str(cfg), "-p", "erp"]) == 0
@@ -92,12 +101,17 @@ def test_deploy_check_apply_rollback_and_status(tmp_path, maven_project, sshd, m
     record = history.list_records(parse_config(yaml.safe_load(cfg.read_text(encoding="utf-8")), cfg).project("erp"))[0]
     assert f"지금 반영된 패키지: {record.name}" in out and "apply" in out
 
+    responses.append(FakeResponse(500, "down"))                                        # 메신저가 거부해도 결과는 그대로
     assert cli.main(["deploy", "-c", str(cfg), "-p", "erp", "--rollback"]) == 0
-    assert "되돌렸습니다" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "되돌렸습니다" in out and "[경고] 메신저가 알림을 거부했습니다 (잔디, HTTP 500): down" in out
+    assert posts[-1]["body"].startswith(f"↩️ erp 개발 되돌리기: {record.name} (반영 전 상태로)")
     assert (server / "WEB-INF/views/user/list.jsp").read_text(encoding="utf-8") == "OLD"
+    assert cli.main(["deploy", "-c", str(cfg), "-p", "erp", "--rollback", "--no-notify"]) == 0   # (되돌리기는 다시 해도 된다)
+    assert len(posts) == 2 and "[알림]" not in capsys.readouterr().out                 # --no-notify: 보내지 않는다
     data = json.loads((record.path / history.RECORD_FILE).read_text(encoding="utf-8"))
     actions = [d["action"] for d in data["deployments"]]
-    assert actions == ["check", "check", "apply", "rollback"] and all(d["ok"] for d in data["deployments"])  # 화면 기록과 같은 곳
+    assert actions == ["check", "check", "apply", "rollback", "rollback"] and all(d["ok"] for d in data["deployments"])  # 화면 기록과 같은 곳
 
 
 @needs_bash

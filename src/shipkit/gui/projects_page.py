@@ -103,7 +103,8 @@ class ProjectsPage(QWidget):
         self.tabs.addTab(self._scroll(self._filters_tab()), "제외·알림")
         self.servers_tab = ServersTab(
             ctx, project_path=lambda: self.server_edit.text().strip() or self.server_edit.placeholderText().split(": ", 1)[-1],
-            server_os=lambda: self.draft.server_os if self.draft else "linux")
+            server_os=lambda: self.draft.server_os if self.draft else "linux",
+            project_name=lambda: self.name_edit.text().strip() or (self.loaded_name or ""))
         self.servers_tab.changed.connect(self._changed)
         self.tabs.addTab(self._scroll(self.servers_tab), "서버 연결")
         main_layout.addWidget(self.tabs, 1)
