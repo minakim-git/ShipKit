@@ -50,6 +50,7 @@ class PackageRecord:
     has_record: bool = True               # False = 기록 파일이 없는 예전 패키지
     git_head: str = ""                    # 만들 때 로컬 HEAD 커밋 ('지난 배포 이후' 범위의 시작, 0.12 부터)
     git_branch: str = ""
+    label: str = ""                       # 만들 때 붙인 패키지 이름(설명)
 
     @property
     def name(self) -> str:
@@ -73,7 +74,7 @@ class PackageRecord:
 
     def search_text(self) -> str:
         """목록 검색 대상: 설명, MR 번호·제목, 파일 경로, 반영한 서버 이름."""
-        parts = [self.name, self.description] + [f"{r.get('ref', '')} {r.get('title', '')}" for r in self.requests]
+        parts = [self.name, self.label, self.description] + [f"{r.get('ref', '')} {r.get('title', '')}" for r in self.requests]
         parts += [str(d.get("server", "")) for d in self.deployments]
         return "\n".join(parts + self.applied + self.deletes).lower()
 
@@ -128,6 +129,7 @@ def write_record(result: "PackageResult") -> Path:
         "shipkit": __version__,
         "project": p.name,
         "created_at": result.created_at.isoformat(timespec="seconds"),
+        "label": result.label,
         "source": {
             "kind": source.kind,
             "description": source.description,
@@ -180,6 +182,7 @@ def read_record(folder: Path) -> Optional[PackageRecord]:
                 deployments=[d for d in data.get("deployments") or [] if isinstance(d, dict)],
                 hooks_config=data["hooks_config"] if isinstance(data.get("hooks_config"), dict) else None,
                 git_head=str(git.get("head") or ""), git_branch=str(git.get("branch") or ""),
+                label=str(data.get("label") or ""),
             )
         except (ValueError, KeyError, TypeError):
             pass  # 손상된 기록 파일은 예전 패키지처럼 읽는다

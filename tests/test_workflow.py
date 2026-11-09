@@ -23,6 +23,12 @@ def test_package_name_default_and_custom():
     when = datetime(2026, 10, 26, 11, 33, 30)
     assert _project().render_package_name(when) == "2026-10-26-1133"
     assert _project(package_name="{project}_%Y%m%d_%H%M%S").render_package_name(when) == "erp_20261026_113330"
+    # 패키지 이름(설명)은 뒤에 _이름 으로 붙는다. 공백은 _, 폴더·셸에 위험한 문자는 뺀다
+    assert _project().render_package_name(when, "에디터 호환성 추가") == "2026-10-26-1133_에디터_호환성_추가"
+    assert _project(package_name="%Y%m%d").render_package_name(when, " 에디터  호환성\t추가 ") == "20261026_에디터_호환성_추가"
+    assert _project().render_package_name(when, "   ") == "2026-10-26-1133"
+    assert config.safe_label(' a/b:c "d" $e `f` ') == "abc_d_e_f" and config.safe_label("...") == ""
+    assert config.safe_label("-_.x_.-") == "x" and len(config.safe_label("가" * 100)) == config.LABEL_MAX
 
 
 @pytest.mark.parametrize("bad", ["%Y/%m", "a:b", "", "..", "%Y?"])

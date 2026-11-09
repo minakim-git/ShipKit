@@ -90,7 +90,7 @@ class SettingsPage(QWidget):
         form = _form()
         self.output_field = PathField(placeholder="예: D:/deploy/{project}   ({project} = 프로젝트 이름)")
         self.package_name = QLineEdit()
-        self.package_name.setPlaceholderText("%Y-%m-%d-%H%M   (예: 2026-10-26-1133)")
+        self.package_name.setPlaceholderText("%Y-%m-%d-%H%M → 2026-10-26-1133   /   %Y%m%d_%H%M → 20261026_1133")
         form.addRow(label("패키지 생성 경로", "fieldLabel", wrap=False), self.output_field)
         form.addRow(label("날짜 폴더 이름", "fieldLabel", wrap=False), self.package_name)
         defaults.body.addLayout(form)

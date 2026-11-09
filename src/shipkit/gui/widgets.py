@@ -442,6 +442,32 @@ class ProjectSwitcher(QComboBox):
         super().showPopup()
 
 
+class LiveLineEdit(QLineEdit):
+    """한글처럼 조합해서 넣는 글자는 조합이 끝나야 text() 에 들어온다. live_changed 는 조합 중인 글자까지 합친 글을
+    바로바로 알려 준다 (미리보기용). 값을 쓸 때는 그대로 text() 를 쓴다."""
+    live_changed = Signal(str)
+
+    def __init__(self, *args):
+        super().__init__(*args)
+        self._preedit = ""
+        self.textChanged.connect(lambda _t: self._emit_live())
+
+    def inputMethodEvent(self, event) -> None:  # noqa: N802
+        super().inputMethodEvent(event)
+        self._preedit = event.preeditString()
+        self._emit_live()
+
+    def live_text(self) -> str:
+        text = self.text()
+        if not self._preedit:
+            return text
+        at = self.cursorPosition()
+        return text[:at] + self._preedit + text[at:]
+
+    def _emit_live(self) -> None:
+        self.live_changed.emit(self.live_text())
+
+
 class DropFileList(QPlainTextEdit):
     """파일 목록 입력칸. 탐색기에서 파일·폴더를 끌어다 놓으면(또는 붙여 넣으면) 저장소 기준 상대 경로로 바꿔 한 줄씩 넣는다.
     폴더는 안의 파일을 모두 넣고, 저장소 밖 파일은 빼고 알린다. added(넣은 수, 저장소 밖 경로 목록) 신호."""

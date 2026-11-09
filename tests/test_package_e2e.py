@@ -141,6 +141,28 @@ def _write_config(path: Path, maven_project: Path, out: Path) -> Path:
     return path
 
 
+def test_package_label_in_folder_record_and_report(maven_project, tmp_path, capsys):
+    """패키지 이름(설명)은 폴더 이름 뒤에 붙고, 기록 파일·보고서에 남으며, CLI 는 --label 로 준다."""
+    from shipkit import history
+    project = make_config(maven_project, tmp_path / "out").project("erp")
+    source = SourceInfo("manual", "테스트")
+    result = packager.build_package(project, mapper.plan(project, list(CHANGES)), source, label=" 에디터 호환성 추가 ",
+                                    now=datetime(2026, 11, 6, 14, 30))
+    assert result.out_dir.name == "2026-11-06-1430_에디터_호환성_추가" and result.label == "에디터 호환성 추가"
+    record = history.read_record(result.out_dir)
+    assert record.label == "에디터 호환성 추가" and "에디터 호환성 추가" in record.search_text()
+    assert "- 패키지 이름: 에디터 호환성 추가" in (result.out_dir / "report.md").read_text(encoding="utf-8")
+    again = packager.build_package(project, mapper.plan(project, list(CHANGES)), source, label="에디터 호환성 추가",
+                                   now=datetime(2026, 11, 6, 14, 30))
+    assert again.out_dir.name == "2026-11-06-1430_에디터_호환성_추가_2"            # 같은 이름이면 _2
+
+    cfg = _write_config(tmp_path / "shipkit.yaml", maven_project, tmp_path / "cli-out")
+    code = cli.main(["package", "-c", str(cfg), "--label", "핫픽스 / 로그인", "src/main/java/com/acme/User.java"])
+    assert code == 0, capsys.readouterr().out
+    names = [p.name for p in (tmp_path / "cli-out").iterdir()]
+    assert len(names) == 1 and names[0].endswith("_핫픽스_로그인")
+
+
 def test_cli_package_from_file_list(maven_project, tmp_path, capsys):
     cfg = _write_config(tmp_path / "shipkit.yaml", maven_project, tmp_path / "out")
     listing = tmp_path / "list.txt"

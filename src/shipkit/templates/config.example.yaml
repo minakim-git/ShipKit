@@ -23,7 +23,8 @@ gitlab:
 # 모든 프로젝트 공통 기본값 (프로젝트에서 같은 키로 덮어쓸 수 있음)
 defaults:
   output_dir: D:/deploy/{project}     # 패키지 생성 위치 ({project} = 프로젝트 이름, 이 아래에 날짜 폴더가 생김)
-  package_name: "%Y-%m-%d-%H%M"       # 날짜 폴더 이름 -> 2026-10-26-1133 ({project} 사용 가능)
+  package_name: "%Y-%m-%d-%H%M"       # 날짜 폴더 이름 -> 2026-10-26-1133 ({project} 사용 가능, "%Y%m%d_%H%M" -> 20261026_1133)
+                                      # 화면의 '패키지 이름'이나 --label 을 쓰면 뒤에 _이름 이 붙습니다
   source_encoding: [utf-8, cp949]     # Java 소스 인코딩 (앞에서부터 시도)
   exclude:                            # 배포에서 뺄 파일 (glob, 프리셋 기본 제외 목록에 추가됨)
     - "src/test/**"

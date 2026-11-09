@@ -96,12 +96,16 @@ class RecordRow(QWidget):
 
 
 def _title(record: history.PackageRecord) -> str:
-    """목록·상세 제목: MR 이면 제목까지, 아니면 출처 설명."""
+    """목록·상세 제목: 붙인 이름이 있으면 그것 먼저, MR 이면 제목까지, 아니면 출처 설명."""
     if record.requests:
         first = record.requests[0]
         more = f" 외 {len(record.requests) - 1}개" if len(record.requests) > 1 else ""
-        return f"{first.get('ref', '')}  {first.get('title') or ''}{more}".strip()
-    return record.description
+        rest = f"{first.get('ref', '')}  {first.get('title') or ''}{more}".strip()
+    else:
+        rest = record.description
+    if record.label:
+        return f"{record.label}  ·  {rest}" if rest else record.label
+    return rest
 
 
 class HistoryPage(QWidget):
@@ -174,7 +178,7 @@ class HistoryPage(QWidget):
         row.setSpacing(14)
 
         left = Card(padding=12)
-        left.setFixedWidth(360)
+        left.setFixedWidth(320)
         self.search = QLineEdit()
         self.search.setPlaceholderText("MR 번호·제목·파일 경로로 찾기")
         search_icon = self.search.addAction(QIcon(), QLineEdit.ActionPosition.LeadingPosition)
@@ -202,6 +206,12 @@ class HistoryPage(QWidget):
         texts.addWidget(self.detail_title)
         texts.addWidget(self.detail_sub)
         head.addLayout(texts, 1)
+        self.open_btn = button("폴더 열기", "ghost")        # 열기 단추는 제목 줄 오른쪽에 (아래 단추 줄이 창 최소 폭에 맞게)
+        self.open_btn.clicked.connect(lambda: self.current and open_path(self.current.path))
+        self.report_btn = button("보고서 열기", "ghost")
+        self.report_btn.clicked.connect(lambda: self.current and show_report(self, self.current.report))
+        head.addWidget(self.open_btn, 0, Qt.AlignmentFlag.AlignTop)
+        head.addWidget(self.report_btn, 0, Qt.AlignmentFlag.AlignTop)
         right.body.addLayout(head)
         self.chips = QHBoxLayout()
         self.chips.setSpacing(6)
@@ -231,20 +241,14 @@ class HistoryPage(QWidget):
 
         bar = QHBoxLayout()
         bar.setSpacing(10)
-        self.open_btn = button("폴더 열기")
-        self.open_btn.clicked.connect(lambda: self.current and open_path(self.current.path))
-        self.report_btn = button("보고서 열기")
-        self.report_btn.clicked.connect(lambda: self.current and show_report(self, self.current.report))
         self.rollback_btn = button("서버에서 되돌리기", "danger")
         self.rollback_btn.clicked.connect(self.rollback_on_server)
         self.compare_btn = button("다른 패키지와 비교", "ghost")
         self.compare_btn.setToolTip("다른 패키지를 골라 파일 목록과 내용(체크섬)을 비교합니다.")
         self.compare_btn.clicked.connect(lambda: self.compare_with())
-        self.remake_btn = button("같은 내용으로 다시 만들기", "primary")
-        self.remake_btn.setToolTip("배포 화면에 같은 MR·파일을 채워 넣습니다. 지금 로컬 파일로 새 패키지를 만듭니다.")
+        self.remake_btn = button("다시 만들기", "primary")
+        self.remake_btn.setToolTip("같은 내용으로 다시 만들기: 배포 화면에 같은 MR·파일을 채워 넣습니다. 지금 로컬 파일로 새 패키지를 만듭니다.")
         self.remake_btn.clicked.connect(lambda: self.current and self.remake_requested.emit(self.current))
-        bar.addWidget(self.open_btn)
-        bar.addWidget(self.report_btn)
         bar.addWidget(self.rollback_btn)
         bar.addWidget(self.compare_btn)
         bar.addStretch(1)

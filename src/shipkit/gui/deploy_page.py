@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -23,7 +24,7 @@ from shipkit.gui.context import AppContext
 from shipkit.gui.remote_panel import RemotePanel
 from shipkit.gui.report_view import show_report
 from shipkit.gui.widgets import (
-    Card, Chip, CommandRow, DropFileList, ElidedLabel, StatusDelegate, Stepper, button, label, open_path,
+    Card, Chip, CommandRow, DropFileList, ElidedLabel, LiveLineEdit, StatusDelegate, Stepper, button, label, open_path,
 )
 from shipkit.models import FileChange, SourceInfo, Status
 from shipkit.sources import git_local, providers
@@ -99,7 +100,7 @@ class DeployPage(QWidget):
         titles = QVBoxLayout()
         titles.setSpacing(2)
         titles.addWidget(label("배포", "pageTitle"))
-        self.mode_label = label("", "pageSubtitle", wrap=False)
+        self.mode_label = ElidedLabel("pageSubtitle")   # 길어도 화면 최소 폭을 밀어 올리지 않게 가운데를 줄인다
         titles.addWidget(self.mode_label)
         head.addLayout(titles, 1)
         self.progress = QProgressBar()
@@ -359,17 +360,33 @@ class DeployPage(QWidget):
         self.back_btn.clicked.connect(lambda: self.go_step(STEP_PICK))
         self.archive_check = QCheckBox("압축 파일도 만들기")
         self.strict_check = QCheckBox("경고도 실패로 처리")
-        self.make_btn = button("패키지 만들기", "primary")
-        self.make_btn.setMinimumWidth(150)
-        self.make_btn.setEnabled(False)
-        self.make_btn.clicked.connect(self.make_package)
         bar.addWidget(self.back_btn)
         bar.addSpacing(8)
         bar.addWidget(self.archive_check)
         bar.addWidget(self.strict_check)
         bar.addStretch(1)
-        bar.addWidget(self.make_btn)
         layout.addLayout(bar)
+        # 패키지 이름(선택): 옵션 줄 아래 한 줄을 통째로 써서 [패키지 만들기] 바로 왼쪽에 넓게 (창이 좁아도 겹치지 않는다)
+        make_row = _bar()
+        self.label_edit = LiveLineEdit()
+        self.label_edit.setPlaceholderText("패키지 이름 (선택)   예: 에디터 호환성 추가  → 폴더 이름 뒤에 붙습니다")
+        self.label_edit.setClearButtonEnabled(True)
+        self.label_edit.setMaxLength(80)
+        self.label_edit.setMinimumWidth(240)
+        self.label_edit.setToolTip("비우면 날짜 폴더 이름만 씁니다. 공백은 _ 로 바뀌고 폴더에 못 쓰는 문자는 빠집니다.\n"
+                                   "날짜 부분의 형식은 앱 설정 → 날짜 폴더 이름에서 바꿉니다.")
+        self.label_edit.live_changed.connect(self._preview_name)
+        self.make_btn = button("패키지 만들기", "primary")
+        self.make_btn.setMinimumWidth(150)
+        self.make_btn.setEnabled(False)
+        self.make_btn.clicked.connect(self.make_package)
+        make_row.addWidget(self.label_edit, 1)
+        make_row.addWidget(self.make_btn)
+        layout.addLayout(make_row)
+        self.name_preview = ElidedLabel("muted")   # 적은 이름으로 만들어질 폴더 이름 (이름이 있을 때만 보인다)
+        self.name_preview.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.name_preview.setVisible(False)
+        layout.addWidget(self.name_preview)
         return page
 
     # ---- ③ 완료
@@ -494,6 +511,7 @@ class DeployPage(QWidget):
         self.req_table.blockSignals(False)
         self.extra_edit.clear()
         self.files_edit.clear()
+        self.label_edit.clear()
         self._uncheck_commits()
         self.last_result = None
         self._invalidate()
@@ -1011,6 +1029,17 @@ class DeployPage(QWidget):
         item.setToolTip(text)
         self.messages.addItem(item)
 
+    def _preview_name(self, text: Optional[str] = None) -> None:
+        """패키지 이름 칸 아래에 실제로 만들어질 폴더 이름을 보여 준다 (한글 조합 중인 글자까지 바로 반영)."""
+        p = self.project
+        text = self.label_edit.live_text() if text is None else text
+        if p is None or not text.strip():
+            self.name_preview.setText("")
+            self.name_preview.setVisible(False)
+            return
+        self.name_preview.setText("폴더 이름: " + p.render_package_name(datetime.now(), text))
+        self.name_preview.setVisible(True)
+
     def make_package(self) -> None:
         if not self.prepared:
             return
@@ -1023,9 +1052,11 @@ class DeployPage(QWidget):
             if not self.ctx.dialogs.ask("확인", question):
                 return
         archive = ("zip" if project.server_os == "windows" else "tar") if self.archive_check.isChecked() else None
+        package_label = self.label_edit.text()
 
         def run():
-            return packager.build_package(project, entries, source, archive=archive, source_changes=changes)
+            return packager.build_package(project, entries, source, archive=archive, source_changes=changes,
+                                          label=package_label)
 
         self.ctx.runner.run(run, self._show_created, lambda msg: self.ctx.dialogs.error("패키지 만들기 실패", msg))
 

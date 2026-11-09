@@ -41,6 +41,7 @@ class PackageResult:
     archive_kind: Optional[str] = None  # "tar" | "zip" (보고서 안내용)
     source_changes: List[FileChange] = field(default_factory=list)  # 수집한 소스 변경 (sync 모드 보고서용)
     hooks: Dict[str, List[str]] = field(default_factory=dict)        # 단계별 서버 실행 명령
+    label: str = ""                                                   # 사용자가 붙인 패키지 이름(설명). 폴더 이름 뒤에 붙는다
 
     def count(self, status: Status) -> int:
         return sum(1 for e in self.entries if e.status == status)
@@ -77,12 +78,12 @@ def collect_lists(entries: List[Entry]) -> Tuple[List[str], List[str]]:
 def build_package(project: ProjectConfig, entries: List[Entry], source: SourceInfo,
                   archive: Optional[str] = None, dry_run: bool = False,
                   now: Optional[datetime] = None,
-                  source_changes: Optional[List[FileChange]] = None) -> PackageResult:
+                  source_changes: Optional[List[FileChange]] = None, label: str = "") -> PackageResult:
     created_at = now or datetime.now()
     resolve_conflicts(entries)
     manifest, deletes = collect_lists(entries)
     result = PackageResult(project, None, entries, source, created_at, manifest, deletes,
-                           archive_kind=archive, source_changes=list(source_changes or []))
+                           archive_kind=archive, source_changes=list(source_changes or []), label=label.strip())
     result.hooks, hook_notes = hooks.select_hooks(project, result.source_changes)
     source.notes.extend(n for n in hook_notes if n not in source.notes)
     prev_name, changed = history.hooks_changed_since(project)
@@ -93,7 +94,7 @@ def build_package(project: ProjectConfig, entries: List[Entry], source: SourceIn
     if dry_run:
         return result
 
-    out_dir = _unique_dir(project.output_dir, project.render_package_name(created_at))
+    out_dir = _unique_dir(project.output_dir, project.render_package_name(created_at, label))
     files_dir = out_dir / "files"
     files_dir.mkdir(parents=True)
     for e in entries:

@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 from typing import Optional, Sequence
 
-from PySide6.QtCore import QCoreApplication, QSettings, QSize, Qt
+from PySide6.QtCore import QCoreApplication, QEvent, QSettings, QSize, Qt
 from PySide6.QtGui import QGuiApplication, QIcon, QKeySequence, QShortcut
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
@@ -54,7 +54,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"{__app_name__} - {__tagline__}")
         self.setWindowIcon(QIcon(theme.logo_pixmap(32, mode="light")))  # 작업 표시줄은 앱 테마와 무관
         self.resize(1240, 840)
-        self.setMinimumSize(1000, 660)
+        self.setMinimumSize(1000, 660)   # 실제 최소 폭은 화면 내용에 맞춰 더 커질 수 있다 (_fit_minimum)
         self.ctx = AppContext(config_path=config_path or default_config_path(),
                               runner=runner or TaskRunner(self), dialogs=dialogs or Dialogs(self))
 
@@ -104,6 +104,28 @@ class MainWindow(QMainWindow):
         geometry = QSettings().value("ui/geometry")   # 지난번 창 크기·위치
         if geometry is not None:
             self.restoreGeometry(geometry)
+
+    def event(self, e) -> bool:  # noqa: N802
+        if e.type() in (QEvent.Type.LayoutRequest, QEvent.Type.Show):   # 글자 크기·단계·사이드바 접기 등으로 내용이 바뀌면
+            QTimer.singleShot(0, self._fit_minimum)                      # 자식들의 크기 힌트가 갱신된 뒤에 잰다
+        return super().event(e)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._fit_minimum()
+
+    def _fit_minimum(self) -> None:
+        """창 최소 폭 = max(1000, 지금 보이는 화면의 최소 폭 + 사이드바·여백). 내용보다 좁게 줄이면 단추 글자가 잘리므로.
+        화면을 바꾸면 다시 재고, 모니터 폭은 넘지 않는다."""
+        page = self.stack.currentWidget()
+        if page is None or not self.isVisible() or self.stack.width() <= 0:
+            return
+        width = max(1000, page.minimumSizeHint().width() + self.width() - self.stack.width())
+        screen = self.screen()
+        if screen is not None and screen.availableGeometry().width() >= 1000:   # 모니터보다 커지지는 않게
+            width = min(width, screen.availableGeometry().width() - 40)
+        if width != self.minimumWidth():
+            self.setMinimumSize(width, 660)
 
     def closeEvent(self, event) -> None:
         QSettings().setValue("ui/geometry", self.saveGeometry())
@@ -164,6 +186,7 @@ class MainWindow(QMainWindow):
         self._nav_icons()
         theme.on_change(self._nav_icons)
         self.nav.currentRowChanged.connect(self.stack.setCurrentIndex)
+        self.stack.currentChanged.connect(lambda _i: self._fit_minimum())
         self.nav.currentRowChanged.connect(self._on_page)
         side.addWidget(self.nav, 1)
 

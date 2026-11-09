@@ -36,6 +36,17 @@ _UNSAFE_SHELL_CHARS = re.compile(r'["\'$`\\\n\r]')
 # Windows 서버(PowerShell): 경로 구분자 \ 는 허용, 따옴표·$·백틱은 금지
 _UNSAFE_PS_CHARS = re.compile(r'["\'$`\n\r]')
 _WIN_ABS_PATH = re.compile(r"^(?:[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+)")
+LABEL_MAX = 60   # 패키지 이름 뒤에 붙이는 설명의 최대 길이
+
+
+def safe_label(text: str) -> str:
+    """패키지 폴더 이름 뒤에 붙일 설명을 폴더·서버 경로에 안전하게: 폴더에 못 쓰는 문자와 따옴표·$·백틱은 빼고,
+    공백은 _ 로 바꾸고(서버 명령에 따옴표 없이 들어가도 되게), 앞뒤의 . _ - 는 뗀다. 60자까지."""
+    text = re.sub(r"\s+", "_", str(text or "").strip())   # 탭·줄바꿈도 공백으로 치므로 위험 문자 제거보다 먼저
+    text = _UNSAFE_DIR_CHARS.sub("", text)
+    text = _UNSAFE_SHELL_CHARS.sub("", text)
+    text = re.sub("_{2,}", "_", text)                       # 문자를 뺀 자리에 _ 가 겹치면 하나로
+    return text.strip("._-")[:LABEL_MAX].rstrip("._-")
 
 
 def is_windows_path(value: Any) -> bool:
@@ -282,8 +293,11 @@ class ProjectConfig:
         """패키지에 들어가는 서버 스크립트 이름 (리눅스: .sh, Windows: .ps1)."""
         return SCRIPT_NAME_PS if self.server_os == "windows" else SCRIPT_NAME
 
-    def render_package_name(self, when: datetime) -> str:
-        return when.strftime(self.package_name.replace("{project}", self.name.replace("%", "%%")))
+    def render_package_name(self, when: datetime, label: str = "") -> str:
+        """패키지 폴더 이름: 날짜 형식(package_name) + 설명이 있으면 '_설명' (예: 2026-11-06-1430_에디터_호환성_추가)."""
+        base = when.strftime(self.package_name.replace("{project}", self.name.replace("%", "%%")))
+        label = safe_label(label)
+        return f"{base}_{label}" if label else base
 
     @property
     def describe_mode(self) -> str:

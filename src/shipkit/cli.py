@@ -316,16 +316,16 @@ def cmd_package(args: argparse.Namespace) -> int:
     if entries is None:
         return EXIT_FAIL
     return run_package(project, entries, source, changes, archive=args.archive, dry_run=args.dry_run,
-                       strict=args.strict, force=args.force)
+                       strict=args.strict, force=args.force, label=args.label or "")
 
 
 def run_package(project: ProjectConfig, entries: List[Entry], source: SourceInfo, changes: List[FileChange],
                 archive: Optional[str] = None, dry_run: bool = False, strict: bool = False, force: bool = False,
-                show: bool = True) -> int:
+                show: bool = True, label: str = "") -> int:
     blocked = is_blocked(entries, source, strict)
     preview_only = dry_run or (blocked and not force)
     result = packager.build_package(project, entries, source, archive=archive, dry_run=preview_only,
-                                    source_changes=changes)
+                                    source_changes=changes, label=label)
     if show:
         _print_result(result)
 
@@ -557,6 +557,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--files", metavar="FILE", help="파일 목록 텍스트 ('-' 이면 표준입력)")
     p.add_argument("paths", nargs="*", help="변경 파일 경로 직접 나열")
     p.add_argument("--archive", choices=["tar", "zip"], help="패키지를 압축 (tar = .tar.gz, 서버용 권장)")
+    p.add_argument("--label", metavar="이름", help="패키지 폴더 이름 뒤에 붙일 설명 (예: '에디터 호환성 추가' → 2026-11-06-1430_에디터_호환성_추가)")
     p.add_argument("--dry-run", action="store_true", help="패키지를 만들지 않고 결과만 출력")
     p.add_argument("--strict", action="store_true", help="경고도 실패로 취급")
     p.add_argument("--force", action="store_true", help="실패 항목이 있어도 나머지로 패키지 생성")

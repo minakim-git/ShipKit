@@ -483,7 +483,7 @@ def test_deploy_sync_project_defaults_to_build_tab(qapp, tmp_path):
                                     "projects": {"web": {"root": root.as_posix()}}}), encoding="utf-8")
     w = make_window(path)
     d = w.deploy_page
-    assert d.tabs.currentIndex() == TAB_BUILD and "빌드 결과 동기화" in d.mode_label.text()
+    assert d.tabs.currentIndex() == TAB_BUILD and "빌드 결과 동기화" in d.mode_label.full_text
     d.archive_check.setChecked(True)
     d.preview()
     d.make_package()
@@ -503,7 +503,7 @@ def test_project_switcher(qapp, tmp_path, maven_project):
     sw.activated.emit(sw.findData("alpha"))
     assert w.ctx.current == "alpha" and w.deploy_page.project.server_path == "/app/ALPHA"
     assert sw.itemData(sw.currentIndex(), META_ROLE) == "maven  ·  /app/ALPHA"
-    assert "서버 경로 /app/ALPHA" in w.deploy_page.mode_label.text()
+    assert "서버 경로 /app/ALPHA" in w.deploy_page.mode_label.full_text
 
     opened = []
     w.projects_page.add_project = lambda: opened.append(True)
@@ -650,6 +650,68 @@ def test_settings_export_and_import(qapp, tmp_path, maven_project):
     QSettings().remove("ui/font_scale")
     QSettings().remove("ui/theme")
     s._apply("system")
+
+
+def test_deploy_package_label(qapp, tmp_path, maven_project):
+    """배포 ② 의 패키지 이름: 폴더 이름 미리보기, 만든 폴더 이름, 기록 제목·검색, 새 배포 때 비움."""
+    from shipkit.gui.history_page import _title
+    w = make_window(_config(tmp_path, maven_project))
+    d, h = w.deploy_page, w.history_page
+    w.go(PAGE_DEPLOY)
+    d.files_edit.setPlainText("src/main/java/com/acme/User.java")
+    d.preview()
+    assert d.step == STEP_REVIEW and d.name_preview.text() == ""
+    d.label_edit.setText("에디터 호환성 추가")
+    assert d.name_preview.text().startswith("폴더 이름: ") and d.name_preview.text().endswith("_에디터_호환성_추가")
+    d.make_package()
+    assert d.last_result.out_dir.name.endswith("_에디터_호환성_추가") and d.last_result.label == "에디터 호환성 추가"
+    w.go(PAGE_HISTORY)
+    assert _title(h.records[0]) == "에디터 호환성 추가  ·  직접 입력 (붙여넣기)"
+    assert h.detail_title.text().startswith("에디터 호환성 추가")
+    h.search.setText("호환성")
+    assert h.count_label.text() == "1개 찾음 / 전체 1개"
+    h.search.setText("")
+    w.go(PAGE_DEPLOY)
+    d.start_over()
+    assert d.label_edit.text() == "" and d.name_preview.text() == ""
+
+    from PySide6.QtGui import QInputMethodEvent                 # 한글 조합 중인 글자도 미리보기에 바로 들어간다
+    d.label_edit.setText("로고변")
+    d.label_edit.inputMethodEvent(QInputMethodEvent("경", []))
+    assert d.label_edit.text() == "로고변" and d.label_edit.live_text() == "로고변경"
+    assert d.name_preview.text().endswith("_로고변경")
+    d.label_edit.inputMethodEvent(QInputMethodEvent("", []))    # 조합이 끝나면(커밋 전) 다시 text() 기준
+    assert d.name_preview.text().endswith("_로고변")
+
+
+def test_min_window_nothing_clipped(qapp, tmp_path, maven_project):
+    """창 최소 크기(1000x660)에 큰 글자여도 기록 화면 단추가 글자보다 좁아지거나 배포 ② 의 이름 칸이 단추와 겹치지 않는다."""
+    from shipkit.gui import theme
+    theme.set_font_scale("large")
+    theme.apply(qapp, "ivory")
+    try:
+        w = make_window(_config(tmp_path, maven_project, servers=[{"name": "운영", "host": "prod", "user": "app"}]))
+        d, h = w.deploy_page, w.history_page
+        w.resize(1000, 660)
+        w.show()
+        w.go(PAGE_DEPLOY)
+        d.files_edit.setPlainText("src/main/java/com/acme/User.java")
+        d.preview()
+        d.label_edit.setText("로고 변경")
+        qapp.processEvents()
+        assert d.label_edit.geometry().right() < d.make_btn.geometry().left()
+        assert d.make_btn.width() >= d.make_btn.sizeHint().width() and d.label_edit.width() >= 200
+        d.make_package()
+        w.go(PAGE_HISTORY)
+        qapp.processEvents()
+        assert h.minimumSizeHint().width() <= h.width()
+        for b in (h.open_btn, h.report_btn, h.rollback_btn, h.compare_btn, h.remake_btn, h.cleanup_btn, h.open_base_btn):
+            if b.isVisibleTo(h):
+                assert b.width() >= b.sizeHint().width(), b.text()
+        w.close()
+    finally:
+        theme.set_font_scale("normal")
+        theme.apply(qapp, "ivory")
 
 
 def test_theme_switch(qapp, tmp_path, maven_project, monkeypatch):

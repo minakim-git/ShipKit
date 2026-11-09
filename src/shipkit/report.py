@@ -65,6 +65,7 @@ def build_data(result: "PackageResult") -> Dict[str, Any]:
         "mode": p.mode,
         "mode_text": p.describe_mode,
         "source": source.description,
+        "label": result.label,
         "request_label": source.request_label,
         "requests": [{k: mr.get(k, "") for k in ("ref", "title", "author", "web_url", "source_branch", "target_branch")}
                      for mr in source.merge_requests],
@@ -131,6 +132,8 @@ def render_markdown(d: Dict[str, Any]) -> str:
         w("|:---:|:---:|:---:|:---:|:---:|:---:|")
         w(f"| **{d['applied']}** | **{d['deletes']}** | {c['ok']} | {c['warn']} | {c['error']} | {c['skipped']} |")
     w("")
+    if d.get("label"):
+        w(f"- 패키지 이름: {d['label']}")
     w(f"- 변경 출처: {d['source']}")
     w(f"- 배포 방식: {d['mode_text']}")
     w("")
@@ -288,7 +291,8 @@ def _render_html(d: Dict[str, Any]) -> str:
     w(f"<body style=\"color:{_T['text']}; font-size:10pt;\">")
     w(f"<h1 style=\"font-size:18pt; margin-bottom:4px;\">{_e(d['project'])} 배포 패키지</h1>")
     w(f"<p style=\"color:{_T['muted']}; margin-top:0;\">{_e(d['created_at'])}&nbsp;&nbsp;·&nbsp;&nbsp;"
-      f"{_e(d['source'])}&nbsp;&nbsp;·&nbsp;&nbsp;서버 {_e(d['server_path'])}</p>")
+      + (f"{_e(d['label'])}&nbsp;&nbsp;·&nbsp;&nbsp;" if d.get("label") else "")
+      + f"{_e(d['source'])}&nbsp;&nbsp;·&nbsp;&nbsp;서버 {_e(d['server_path'])}</p>")
 
     # 결과 한 줄
     fg, bg = _T[tone]
