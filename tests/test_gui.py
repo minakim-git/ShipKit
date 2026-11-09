@@ -703,7 +703,8 @@ def test_min_window_nothing_clipped(qapp, tmp_path, maven_project):
         assert d.make_btn.width() >= d.make_btn.sizeHint().width() and d.label_edit.width() >= 200
         d.make_package()
         w.go(PAGE_HISTORY)
-        qapp.processEvents()
+        for _ in range(5):          # 기록 화면 → 스택 → 창으로 레이아웃 요청이 단계마다 한 번씩 전달되므로 몇 바퀴 돌린다
+            qapp.processEvents()
         assert h.minimumSizeHint().width() <= h.width()
         for b in (h.open_btn, h.report_btn, h.rollback_btn, h.compare_btn, h.remake_btn, h.cleanup_btn, h.open_base_btn):
             if b.isVisibleTo(h):
