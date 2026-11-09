@@ -10,8 +10,8 @@ from typing import Dict, List, Optional
 from PySide6.QtCore import QSize, Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QAbstractItemView, QDialog, QHBoxLayout, QLineEdit, QListWidget, QListWidgetItem, QStackedWidget, QTabWidget,
-    QVBoxLayout, QWidget,
+    QAbstractItemView, QComboBox, QDialog, QHBoxLayout, QLineEdit, QListWidget, QListWidgetItem, QStackedWidget,
+    QTabWidget, QVBoxLayout, QWidget,
 )
 
 from shipkit import history, report
@@ -116,6 +116,8 @@ class HistoryPage(QWidget):
         self.client = RemoteClient(ctx)      # 서버 상태 조회·서버에서 되돌리기 (지문·비밀번호는 한 번만 묻게 공유)
         self.status_dialog: Optional[ServerStatusDialog] = None
         self.rollback_dialog: Optional[RemoteRunDialog] = None
+        self.cleanup_dialog: Optional["CleanupDialog"] = None
+        self.total_size = 0                  # 패키지 폴더 전체 크기 (refresh 때 센다)
         self._build_ui()
         ctx.project_listeners.append(self.refresh)
 
@@ -133,6 +135,9 @@ class HistoryPage(QWidget):
         head.addLayout(titles, 1)
         self.open_base_btn = button("패키지 폴더 열기", "ghost")
         self.open_base_btn.clicked.connect(lambda: self.ctx.project and open_path(self.ctx.project.output_dir))
+        self.cleanup_btn = button("정리…", "ghost")
+        self.cleanup_btn.setToolTip("오래된 패키지 폴더를 골라 지웁니다. 서버에 지금 반영된 패키지는 지우지 않습니다.")
+        self.cleanup_btn.clicked.connect(self.show_cleanup)
         refresh = button("새로 고침", "ghost")
         theme.bind_icon(refresh, "refresh.svg", "PRIMARY", 16)
         refresh.clicked.connect(self.refresh)
@@ -141,6 +146,7 @@ class HistoryPage(QWidget):
         self.status_btn.clicked.connect(self.show_server_status)
         head.addWidget(self.status_btn, 0, Qt.AlignmentFlag.AlignBottom)
         head.addWidget(self.open_base_btn, 0, Qt.AlignmentFlag.AlignBottom)
+        head.addWidget(self.cleanup_btn, 0, Qt.AlignmentFlag.AlignBottom)
         head.addWidget(refresh, 0, Qt.AlignmentFlag.AlignBottom)
         root.addLayout(head)
 
@@ -256,6 +262,8 @@ class HistoryPage(QWidget):
         self.status_btn.setVisible(bool(p and p.servers))
         self.open_base_btn.setVisible(p is not None)
         self.open_base_btn.setToolTip(str(p.output_dir) if p else "")
+        self.cleanup_btn.setVisible(bool(self.records))
+        self.total_size = sum(history.folder_size(r) for r in self.records)
         if not self.records:
             self.current = None
             self.empty.setText("아직 만든 패키지가 없습니다.\n배포 화면에서 패키지를 만들면 여기에 쌓입니다." if p else
@@ -313,8 +321,9 @@ class HistoryPage(QWidget):
         if header is not None:
             header.setHidden(visible_in_group == 0)
         total = len(self.records)
+        size = f"  ·  {history.format_size(self.total_size)}"
         self.count_label.setText(f"{shown}개 찾음 / 전체 {total}개" if words else
-                                 f"전체 {total}개" + ("  (최근 것만 표시)" if total >= history.LIST_LIMIT else ""))
+                                 f"전체 {total}개{size}" + ("  (최근 것만 표시)" if total >= history.LIST_LIMIT else ""))
 
     def _on_select(self, row: int) -> None:
         item = self.list.item(row)
@@ -435,6 +444,18 @@ class HistoryPage(QWidget):
         dialog.show()
         return dialog
 
+    # ------------------------------------------------------------------ 정리
+    def show_cleanup(self) -> Optional["CleanupDialog"]:
+        """[정리…]: 오래된 패키지 폴더를 골라 지우는 창."""
+        if self.ctx.project is None or not self.records:
+            return None
+        if self.cleanup_dialog is not None and self.cleanup_dialog.isVisible():
+            self.cleanup_dialog.raise_()
+            return self.cleanup_dialog
+        self.cleanup_dialog = CleanupDialog(self)
+        self.cleanup_dialog.show()
+        return self.cleanup_dialog
+
     # ------------------------------------------------------------------ 서버
     def _rollback_targets(self, r: history.PackageRecord) -> List[tuple]:
         """(서버 연결, 이력): 이 패키지가 반영돼 있고 서버 연결이 아직 설정에 있는 것."""
@@ -481,6 +502,138 @@ class HistoryPage(QWidget):
         self.rollback_dialog = RemoteRunDialog(self.ctx, r, p, profile, deployment, self, client=self.client,
                                                on_finished=self.refresh)
         self.rollback_dialog.start(run_hooks)
+
+
+class CleanupDialog(QDialog):
+    """패키지 폴더 정리: 기준보다 오래된 패키지를 골라 폴더째 지운다.
+    서버에 지금 반영된 패키지와 가장 최근 패키지는 고를 수 없게 보여 준다."""
+    AGES = ((30, "30일 지난 것"), (60, "60일 지난 것"), (90, "90일 지난 것"), (180, "180일 지난 것"), (0, "날짜 상관없이"))
+
+    def __init__(self, page: HistoryPage):
+        super().__init__(page)
+        self.page = page
+        self.setWindowTitle("패키지 폴더 정리")
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        self.resize(860, 520)
+        self.items: List[history.CleanupItem] = []
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(22, 20, 22, 16)
+        layout.setSpacing(12)
+        self.head = label("", "cardTitle")
+        layout.addWidget(self.head)
+        self.path_label = label(str(page.ctx.project.output_dir) if page.ctx.project else "", "muted")
+        self.path_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        layout.addWidget(self.path_label)
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        row.addWidget(label("지울 기준", "fieldLabel", wrap=False))
+        self.age = QComboBox()
+        for days, text in self.AGES:
+            self.age.addItem(text, days)
+        self.age.currentIndexChanged.connect(self.rebuild)
+        row.addWidget(self.age)
+        row.addStretch(1)
+        self.all_btn = button("모두 고르기", "ghost")
+        self.all_btn.clicked.connect(self.toggle_all)
+        row.addWidget(self.all_btn)
+        layout.addLayout(row)
+        self.list = QListWidget()
+        self.list.setObjectName("fileList")
+        self.list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)   # 긴 줄은 … 으로 줄인다
+        self.list.setTextElideMode(Qt.TextElideMode.ElideRight)
+        self.list.itemChanged.connect(lambda _item: self._update_summary())
+        layout.addWidget(self.list, 1)
+        self.note = label("서버에 지금 반영돼 있는 패키지와 가장 최근 패키지는 지우지 않습니다 "
+                          "('현재' 배지와 '지난 배포 이후' 기준이 되니까요).", "muted")
+        layout.addWidget(self.note)
+        bar = QHBoxLayout()
+        bar.setSpacing(10)
+        self.summary = label("", "muted", wrap=False)
+        bar.addWidget(self.summary, 1)
+        close = button("닫기")
+        close.clicked.connect(self.close)
+        bar.addWidget(close)
+        self.delete_btn = button("지우기", "danger")
+        self.delete_btn.clicked.connect(self.delete_checked)
+        bar.addWidget(self.delete_btn)
+        layout.addLayout(bar)
+        self.rebuild()
+
+    def rebuild(self) -> None:
+        records = self.page.records
+        self.items = history.cleanup_plan(records, int(self.age.currentData()))
+        self.head.setText(f"패키지 {len(records)}개  ·  {history.format_size(self.page.total_size)}")
+        self.list.blockSignals(True)
+        self.list.clear()
+        for item in self.items:
+            r = item.record
+            text = f"{r.created_at:%Y-%m-%d %H:%M}   {r.name}   {history.format_size(item.size)}   {_title(r)}"
+            row = QListWidgetItem(text)
+            row.setToolTip(r.description)
+            if item.protected:
+                row.setText(f"{text}   —  {item.protected}")
+                row.setFlags(Qt.ItemFlag.ItemIsUserCheckable)        # 켜지지 않고 고를 수도 없는 줄
+                row.setCheckState(Qt.CheckState.Unchecked)
+                row.setForeground(theme.tone_color("neutral"))
+            else:
+                row.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
+                row.setCheckState(Qt.CheckState.Checked)
+            self.list.addItem(row)
+        if not self.items:
+            none = QListWidgetItem("이 기준에 맞는 패키지가 없습니다.")
+            none.setFlags(Qt.ItemFlag.NoItemFlags)
+            none.setForeground(theme.tone_color("neutral"))
+            self.list.addItem(none)
+        self.list.blockSignals(False)
+        self._update_summary()
+
+    def checked(self) -> List[history.CleanupItem]:
+        return [item for i, item in enumerate(self.items)
+                if not item.protected and self.list.item(i).checkState() == Qt.CheckState.Checked]
+
+    def _update_summary(self) -> None:
+        chosen = self.checked()
+        size = sum(item.size for item in chosen)
+        self.summary.setText(f"{len(chosen)}개 고름  ·  {history.format_size(size)} 비움" if chosen else "고른 패키지가 없습니다.")
+        self.delete_btn.setEnabled(bool(chosen))
+        self.all_btn.setEnabled(any(not item.protected for item in self.items))
+        self.all_btn.setText("모두 해제" if chosen and len(chosen) == sum(not i.protected for i in self.items) else "모두 고르기")
+
+    def toggle_all(self) -> None:
+        check = self.all_btn.text() == "모두 고르기"
+        self.list.blockSignals(True)
+        for i, item in enumerate(self.items):
+            if not item.protected:
+                self.list.item(i).setCheckState(Qt.CheckState.Checked if check else Qt.CheckState.Unchecked)
+        self.list.blockSignals(False)
+        self._update_summary()
+
+    def delete_checked(self) -> None:
+        chosen = self.checked()
+        if not chosen:
+            return
+        size = history.format_size(sum(item.size for item in chosen))
+        if not self.page.ctx.dialogs.ask("패키지 지우기",
+                                         f"패키지 {len(chosen)}개({size})를 폴더째 지웁니다. 되돌릴 수 없습니다.\n\n계속할까요?"):
+            return
+        failed: List[str] = []
+        for item in chosen:
+            try:
+                history.delete_record(item.record)
+            except OSError as e:
+                failed.append(f"{item.record.name}: {e}")
+        done = len(chosen) - len(failed)
+        self.page.refresh()
+        if failed:
+            self.page.ctx.dialogs.error("패키지 지우기", f"{done}개는 지웠지만 {len(failed)}개는 지우지 못했습니다 (열려 있는 파일이 있는지 보세요).\n\n"
+                                        + "\n".join(failed[:5]))
+        else:
+            self.page.ctx.dialogs.toast(f"패키지 {done}개를 지워 {size} 비웠습니다.")
+        if not self.page.records:
+            self.close()
+            return
+        self.rebuild()
 
 
 class CompareDialog(QDialog):

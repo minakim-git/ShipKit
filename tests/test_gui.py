@@ -556,6 +556,54 @@ def test_history_lists_packages_and_remakes(qapp, tmp_path, maven_project):
     assert d.files_edit.toPlainText().splitlines() == ["M\tsrc/main/java/com/acme/User.java", "D\tsrc/main/webapp/old.jsp"]
 
 
+def test_history_cleanup_dialog(qapp, tmp_path, maven_project):
+    """[정리…]: 오래된 패키지를 골라 지운다. 반영된 패키지·가장 최근 패키지는 고를 수 없고, 지우면 목록이 새로 그려진다."""
+    from datetime import datetime
+    from shipkit import history, packager, workflow
+    dialogs = FakeDialogs()
+    w = make_window(_config(tmp_path, maven_project, servers=[{"name": "운영", "host": "prod", "user": "app"}]), dialogs)
+    h = w.history_page
+    project = w.ctx.project
+
+    def build(now):
+        changes, src = workflow.collect_lines(["src/main/webapp/WEB-INF/views/user/list.jsp"], "t")
+        return packager.build_package(project, workflow.plan(project, changes, src), src, source_changes=changes, now=now)
+
+    old = build(datetime(2025, 1, 5, 9, 0))
+    deployed = build(datetime(2025, 2, 1, 9, 0))
+    latest = build(datetime(2025, 3, 1, 9, 0))
+    history.append_deployment(deployed.out_dir, "운영", "app@prod", "apply", 0, "/d/p", "/app/ROOT")
+    w.go(PAGE_HISTORY)
+    assert h.cleanup_btn.isVisibleTo(h) and h.total_size > 0
+    assert h.count_label.text() == f"전체 3개  ·  {history.format_size(h.total_size)}"
+
+    dialog = h.show_cleanup()
+    assert dialog.windowTitle() == "패키지 폴더 정리" and h.show_cleanup() is dialog
+    assert dialog.head.text().startswith("패키지 3개  ·  ")
+    assert [(i.record.name, bool(i.protected)) for i in dialog.items] == [
+        (latest.out_dir.name, True), (deployed.out_dir.name, True), (old.out_dir.name, False)]
+    assert not (dialog.list.item(0).flags() & Qt.ItemFlag.ItemIsEnabled) and "지금 운영 서버에 반영돼 있음" in dialog.list.item(1).text()
+    assert [i.record.name for i in dialog.checked()] == [old.out_dir.name] and dialog.delete_btn.isEnabled()
+    assert dialog.all_btn.text() == "모두 해제"
+    dialog.toggle_all()
+    assert dialog.checked() == [] and not dialog.delete_btn.isEnabled() and dialog.summary.text() == "고른 패키지가 없습니다."
+    dialog.toggle_all()
+    assert dialog.summary.text() == f"1개 고름  ·  {history.format_size(dialog.items[2].size)} 비움"
+
+    dialog.age.setCurrentIndex(len(dialog.AGES) - 2)          # 180일: 2025년 패키지는 모두 지났다
+    assert len(dialog.items) == 3
+    dialogs.answer = False                                      # 확인에서 [아니요]
+    dialog.delete_checked()
+    assert old.out_dir.exists() and dialogs.messages[-1][0] == "ask" and "1개(" in dialogs.messages[-1][2]
+    dialogs.answer = True
+    dialog.delete_checked()
+    assert not old.out_dir.exists() and deployed.out_dir.exists() and latest.out_dir.exists()
+    assert dialogs.messages[-1][:2] == ("toast", "success") and dialogs.messages[-1][2].startswith("패키지 1개를 지워 ")
+    assert [r.name for r in h.records] == [latest.out_dir.name, deployed.out_dir.name] and h.count_label.text().startswith("전체 2개")
+    assert len(dialog.items) == 2 and dialog.checked() == [] and not dialog.delete_btn.isEnabled()
+    dialog.close()
+
+
 def test_theme_switch(qapp, tmp_path, maven_project, monkeypatch):
     from shipkit.gui import theme
     w = make_window(_config(tmp_path, maven_project))

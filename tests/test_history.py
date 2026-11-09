@@ -145,6 +145,40 @@ def test_compare_records_and_current_by_server(maven_project, tmp_path):
     assert history.current_by_server(history.list_records(project)) == {"개발": b.out_dir.name, "운영": a.out_dir.name}
 
 
+def test_cleanup_plan_size_and_delete(maven_project, tmp_path):
+    """정리: 기준보다 오래된 패키지만, 서버에 반영된 것과 가장 최근 것은 보호. 지우면 폴더·압축 파일이 사라진다."""
+    from datetime import date
+    out = tmp_path / "out"
+    jsp = ["src/main/webapp/WEB-INF/views/user/list.jsp"]
+    _, old = _package(maven_project, out, jsp, now=datetime(2026, 1, 5, 9, 0))
+    _, deployed = _package(maven_project, out, jsp, now=datetime(2026, 2, 1, 9, 0))
+    project, latest = _package(maven_project, out, jsp, now=datetime(2026, 3, 1, 9, 0))
+    history.append_deployment(deployed.out_dir, "운영", "a@h", "apply", 0, "/d/p", "/app/ROOT")
+    archive = old.out_dir.with_name(old.out_dir.name + ".zip")
+    archive.write_bytes(b"z" * 2048)
+    data = json.loads((old.out_dir / history.RECORD_FILE).read_text(encoding="utf-8"))
+    data["archive"] = "zip"
+    (old.out_dir / history.RECORD_FILE).write_text(json.dumps(data), encoding="utf-8")
+    records = history.list_records(project)
+
+    plan = history.cleanup_plan(records, 30, today=date(2026, 3, 20))
+    assert [(i.record.name, i.protected) for i in plan] == [
+        (deployed.out_dir.name, "지금 운영 서버에 반영돼 있음"), (old.out_dir.name, "")]      # 최근 것은 30일이 안 됨
+    plan = history.cleanup_plan(records, 0, today=date(2026, 3, 20))
+    assert plan[0].record.name == latest.out_dir.name and plan[0].protected == "가장 최근 패키지 ('지난 배포 이후' 기준)"
+    assert history.cleanup_plan(records, 365, today=date(2026, 3, 20)) == []
+    old_item = plan[2]
+    assert old_item.size == history.folder_size(old_item.record) >= 2048 + sum(
+        f.stat().st_size for f in old.out_dir.rglob("*") if f.is_file())
+    assert history.format_size(0) == "0 B" and history.format_size(1536) == "2 KB"
+    assert history.format_size(3 * 1024 * 1024 + 400000) == "3.4 MB" and history.format_size(250 * 1024 ** 2) == "250 MB"
+    assert history.format_size(int(1.25 * 1024 ** 3)) == "1.2 GB"
+
+    history.delete_record(old_item.record)
+    assert not old.out_dir.exists() and not archive.exists()
+    assert [r.name for r in history.list_records(project)] == [latest.out_dir.name, deployed.out_dir.name]
+
+
 def test_old_package_without_record(tmp_path):
     folder = tmp_path / "out" / "2026-09-30-1700"
     write(folder / "manifest.txt", "WEB-INF/a.jsp\nWEB-INF/b.jsp\n")

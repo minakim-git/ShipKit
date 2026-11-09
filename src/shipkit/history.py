@@ -6,9 +6,11 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
@@ -296,6 +298,78 @@ def hooks_changed_since(project: ProjectConfig, exclude: Optional[Path] = None) 
     if prev is None or prev.hooks_config is None:
         return None, []
     return prev.name, hooks.describe_changes(prev.hooks_config, hooks.config_dict(project))
+
+
+# ---------------------------------------------------------------------- 용량·정리
+def folder_size(record: PackageRecord) -> int:
+    """패키지 폴더(와 압축 파일)가 차지하는 바이트 수. 읽지 못하는 항목은 0 으로 센다."""
+    total = 0
+    stack = [record.path]
+    while stack:
+        try:
+            with os.scandir(stack.pop()) as it:
+                for entry in it:
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            stack.append(Path(entry.path))
+                        elif entry.is_file(follow_symlinks=False):
+                            total += entry.stat(follow_symlinks=False).st_size
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+    archive = record.archive
+    if archive is not None:
+        try:
+            total += archive.stat().st_size
+        except OSError:
+            pass
+    return total
+
+
+def format_size(n: int) -> str:
+    """사람이 읽는 크기: 0 B / 12 KB / 3.4 MB / 1.2 GB."""
+    value = float(n)
+    for unit in ("B", "KB", "MB", "GB"):
+        if value < 1024 or unit == "GB":
+            return f"{value:.0f} {unit}" if unit in ("B", "KB") or value >= 100 else f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{value:.1f} GB"
+
+
+@dataclass
+class CleanupItem:
+    """정리 창의 한 줄: 기록, 크기, 지우면 안 되는 이유 (없으면 지울 수 있음)."""
+    record: PackageRecord
+    size: int
+    protected: str = ""
+
+
+def cleanup_plan(records: List[PackageRecord], older_than_days: int, today: Optional[date] = None) -> List[CleanupItem]:
+    """목록(최근 것부터)에서 older_than_days 일이 지난 패키지. 서버에 지금 반영된 패키지와 가장 최근 패키지는
+    protected 에 이유를 적어 함께 돌려준다 (지우면 '현재' 배지와 '지난 배포 이후' 기준을 잃는다)."""
+    today = today or date.today()
+    current = current_by_server(records)
+    items: List[CleanupItem] = []
+    for index, r in enumerate(records):
+        if (today - r.created_at.date()).days < older_than_days:
+            continue
+        servers = sorted(s for s, name in current.items() if name == r.name)
+        reason = ""
+        if servers:
+            reason = "지금 " + ", ".join(servers) + " 서버에 반영돼 있음"
+        elif index == 0:
+            reason = "가장 최근 패키지 ('지난 배포 이후' 기준)"
+        items.append(CleanupItem(r, folder_size(r), reason))
+    return items
+
+
+def delete_record(record: PackageRecord) -> None:
+    """패키지 폴더와 압축 파일을 지운다 (되돌릴 수 없다). 실패하면 OSError."""
+    archive = record.archive
+    shutil.rmtree(record.path)
+    if archive is not None:
+        archive.unlink(missing_ok=True)
 
 
 def list_records(project: ProjectConfig, limit: int = LIST_LIMIT) -> List[PackageRecord]:
