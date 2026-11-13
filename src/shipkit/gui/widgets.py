@@ -129,7 +129,7 @@ class Card(QFrame):
     collapsible=True 면 머리에 접기 단추가 생기고, set_collapsed() 로 내용(card.content)을 숨길 수 있다.
     """
 
-    def __init__(self, title: str = "", subtitle: str = "", right: Optional[QWidget] = None, padding: int = 18,
+    def __init__(self, title: str = "", subtitle: str = "", right: Optional[QWidget] = None, padding: int = 16,
                  collapsible: bool = False):
         super().__init__()
         self.setObjectName("card")

@@ -1,10 +1,9 @@
 """디자인 시스템: 색·글꼴·아이콘·스타일시트를 한곳에서 관리한다.
 
-밝은 배경 위에 흰 카드, 둥근 모서리, 강조색 하나로 정리한 요즘 앱 스타일. 테마(색 묶음)는 여러 개를 THEMES 에
-등록해 두고 apply() 로 바꾼다 (어두운 테마 여럿, 밝은 테마 여럿). 다른 화면은 theme.PRIMARY 처럼 이 모듈의 이름으로
-색을 읽으므로, 테마를 바꾸면 다음에 그릴 때부터 새 색이 쓰인다. 미리 만들어 둔 아이콘은 bind_icon() 으로 등록해 두면
-테마가 바뀔 때 다시 그린다. 그림 파일(svg)에는 기본 밝은 테마(ivory)의 색이 적혀 있고, 다른 테마에서는 같은 자리의
-색으로 바꿔 그린다.
+밝은 배경 위에 흰 카드, 얇은 선, 강조색 하나로 정리한 요즘 앱 스타일. 테마는 밝은 쪽·어두운 쪽에 기본 하나와
+널리 쓰이는 팔레트 몇 개(GitHub·Solarized·One·Dracula·Nord)를 THEMES 에 두고 apply() 로 바꾼다. 다른 화면은 theme.PRIMARY 처럼 이 모듈의 이름으로 색을 읽으므로, 테마를 바꾸면 다음에 그릴 때부터
+새 색이 쓰인다. 미리 만들어 둔 아이콘은 bind_icon() 으로 등록해 두면 테마가 바뀔 때 다시 그린다. 그림 파일(svg)에는
+기본 밝은 테마(light)의 색이 적혀 있고, 어두운 테마에서는 같은 자리의 색으로 바꿔 그린다.
 """
 from __future__ import annotations
 
@@ -17,42 +16,53 @@ from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple
 
 from PySide6.QtCore import QByteArray, QSettings, QSize, Qt
-from PySide6.QtGui import QColor, QGuiApplication, QIcon, QPainter, QPalette, QPixmap
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QGuiApplication, QIcon, QPainter, QPalette, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 
 # ---------------------------------------------------------------------- 색 묶음
 # 이름은 쓰임새 기준. HEAD: 표 머리글·옅은 바탕, LINE: 행 구분선, LABEL: 입력 칸 이름·보조 버튼 글자,
 # BTN: 채운 버튼·체크 상자 바탕(어두운 테마에서는 글자용 PRIMARY 보다 진하게)
-# 밝은 테마: 아이보리 바탕에 로고(스패너·망치 선 그림)와 같은 회갈색 포인트. 눈이 편하도록 채도를 낮췄다.
+# 테마는 둘뿐이다. 밝게: 흰 면에 회색 선, 강조색 파랑 하나 (GitHub·Notion·Linear 같은 요즘 앱의 중립 팔레트).
+# 어둡게: 짙은 남색(slate) 면에 주황 강조 (HeyCheck 와 같은 느낌). 그림 파일(svg)에는 '밝게' 색이 적혀 있다.
 LIGHT: Dict[str, str] = {
-    "BG": "#F3F1E9", "SURFACE": "#FBFAF6", "BORDER": "#E5E1D5", "BORDER_STRONG": "#D3CDBC", "HOVER": "#EFEBE0",
-    "TEXT": "#2F2C25", "MUTED": "#7C7668", "SUBTLE": "#A39C8C", "LABEL": "#4E493F",
-    "HEAD": "#F6F4EC", "LINE": "#EEEAE0", "ALT": "#F8F6F0",
-    "BTN": "#8B8468", "BTN_HOVER": "#766F56", "BTN_DISABLED": "#D4CEBC",
-    "PRIMARY": "#7D7660", "PRIMARY_HOVER": "#655F4B", "PRIMARY_SOFT": "#ECE8DB", "PRIMARY_DISABLED": "#D4CEBC",
-    "TIP_BG": "#2F2C25",
-    "OK_BORDER": "#BFD6B8", "ERR_BORDER": "#EBC2B6", "DANGER_HOVER_BORDER": "#E0A896",
-    "WARN_BORDER": "#EBD3A3", "WARN_HOVER": "#F7EEDC", "WARN_HOVER_BORDER": "#E2BD7A",
+    "BG": "#F7F7F8", "SURFACE": "#FFFFFF", "BORDER": "#E5E7EB", "BORDER_STRONG": "#D1D5DB", "HOVER": "#F3F4F6",
+    "TEXT": "#111827", "MUTED": "#6B7280", "SUBTLE": "#9CA3AF", "LABEL": "#374151",
+    "HEAD": "#F9FAFB", "LINE": "#F3F4F6", "ALT": "#FAFAFA",
+    "BTN": "#2563EB", "BTN_HOVER": "#1D4ED8", "BTN_DISABLED": "#BFDBFE",
+    "PRIMARY": "#2563EB", "PRIMARY_HOVER": "#1E40AF", "PRIMARY_SOFT": "#EFF6FF", "PRIMARY_DISABLED": "#93C5FD",
+    "TIP_BG": "#111827",
+    "OK_BORDER": "#BBF7D0", "ERR_BORDER": "#FECACA", "DANGER_HOVER_BORDER": "#FCA5A5",
+    "WARN_BORDER": "#FDE68A", "WARN_HOVER": "#FEF3C7", "WARN_HOVER_BORDER": "#FCD34D",
 }
 DARK: Dict[str, str] = {
-    "BG": "#111318", "SURFACE": "#1A1D24", "BORDER": "#2A2F3A", "BORDER_STRONG": "#3A4150", "HOVER": "#232833",
-    "TEXT": "#E6E8EE", "MUTED": "#9AA3B2", "SUBTLE": "#6B7385", "LABEL": "#C9CED8",
-    "HEAD": "#20242D", "LINE": "#242832", "ALT": "#1D2028",
-    "BTN": "#6366F1", "BTN_HOVER": "#7C7FF5", "BTN_DISABLED": "#34366B",
-    "PRIMARY": "#8B93FA", "PRIMARY_HOVER": "#A5ACFC", "PRIMARY_SOFT": "#272A4A", "PRIMARY_DISABLED": "#3B3F6B",
-    "TIP_BG": "#2E3440",
-    "OK_BORDER": "#1F5133", "ERR_BORDER": "#5C2626", "DANGER_HOVER_BORDER": "#7F2D2D",
-    "WARN_BORDER": "#5A4515", "WARN_HOVER": "#3A2E12", "WARN_HOVER_BORDER": "#7A5D18",
+    "BG": "#0F172A", "SURFACE": "#1E293B", "BORDER": "#334155", "BORDER_STRONG": "#475569", "HOVER": "#283548",
+    "TEXT": "#F1F5F9", "MUTED": "#94A3B8", "SUBTLE": "#64748B", "LABEL": "#CBD5E1",
+    "HEAD": "#172033", "LINE": "#2B3A4F", "ALT": "#1B2638",
+    "BTN": "#EA580C", "BTN_HOVER": "#F97316", "BTN_DISABLED": "#5C2D12",
+    "PRIMARY": "#FB923C", "PRIMARY_HOVER": "#FDBA74", "PRIMARY_SOFT": "#3B2416", "PRIMARY_DISABLED": "#7C3F1D",
+    "TIP_BG": "#334155",
+    "OK_BORDER": "#166534", "ERR_BORDER": "#7F1D1D", "DANGER_HOVER_BORDER": "#991B1B",
+    "WARN_BORDER": "#78350F", "WARN_HOVER": "#3A2A10", "WARN_HOVER_BORDER": "#92400E",
 }
 # 상태 색: (글자색, 배경색)
-LIGHT_TONES: Dict[str, Tuple[str, str]] = {   # 아이보리 위에서 튀지 않게 채도를 낮춘 초록·황갈·벽돌·회청
-    "success": ("#4F7A4A", "#EAF1E6"), "warning": ("#A3692B", "#F8EEDD"), "danger": ("#B4533E", "#F7E6E1"),
-    "info": ("#5B7590", "#E8EEF3"), "primary": ("#7D7660", "#ECE8DB"), "neutral": ("#4E493F", "#EEEAE0"),
+LIGHT_TONES: Dict[str, Tuple[str, str]] = {
+    "success": ("#15803D", "#DCFCE7"), "warning": ("#B45309", "#FEF3C7"), "danger": ("#B91C1C", "#FEE2E2"),
+    "info": ("#1D4ED8", "#DBEAFE"), "primary": ("#2563EB", "#EFF6FF"), "neutral": ("#374151", "#F3F4F6"),
 }
 DARK_TONES: Dict[str, Tuple[str, str]] = {
     "success": ("#4ADE80", "#14291D"), "warning": ("#FBBF24", "#2E2410"), "danger": ("#F87171", "#341A1A"),
-    "info": ("#60A5FA", "#13243A"), "primary": ("#8B93FA", "#272A4A"), "neutral": ("#C9CED8", "#262B35"),
+    "info": ("#60A5FA", "#13243A"), "primary": ("#FB923C", "#3B2416"), "neutral": ("#CBD5E1", "#283548"),
 }
+
+
+@dataclass(frozen=True)
+class Theme:
+    key: str
+    name: str
+    dark: bool
+    colors: Dict[str, str]
+    tones: Dict[str, Tuple[str, str]]
+    logo: Optional[Dict[str, str]] = None   # 로고 색 (bg/stroke/accent). 없으면 색 묶음에서 만든다
 
 
 def _pal(**over: str) -> Dict[str, str]:
@@ -67,115 +77,7 @@ def _tones(**over: Tuple[str, str]) -> Dict[str, Tuple[str, str]]:
     return dict(over)
 
 
-@dataclass(frozen=True)
-class Theme:
-    key: str
-    name: str
-    dark: bool
-    colors: Dict[str, str]
-    tones: Dict[str, Tuple[str, str]]
-    logo: Optional[Dict[str, str]] = None   # 로고 색 (bg/stroke/accent). 없으면 색 묶음에서 만든다
-
-
-# ---- 어두운 테마
-_OCEANIC = _pal(
-    BG="#263238", SURFACE="#2E3C43", BORDER="#37474F", BORDER_STRONG="#455A64", HOVER="#314549",
-    TEXT="#EEFFFF", MUTED="#B0BEC5", SUBTLE="#607D8B", LABEL="#CFD8DC",
-    HEAD="#2A373E", LINE="#32424A", ALT="#2A3940",
-    BTN="#009688", BTN_HOVER="#26A69A", BTN_DISABLED="#1F4B49",
-    PRIMARY="#80CBC4", PRIMARY_HOVER="#A7DBD6", PRIMARY_SOFT="#2A4A4A", PRIMARY_DISABLED="#3A5A5A",
-    TIP_BG="#37474F",
-    OK_BORDER="#2E5D3A", ERR_BORDER="#6B2F2F", DANGER_HOVER_BORDER="#8A3A3A",
-    WARN_BORDER="#6A5520", WARN_HOVER="#45391A", WARN_HOVER_BORDER="#8A6D20",
-)
-_OCEANIC_TONES = _tones(success=("#C3E88D", "#2F4A2A"), warning=("#FFCB6B", "#4A3E1F"), danger=("#F07178", "#4A2A2E"),
-                        info=("#82AAFF", "#2A3A55"), primary=("#80CBC4", "#2A4A4A"), neutral=("#CFD8DC", "#37474F"))
-_FOREST = _pal(
-    BG="#152019", SURFACE="#1C2A22", BORDER="#2A3A30", BORDER_STRONG="#3A4D40", HOVER="#22332A",
-    TEXT="#E3ECE5", MUTED="#9BB0A2", SUBTLE="#6A8071", LABEL="#C6D5CA",
-    HEAD="#1F2E25", LINE="#263730", ALT="#1E2C24",
-    BTN="#4CAF50", BTN_HOVER="#66BB6A", BTN_DISABLED="#2E5A33",
-    PRIMARY="#8BD49A", PRIMARY_HOVER="#A8E1B3", PRIMARY_SOFT="#26402D", PRIMARY_DISABLED="#3B5A42",
-    TIP_BG="#2A3A30",
-    OK_BORDER="#2F5D3A", ERR_BORDER="#5C2E2E", DANGER_HOVER_BORDER="#7A3A3A",
-    WARN_BORDER="#5A4A1A", WARN_HOVER="#3A3418", WARN_HOVER_BORDER="#7A6420",
-)
-_FOREST_TONES = _tones(success=("#8BD49A", "#26402D"), warning=("#E6C07B", "#3F3620"), danger=("#E57373", "#40262A"),
-                       info=("#7FB7E0", "#243A4C"), primary=("#8BD49A", "#26402D"), neutral=("#C6D5CA", "#2A3A30"))
-_VOLCANO = _pal(
-    BG="#1E1512", SURFACE="#27201C", BORDER="#3A2E29", BORDER_STRONG="#4D3D36", HOVER="#2F2622",
-    TEXT="#F1E8E2", MUTED="#B8A79E", SUBTLE="#7E6E66", LABEL="#D9CCC5",
-    HEAD="#2B2320", LINE="#332A26", ALT="#29211E",
-    BTN="#E0672E", BTN_HOVER="#EB7F4A", BTN_DISABLED="#5A3A2A",
-    PRIMARY="#F29A6B", PRIMARY_HOVER="#F7B590", PRIMARY_SOFT="#45302A", PRIMARY_DISABLED="#5A463E",
-    TIP_BG="#3A2E29",
-    OK_BORDER="#3F5A35", ERR_BORDER="#6B2E2E", DANGER_HOVER_BORDER="#8A3A3A",
-    WARN_BORDER="#6A5520", WARN_HOVER="#45391A", WARN_HOVER_BORDER="#8A6D20",
-)
-_VOLCANO_TONES = _tones(success=("#A3D977", "#2F4028"), warning=("#F2C26B", "#45391A"), danger=("#F27D7D", "#4A2A2A"),
-                        info=("#8FC3E8", "#2A3A4A"), primary=("#F29A6B", "#45302A"), neutral=("#D9CCC5", "#3A2E29"))
-_DRACULA = _pal(
-    BG="#282A36", SURFACE="#2F3240", BORDER="#3E4254", BORDER_STRONG="#4F5470", HOVER="#363A4A",
-    TEXT="#F8F8F2", MUTED="#A8ABC0", SUBTLE="#6272A4", LABEL="#D6D8E4",
-    HEAD="#2C2F3C", LINE="#373B4A", ALT="#2B2E3A",
-    BTN="#9D6FE8", BTN_HOVER="#B08BF2", BTN_DISABLED="#4E4468",
-    PRIMARY="#BD93F9", PRIMARY_HOVER="#D2B2FB", PRIMARY_SOFT="#3C3552", PRIMARY_DISABLED="#55496F",
-    TIP_BG="#3E4254",
-    OK_BORDER="#2F5D3A", ERR_BORDER="#6B2F3A", DANGER_HOVER_BORDER="#8A3A4A",
-    WARN_BORDER="#6A5A20", WARN_HOVER="#45401A", WARN_HOVER_BORDER="#8A7A20",
-)
-_DRACULA_TONES = _tones(success=("#50FA7B", "#26402D"), warning=("#F1FA8C", "#3E4020"), danger=("#FF5555", "#4A2A2E"),
-                        info=("#8BE9FD", "#2A3F4A"), primary=("#BD93F9", "#3C3552"), neutral=("#D6D8E4", "#3E4254"))
-_GITHUB_DARK = _pal(
-    BG="#0D1117", SURFACE="#161B22", BORDER="#30363D", BORDER_STRONG="#444C56", HOVER="#21262D",
-    TEXT="#E6EDF3", MUTED="#8B949E", SUBTLE="#6E7681", LABEL="#C9D1D9",
-    HEAD="#1A2029", LINE="#21262D", ALT="#121820",
-    BTN="#238636", BTN_HOVER="#2EA043", BTN_DISABLED="#1C4A28",
-    PRIMARY="#58A6FF", PRIMARY_HOVER="#79B8FF", PRIMARY_SOFT="#1F2D44", PRIMARY_DISABLED="#2C3E5C",
-    TIP_BG="#30363D",
-    OK_BORDER="#2E6B3A", ERR_BORDER="#6E2A2A", DANGER_HOVER_BORDER="#8E3535",
-    WARN_BORDER="#6B5A1E", WARN_HOVER="#3A3418", WARN_HOVER_BORDER="#8A7A2A",
-)
-_GITHUB_DARK_TONES = _tones(success=("#3FB950", "#1C3A26"), warning=("#D29922", "#3A2F15"), danger=("#F85149", "#4A2224"),
-                            info=("#58A6FF", "#1F2D44"), primary=("#58A6FF", "#1F2D44"), neutral=("#C9D1D9", "#30363D"))
-
-# ---- 밝은 테마
-_PAPER = _pal(
-    BG="#F4F5F7", SURFACE="#FFFFFF", BORDER="#E3E6EB", BORDER_STRONG="#CBD0D8", HOVER="#EDEFF3",
-    TEXT="#1F2430", MUTED="#6B7280", SUBTLE="#9AA1AE", LABEL="#3C4452",
-    HEAD="#F7F8FA", LINE="#EEF0F3", ALT="#F9FAFB",
-    BTN="#4F46E5", BTN_HOVER="#4338CA", BTN_DISABLED="#C7C9F0",
-    PRIMARY="#4F46E5", PRIMARY_HOVER="#3730A3", PRIMARY_SOFT="#EEF0FD", PRIMARY_DISABLED="#C7C9F0",
-    TIP_BG="#1F2430",
-    OK_BORDER="#BBE5C8", ERR_BORDER="#F3C2BE", DANGER_HOVER_BORDER="#E89C96",
-    WARN_BORDER="#F2D9A0", WARN_HOVER="#FBF3E0", WARN_HOVER_BORDER="#E8C070",
-)
-_PAPER_TONES = _tones(success=("#15803D", "#E8F7EE"), warning=("#B45309", "#FDF3E1"), danger=("#B91C1C", "#FBE9E7"),
-                      info=("#1D4ED8", "#E8EFFD"), primary=("#4F46E5", "#EEF0FD"), neutral=("#3C4452", "#EDEFF3"))
-_SKY = _pal(
-    BG="#EEF4F9", SURFACE="#FBFDFF", BORDER="#D9E4EE", BORDER_STRONG="#BCCCDB", HOVER="#E4EDF5",
-    TEXT="#1E2A35", MUTED="#647A8E", SUBTLE="#93A6B6", LABEL="#3A4C5C",
-    HEAD="#F2F7FB", LINE="#E6EEF4", ALT="#F6FAFD",
-    BTN="#1E88E5", BTN_HOVER="#1976D2", BTN_DISABLED="#B6D4F0",
-    PRIMARY="#1E78CC", PRIMARY_HOVER="#155FA6", PRIMARY_SOFT="#E1EEFA", PRIMARY_DISABLED="#B6D4F0",
-    TIP_BG="#1E2A35",
-    OK_BORDER="#B9DEC6", ERR_BORDER="#F0C3BE", DANGER_HOVER_BORDER="#E39B94",
-    WARN_BORDER="#EFD6A0", WARN_HOVER="#FBF2DF", WARN_HOVER_BORDER="#E4BE70",
-)
-_SKY_TONES = _tones(success=("#2E7D32", "#E6F3E8"), warning=("#B26A00", "#FBF0DC"), danger=("#C62828", "#FBE7E5"),
-                    info=("#1E78CC", "#E1EEFA"), primary=("#1E78CC", "#E1EEFA"), neutral=("#3A4C5C", "#E4EDF5"))
-_SAND = _pal(
-    BG="#F7EFE3", SURFACE="#FFFBF4", BORDER="#ECDFCB", BORDER_STRONG="#DCCBB0", HOVER="#F2E8D8",
-    TEXT="#3A2E22", MUTED="#8A7A66", SUBTLE="#B3A48F", LABEL="#5C4D3D",
-    HEAD="#F9F3E8", LINE="#F0E6D6", ALT="#FBF6EC",
-    BTN="#C98A3C", BTN_HOVER="#B07530", BTN_DISABLED="#E9D6B8",
-    PRIMARY="#B5782F", PRIMARY_HOVER="#93601F", PRIMARY_SOFT="#F6E8D2", PRIMARY_DISABLED="#E9D6B8",
-    TIP_BG="#3A2E22",
-    OK_BORDER="#C4DCB0", ERR_BORDER="#EEC2B3", DANGER_HOVER_BORDER="#E09E8A",
-    WARN_BORDER="#EACF9A", WARN_HOVER="#F8EDD6", WARN_HOVER_BORDER="#DDB868",
-)
-_SAND_TONES = _tones(success=("#5A7F3A", "#ECF2E2"), warning=("#A2611E", "#F8EBD6"), danger=("#B4473A", "#F8E5DF"),
-                     info=("#5E7A9A", "#E8EEF4"), primary=("#B5782F", "#F6E8D2"), neutral=("#5C4D3D", "#F2E8D8"))
+# ---- 더 있는 밝은 테마: 널리 쓰이는 팔레트 그대로 (GitHub Primer, Solarized, Atom One Light)
 _GITHUB_LIGHT = _pal(
     BG="#F6F8FA", SURFACE="#FFFFFF", BORDER="#D0D7DE", BORDER_STRONG="#AFB8C1", HOVER="#EAEEF2",
     TEXT="#1F2328", MUTED="#656D76", SUBTLE="#8C959F", LABEL="#424A53",
@@ -188,29 +90,94 @@ _GITHUB_LIGHT = _pal(
 )
 _GITHUB_LIGHT_TONES = _tones(success=("#1A7F37", "#DAFBE1"), warning=("#9A6700", "#FFF8C5"), danger=("#CF222E", "#FFEBE9"),
                              info=("#0969DA", "#DDF4FF"), primary=("#0969DA", "#DDF4FF"), neutral=("#424A53", "#EAEEF2"))
+_SOLARIZED_LIGHT = _pal(
+    BG="#EEE8D5", SURFACE="#FDF6E3", BORDER="#E4DCC3", BORDER_STRONG="#D3CBB0", HOVER="#F5EFDC",
+    TEXT="#073642", MUTED="#657B83", SUBTLE="#93A1A1", LABEL="#586E75",
+    HEAD="#F7F1DF", LINE="#EFE8D3", ALT="#FAF5E6",
+    BTN="#268BD2", BTN_HOVER="#1E6FA8", BTN_DISABLED="#B9D4E8",
+    PRIMARY="#268BD2", PRIMARY_HOVER="#1E6FA8", PRIMARY_SOFT="#E3EEF4", PRIMARY_DISABLED="#9CC3DF",
+    TIP_BG="#073642",
+    OK_BORDER="#C9D9A0", ERR_BORDER="#F0C0B8", DANGER_HOVER_BORDER="#E8A094",
+    WARN_BORDER="#E8D59A", WARN_HOVER="#F7EFD2", WARN_HOVER_BORDER="#D9C070",
+)
+_SOLARIZED_LIGHT_TONES = _tones(success=("#6C7D00", "#EEF0D6"), warning=("#B58900", "#F7EFD2"), danger=("#DC322F", "#F8E3E0"),
+                                info=("#268BD2", "#E3EEF4"), primary=("#268BD2", "#E3EEF4"), neutral=("#586E75", "#EEE8D5"))
+_ONE_LIGHT = _pal(
+    BG="#F0F0F1", SURFACE="#FAFAFA", BORDER="#E1E1E3", BORDER_STRONG="#CFCFD3", HOVER="#EAEAEB",
+    TEXT="#383A42", MUTED="#696C77", SUBTLE="#A0A1A7", LABEL="#50525B",
+    HEAD="#F3F3F4", LINE="#ECECED", ALT="#F6F6F7",
+    BTN="#4078F2", BTN_HOVER="#2E63D9", BTN_DISABLED="#C3D3F8",
+    PRIMARY="#4078F2", PRIMARY_HOVER="#2E63D9", PRIMARY_SOFT="#E8EFFD", PRIMARY_DISABLED="#A6BEF5",
+    TIP_BG="#383A42",
+    OK_BORDER="#BFE0BE", ERR_BORDER="#F5C4BE", DANGER_HOVER_BORDER="#EFA49A",
+    WARN_BORDER="#EFD59A", WARN_HOVER="#FBF2DA", WARN_HOVER_BORDER="#E2BF6A",
+)
+_ONE_LIGHT_TONES = _tones(success=("#50A14F", "#E6F3E6"), warning=("#C18401", "#FBF2DA"), danger=("#E45649", "#FBE6E3"),
+                          info=("#0184BC", "#E1F1F8"), primary=("#4078F2", "#E8EFFD"), neutral=("#50525B", "#EAEAEB"))
+
+# ---- 더 있는 어두운 테마 (Atom One Dark, Dracula, Nord)
+_ONE_DARK = _pal(
+    BG="#21252B", SURFACE="#282C34", BORDER="#3A3F4B", BORDER_STRONG="#4B5263", HOVER="#2C313A",
+    TEXT="#D7DAE0", MUTED="#9DA5B4", SUBTLE="#5C6370", LABEL="#ABB2BF",
+    HEAD="#262A31", LINE="#333842", ALT="#2A2E36",
+    BTN="#4A88E0", BTN_HOVER="#61AFEF", BTN_DISABLED="#2E4366",
+    PRIMARY="#61AFEF", PRIMARY_HOVER="#8CC7F5", PRIMARY_SOFT="#2C3A4F", PRIMARY_DISABLED="#3E5A7D",
+    TIP_BG="#3A3F4B",
+    OK_BORDER="#3F6B3E", ERR_BORDER="#6B3A3E", DANGER_HOVER_BORDER="#8A474D",
+    WARN_BORDER="#6B5A2E", WARN_HOVER="#3E3828", WARN_HOVER_BORDER="#8A7540",
+)
+_ONE_DARK_TONES = _tones(success=("#98C379", "#2E3D2E"), warning=("#E5C07B", "#3E3828"), danger=("#E06C75", "#3E2A2E"),
+                         info=("#56B6C2", "#243A3E"), primary=("#61AFEF", "#2C3A4F"), neutral=("#ABB2BF", "#3A3F4B"))
+_DRACULA = _pal(
+    BG="#282A36", SURFACE="#2F3240", BORDER="#3E4254", BORDER_STRONG="#4F5470", HOVER="#363A4A",
+    TEXT="#F8F8F2", MUTED="#A8ABC0", SUBTLE="#6272A4", LABEL="#D6D8E4",
+    HEAD="#2C2F3C", LINE="#373B4A", ALT="#2B2E3A",
+    BTN="#9D6FE8", BTN_HOVER="#B08BF2", BTN_DISABLED="#4E4468",
+    PRIMARY="#BD93F9", PRIMARY_HOVER="#D2B2FB", PRIMARY_SOFT="#3C3552", PRIMARY_DISABLED="#55496F",
+    TIP_BG="#3E4254",
+    OK_BORDER="#2F5D3A", ERR_BORDER="#6B2F3A", DANGER_HOVER_BORDER="#8A3A4A",
+    WARN_BORDER="#6A5A20", WARN_HOVER="#45401A", WARN_HOVER_BORDER="#8A7A20",
+)
+_DRACULA_TONES = _tones(success=("#50FA7B", "#26402D"), warning=("#F1FA8C", "#3E4020"), danger=("#FF5555", "#4A2A2E"),
+                        info=("#8BE9FD", "#2A3F4A"), primary=("#BD93F9", "#3C3552"), neutral=("#D6D8E4", "#3E4254"))
+_NORD = _pal(
+    BG="#2E3440", SURFACE="#3B4252", BORDER="#434C5E", BORDER_STRONG="#4C566A", HOVER="#434C5E",
+    TEXT="#ECEFF4", MUTED="#A7B1C2", SUBTLE="#7B879B", LABEL="#D8DEE9",
+    HEAD="#363D4B", LINE="#434C5E", ALT="#394150",
+    BTN="#5E81AC", BTN_HOVER="#81A1C1", BTN_DISABLED="#3F5068",
+    PRIMARY="#88C0D0", PRIMARY_HOVER="#A5D3DF", PRIMARY_SOFT="#3C4B5A", PRIMARY_DISABLED="#5A7A88",
+    TIP_BG="#4C566A",
+    OK_BORDER="#5A6E4E", ERR_BORDER="#6E4248", DANGER_HOVER_BORDER="#8A5058",
+    WARN_BORDER="#6E6240", WARN_HOVER="#4A4536", WARN_HOVER_BORDER="#8A7A50",
+)
+_NORD_TONES = _tones(success=("#A3BE8C", "#3A4639"), warning=("#EBCB8B", "#4A4536"), danger=("#BF616A", "#46353A"),
+                     info=("#81A1C1", "#374455"), primary=("#88C0D0", "#3C4B5A"), neutral=("#D8DEE9", "#434C5E"))
 
 THEMES: Dict[str, Theme] = {t.key: t for t in (
-    Theme("ivory", "아이보리", False, LIGHT, LIGHT_TONES, {"bg": "#EDEBE2", "stroke": "#8B8468", "accent": "#C9B99A"}),
-    Theme("paper", "종이", False, _PAPER, _PAPER_TONES),
-    Theme("sky", "하늘", False, _SKY, _SKY_TONES),
-    Theme("sand", "모래", False, _SAND, _SAND_TONES),
-    Theme("github-light", "GitHub 밝게", False, _GITHUB_LIGHT, _GITHUB_LIGHT_TONES),
-    Theme("midnight", "미드나이트", True, DARK, DARK_TONES, {"bg": "#2A2F3A", "stroke": "#D8D1B8", "accent": "#8F8870"}),
-    Theme("oceanic", "오션", True, _OCEANIC, _OCEANIC_TONES),
-    Theme("forest", "숲", True, _FOREST, _FOREST_TONES),
-    Theme("volcano", "화산", True, _VOLCANO, _VOLCANO_TONES),
-    Theme("dracula", "드라큘라", True, _DRACULA, _DRACULA_TONES),
-    Theme("github-dark", "GitHub 어둡게", True, _GITHUB_DARK, _GITHUB_DARK_TONES),
+    Theme("light", "기본", False, LIGHT, LIGHT_TONES, {"bg": "#EFF6FF", "stroke": "#2563EB", "accent": "#BFDBFE"}),
+    Theme("github-light", "GitHub", False, _GITHUB_LIGHT, _GITHUB_LIGHT_TONES),
+    Theme("solarized-light", "Solarized", False, _SOLARIZED_LIGHT, _SOLARIZED_LIGHT_TONES),
+    Theme("one-light", "One Light", False, _ONE_LIGHT, _ONE_LIGHT_TONES),
+    Theme("dark", "기본", True, DARK, DARK_TONES, {"bg": "#334155", "stroke": "#FB923C", "accent": "#7C3F1D"}),
+    Theme("one-dark", "One Dark", True, _ONE_DARK, _ONE_DARK_TONES),
+    Theme("dracula", "Dracula", True, _DRACULA, _DRACULA_TONES),
+    Theme("nord", "Nord", True, _NORD, _NORD_TONES),
 )}
-DEFAULT_THEME = {"light": "ivory", "dark": "midnight"}   # 시스템 설정을 따를 때 따로 고르지 않았으면 이 테마
-ALIASES = {"light": "ivory", "dark": "midnight"}         # 예전 설정값
-SETTINGS = (("system", "시스템 설정 따르기"),) + tuple((t.key, t.name) for t in THEMES.values())  # 설정값으로 허용되는 것
+DEFAULT_THEME = {"light": "light", "dark": "dark"}   # 밝을 때/어두울 때 따로 고르지 않았으면 이 테마
+# 설정값 ui/theme 는 모드: system(Windows 설정 따르기) / light / dark. 밝을 때·어두울 때 쓸 테마는 ui/theme_light·ui/theme_dark
+MODES = (("system", "시스템 설정 따르기"), ("light", "밝게"), ("dark", "어둡게"))
+# 예전 설정값(없어진 테마 이름)은 밝은/어두운 쪽으로 넘긴다
+ALIASES = {"ivory": "light", "paper": "light", "sky": "light", "sand": "light",
+           "midnight": "dark", "oceanic": "dark", "forest": "dark", "volcano": "dark", "github-dark": "dark"}
+SETTINGS = MODES + tuple((t.key, t.name) for t in THEMES.values() if t.key not in ("light", "dark"))  # ui/theme 로 허용되는 값
 
 
 def themes(dark: bool) -> List[Theme]:
     return [t for t in THEMES.values() if t.dark == dark]
 
-FONT_FAMILY = '"Segoe UI Variable Text", "Segoe UI", "Malgun Gothic"'
+# 글꼴: 같이 들어 있는 Pretendard(OFL, assets/fonts) 를 앱 시작 때 등록해 쓴다. 한글·영문이 한 글꼴로, 어느 PC 에서나 같게
+FONT_FAMILY = '"Pretendard", "Segoe UI Variable Text", "Segoe UI", "Malgun Gothic"'
+_fonts_loaded = False
 FONT_SCALES = (("small", "작게", 0.9), ("normal", "보통", 1.0), ("large", "크게", 1.15))   # 앱 설정의 글자 크기
 FONT_SCALE = 1.0
 _PT = re.compile(r"(\d+(?:\.\d+)?)pt\b")
@@ -236,7 +203,7 @@ def _scale_pts(css: str) -> str:
 
 # 지금 쓰는 색 (use() 가 바꾼다). 편집기가 이름을 알 수 있게 밝은 테마 값으로 먼저 둔다.
 MODE = "light"      # light / dark (지금 테마가 어두운지)
-THEME = "ivory"     # 지금 테마의 키
+THEME = "light"     # 지금 테마의 키
 BG = SURFACE = BORDER = BORDER_STRONG = HOVER = TEXT = MUTED = SUBTLE = LABEL = HEAD = LINE = ALT = ""
 BTN = BTN_HOVER = BTN_DISABLED = PRIMARY = PRIMARY_HOVER = PRIMARY_SOFT = PRIMARY_DISABLED = TIP_BG = ""
 OK_BORDER = ERR_BORDER = DANGER_HOVER_BORDER = WARN_BORDER = WARN_HOVER = WARN_HOVER_BORDER = ""
@@ -256,7 +223,7 @@ def use(key: str) -> None:
     TONES = dict(t.tones)
 
 
-use("ivory")
+use("light")
 
 
 def is_dark() -> bool:
@@ -276,7 +243,7 @@ def system_mode() -> str:
 
 
 def preferred(mode: str) -> str:
-    """시스템 설정을 따를 때 그 모드(light/dark)에서 쓸 테마 키 (앱 설정에서 고른 것, 없으면 기본)."""
+    """그 모드(light/dark)에서 쓸 테마 키: 앱 설정에서 고른 것(ui/theme_light·ui/theme_dark), 없으면 기본."""
     key = str(QSettings().value(f"ui/theme_{mode}", "")) if QGuiApplication.instance() is not None else ""
     if key in THEMES and THEMES[key].dark == (mode == "dark"):
         return key
@@ -284,17 +251,43 @@ def preferred(mode: str) -> str:
 
 
 def resolve(setting: str) -> str:
-    """설정값(system / 테마 키 / 예전 light·dark) → 지금 써야 할 테마 키."""
+    """설정값(system / light / dark / 테마 키 / 예전 이름) → 지금 써야 할 테마 키."""
+    setting = ALIASES.get(setting, setting)
+    if setting in ("light", "dark"):
+        return preferred(setting)
     if setting in THEMES:
         return setting
-    if setting in ALIASES:
-        return ALIASES[setting]
     return preferred(system_mode())
+
+
+def load_fonts() -> List[str]:
+    """assets/fonts 의 글꼴 파일을 앱에 등록한다 (한 번만). 반환: 등록된 글꼴 가족 이름들."""
+    global _fonts_loaded
+    families: List[str] = []
+    folder = assets_dir() / "fonts"
+    if _fonts_loaded or QGuiApplication.instance() is None or not folder.is_dir():
+        return families
+    for path in sorted(folder.glob("*.otf")) + sorted(folder.glob("*.ttf")):
+        font_id = QFontDatabase.addApplicationFont(str(path))
+        if font_id >= 0:
+            families += [f for f in QFontDatabase.applicationFontFamilies(font_id) if f not in families]
+    _fonts_loaded = True
+    return families
+
+
+def app_font() -> QFont:
+    """앱 기본 글꼴 (스타일시트가 닿지 않는 메뉴·대화 상자·직접 그리는 글자용)."""
+    font = QFont()
+    font.setFamilies(["Pretendard", "Segoe UI Variable Text", "Segoe UI", "Malgun Gothic"])
+    font.setPointSizeF(10 * FONT_SCALE)
+    return font
 
 
 def apply(app, setting: str = "system") -> str:
     """설정(system 또는 테마 키)에 맞는 테마를 앱 전체에 적용하고, 등록해 둔 아이콘·화면을 다시 그린다. 반환: 테마 키."""
     use(resolve(setting))
+    load_fonts()
+    app.setFont(app_font())
     app.setPalette(_palette())
     app.setStyleSheet(stylesheet())
     for ref, args in list(_bound):
@@ -345,7 +338,7 @@ def assets_dir() -> Path:
 
 
 def _color_map() -> Dict[str, str]:
-    """기본 밝은 테마(ivory) 색 -> 지금 테마 색 (그림 파일에 직접 적힌 색을 바꿀 때)."""
+    """기본 밝은 테마(light) 색 -> 지금 테마 색 (그림 파일에 직접 적힌 색을 바꿀 때)."""
     if THEME == DEFAULT_THEME["light"]:
         return {}
     t = current()
@@ -411,8 +404,8 @@ def bind_icon(obj, name: str, color_key: str, size: int = 20, selected_key: str 
     _bound.append((weakref.ref(obj), args))
 
 
-# 로고(logo.svg)의 색: 파일에는 기본 밝은 테마(ivory) 값이 적혀 있고, 다른 테마에서는 그 테마의 로고 색으로 바꾼다
-LOGO_COLORS = THEMES["ivory"].logo
+# 로고(logo.svg)의 색: 파일에는 기본 밝은 테마(light) 값이 적혀 있고, 다른 테마에서는 그 테마의 로고 색으로 바꾼다
+LOGO_COLORS = THEMES["light"].logo
 
 
 def logo_colors(key: str) -> Dict[str, str]:
@@ -505,44 +498,44 @@ QLabel#toastText {{ color: white; font-weight: 500; background: transparent; }}
 
 /* ---------- 사이드바 ---------- */
 QWidget#sidebar {{ background: {SURFACE}; border-right: 1px solid {BORDER}; }}
-QLabel#brand {{ font-size: 14pt; font-weight: 700; }}
+QLabel#brand {{ font-size: 12.5pt; font-weight: 600; }}
 QLabel#brandSub {{ color: {SUBTLE}; font-size: 8.5pt; }}
 QListWidget#nav {{ background: transparent; border: none; outline: 0; }}
-QListWidget#nav::item {{ color: {MUTED}; padding: 9px 12px; margin: 2px 12px; border-radius: 8px; }}
+QListWidget#nav::item {{ color: {LABEL}; padding: 7px 10px; margin: 1px 10px; border-radius: 6px; }}
 QListWidget#nav::item:hover {{ background: {HOVER}; color: {TEXT}; }}
-QListWidget#nav::item:selected {{ background: {PRIMARY_SOFT}; color: {PRIMARY}; font-weight: 600; }}
+QListWidget#nav::item:selected {{ background: {PRIMARY_SOFT}; color: {PRIMARY}; font-weight: 500; }}
 QLabel#sideFooter {{ color: {SUBTLE}; font-size: 8.5pt; }}
 QLabel#sideCaption {{ color: {SUBTLE}; font-size: 8.5pt; font-weight: 600; padding-left: 2px; }}
 QLabel#sideMeta {{ color: {MUTED}; font-size: 9pt; padding-left: 2px; }}
 QLabel#sideStatus {{ color: {MUTED}; font-size: 9pt; }}
-QComboBox#projectSwitcher {{ background: {HEAD}; border-color: {BORDER}; border-radius: 10px; padding: 0 8px; min-height: 58px; }}
+QComboBox#projectSwitcher {{ background: {SURFACE}; border-color: {BORDER}; border-radius: 8px; padding: 0 8px; min-height: 52px; }}
 QComboBox#projectSwitcher:hover {{ border-color: {PRIMARY}; background: {SURFACE}; }}
 QComboBox#projectSwitcher QAbstractItemView {{ padding: 4px; }}
 
 /* ---------- 글자 ---------- */
-QLabel#pageTitle {{ font-size: 18pt; font-weight: 700; }}
+QLabel#pageTitle {{ font-size: 15pt; font-weight: 600; }}
 QLabel#pageSubtitle {{ color: {MUTED}; }}
-QLabel#cardTitle {{ font-size: 11pt; font-weight: 600; }}
+QLabel#cardTitle {{ font-size: 10.5pt; font-weight: 600; }}
 QLabel#muted {{ color: {MUTED}; }}
 QLabel#fieldLabel {{ color: {LABEL}; font-weight: 500; }}
-QLabel#chip {{ border-radius: 11px; padding: 3px 10px; font-size: 9pt; font-weight: 600; }}
+QLabel#chip {{ border-radius: 10px; padding: 2px 8px; font-size: 8.5pt; font-weight: 600; }}
 {chips}
 
 /* ---------- 카드 ---------- */
-QFrame#card {{ background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 12px; }}
-QFrame#banner {{ border-radius: 12px; }}
-QFrame#detail {{ background: {HEAD}; border: 1px solid {BORDER}; border-radius: 8px; }}
+QFrame#card {{ background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 10px; }}
+QFrame#banner {{ border-radius: 10px; }}
+QFrame#detail {{ background: {HEAD}; border: 1px solid {BORDER}; border-radius: 6px; }}
 QFrame#banner[tone="success"] {{ background: {TONES['success'][1]}; border: 1px solid {OK_BORDER}; }}
 QFrame#banner[tone="danger"] {{ background: {TONES['danger'][1]}; border: 1px solid {ERR_BORDER}; }}
 QFrame#divider {{ background: {BORDER}; max-height: 1px; min-height: 1px; border: none; }}
 
 /* ---------- 입력 ---------- */
 QLineEdit, QComboBox, QSpinBox {{
-    background: {SURFACE}; border: 1px solid {BORDER_STRONG}; border-radius: 8px;
-    padding: 0 10px; min-height: 34px; selection-background-color: {PRIMARY_SOFT}; selection-color: {TEXT};
+    background: {SURFACE}; border: 1px solid {BORDER_STRONG}; border-radius: 6px;
+    padding: 0 8px; min-height: 30px; selection-background-color: {PRIMARY_SOFT}; selection-color: {TEXT};
 }}
 QPlainTextEdit {{
-    background: {SURFACE}; border: 1px solid {BORDER_STRONG}; border-radius: 8px; padding: 8px;
+    background: {SURFACE}; border: 1px solid {BORDER_STRONG}; border-radius: 6px; padding: 8px;
     selection-background-color: {PRIMARY_SOFT}; selection-color: {TEXT};
     font-family: "Cascadia Mono", Consolas, "Malgun Gothic"; font-size: 9.5pt;
 }}
@@ -555,13 +548,13 @@ QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled, QPlainTextEdit:disabl
 QComboBox::drop-down {{ border: none; width: 30px; }}
 QComboBox::down-arrow {{ image: url("{asset('chevron-down.svg')}"); width: 14px; height: 14px; }}
 QComboBox QAbstractItemView {{
-    background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 8px; padding: 4px; outline: 0;
+    background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 6px; padding: 4px; outline: 0;
     selection-background-color: {PRIMARY_SOFT}; selection-color: {PRIMARY};
 }}
 QSpinBox::up-button, QSpinBox::down-button {{ width: 0; border: none; }}
 
 QCheckBox {{ spacing: 8px; }}
-QCheckBox::indicator {{ width: 18px; height: 18px; border-radius: 5px; border: 1px solid {BORDER_STRONG}; background: {SURFACE}; }}
+QCheckBox::indicator {{ width: 16px; height: 16px; border-radius: 4px; border: 1px solid {BORDER_STRONG}; background: {SURFACE}; }}
 QCheckBox::indicator:hover {{ border-color: {PRIMARY}; }}
 QCheckBox::indicator:checked {{ background: {BTN}; border-color: {BTN}; image: url("{asset('check.svg')}"); }}
 QCheckBox:disabled {{ color: {SUBTLE}; }}
@@ -571,16 +564,16 @@ QCheckBox#switch::indicator:checked {{ image: url("{asset('switch-on.svg')}"); }
 
 /* ---------- 버튼 ---------- */
 QPushButton {{
-    background: {SURFACE}; border: 1px solid {BORDER_STRONG}; border-radius: 8px;
-    padding: 0 14px; min-height: 34px; font-weight: 500; color: {LABEL};
+    background: {SURFACE}; border: 1px solid {BORDER_STRONG}; border-radius: 6px;
+    padding: 0 12px; min-height: 30px; font-weight: 500; color: {LABEL};
 }}
 QPushButton:hover {{ background: {HEAD}; }}
 QPushButton:pressed {{ background: {HOVER}; }}
 QPushButton:disabled {{ color: {SUBTLE}; border-color: {BORDER}; }}
-QPushButton#primary {{ background: {BTN}; border: 1px solid {BTN}; color: white; font-weight: 600; padding: 0 18px; }}
+QPushButton#primary {{ background: {BTN}; border: 1px solid {BTN}; color: white; font-weight: 600; padding: 0 14px; }}
 QPushButton#primary:hover {{ background: {BTN_HOVER}; border-color: {BTN_HOVER}; }}
 QPushButton#primary:disabled {{ background: {BTN_DISABLED}; border-color: {BTN_DISABLED}; color: {MUTED if MODE == 'dark' else 'white'}; }}
-QPushButton#ghost {{ background: transparent; border: none; color: {PRIMARY}; font-weight: 600; padding: 0 8px; }}
+QPushButton#ghost {{ background: transparent; border: none; color: {PRIMARY}; font-weight: 500; padding: 0 8px; }}
 QPushButton#ghost:hover {{ background: {PRIMARY_SOFT}; }}
 QPushButton#sideLink {{ background: transparent; border: none; color: {MUTED}; font-size: 9.5pt; padding: 4px 6px; text-align: left; }}
 QPushButton#sideLink:hover {{ color: {PRIMARY}; background: {HOVER}; border-radius: 6px; }}
@@ -594,12 +587,12 @@ QPushButton#danger:hover {{ background: {TONES['danger'][1]}; border-color: {DAN
 QTabWidget::pane {{ border: none; top: 8px; }}
 QTabBar {{ qproperty-drawBase: 0; }}
 QTabBar::tab {{
-    background: {HOVER}; color: {MUTED}; border: 1px solid {HOVER}; padding: 6px 16px; margin: 0;
-    font-weight: 500; min-height: 22px;
+    background: {HOVER}; color: {MUTED}; border: 1px solid {HOVER}; padding: 4px 14px; margin: 0;
+    font-weight: 500; min-height: 20px;
 }}
-QTabBar::tab:first {{ border-top-left-radius: 8px; border-bottom-left-radius: 8px; }}
-QTabBar::tab:last {{ border-top-right-radius: 8px; border-bottom-right-radius: 8px; }}
-QTabBar::tab:only-one {{ border-radius: 8px; }}
+QTabBar::tab:first {{ border-top-left-radius: 6px; border-bottom-left-radius: 6px; }}
+QTabBar::tab:last {{ border-top-right-radius: 6px; border-bottom-right-radius: 6px; }}
+QTabBar::tab:only-one {{ border-radius: 6px; }}
 QTabBar::tab:hover {{ color: {TEXT}; }}
 QTabBar::tab:selected {{ background: {SURFACE}; color: {PRIMARY}; border: 1px solid {BORDER_STRONG}; font-weight: 600; }}
 
@@ -608,10 +601,10 @@ QTableWidget {{
     background: {SURFACE}; border: none; gridline-color: transparent; outline: 0;
     selection-background-color: {PRIMARY_SOFT}; selection-color: {TEXT}; alternate-background-color: {ALT};
 }}
-QTableWidget::item {{ padding: 4px 8px; border-bottom: 1px solid {LINE}; }}
+QTableWidget::item {{ padding: 3px 8px; border-bottom: 1px solid {LINE}; }}
 QHeaderView::section {{
     background: {HEAD}; color: {MUTED}; font-size: 9pt; font-weight: 600;
-    border: none; border-bottom: 1px solid {BORDER}; padding: 8px;
+    border: none; border-bottom: 1px solid {BORDER}; padding: 6px 8px;
 }}
 QTableCornerButton::section {{ background: {HEAD}; border: none; }}
 QListWidget#messages {{ background: transparent; border: none; outline: 0; }}
@@ -629,7 +622,7 @@ QPushButton#step[state="current"], QPushButton#step[state="current"]:disabled {{
 }}
 QPushButton#step:disabled {{ border-color: {BORDER}; }}
 QFrame#stepLine {{ background: {BORDER_STRONG}; border: none; }}
-QFrame#preflight {{ background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 10px; }}
+QFrame#preflight {{ background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 8px; }}
 QFrame#override {{ background: {PRIMARY_SOFT}; border-radius: 8px; }}
 QPushButton#chipAction {{
     background: {TONES['warning'][1]}; color: {TONES['warning'][0]}; border: 1px solid {WARN_BORDER}; border-radius: 12px;
@@ -645,7 +638,7 @@ QPushButton#seg {{
 QPushButton#seg:hover {{ background: {HOVER}; }}
 QPushButton#seg:checked {{ background: {PRIMARY_SOFT}; color: {PRIMARY}; border-color: {PRIMARY_DISABLED}; font-weight: 600; }}
 QTreeWidget {{ background: {SURFACE}; border: none; outline: 0; }}
-QTreeWidget::item {{ padding: 6px 4px; border-bottom: 1px solid {LINE}; }}
+QTreeWidget::item {{ padding: 5px 4px; border-bottom: 1px solid {LINE}; }}
 QTreeView::branch {{ background: transparent; border-bottom: 1px solid {LINE}; }}
 QTreeView::branch:has-children:closed {{ image: url("{asset('chevron-right.svg')}"); }}
 QTreeView::branch:has-children:open {{ image: url("{asset('chevron-open.svg')}"); }}
@@ -654,7 +647,7 @@ QLabel#code {{
 }}
 QFrame#cmdRow {{ background: {HEAD}; border: 1px solid {BORDER}; border-radius: 8px; }}
 QLabel#stepNum {{ background: {PRIMARY_SOFT}; color: {PRIMARY}; border-radius: 12px; font-size: 9pt; font-weight: 700; }}
-QLabel#doneTitle {{ font-size: 13pt; font-weight: 700; }}
+QLabel#doneTitle {{ font-size: 12.5pt; font-weight: 600; }}
 
 /* ---------- 기록 ---------- */
 QListWidget#records {{ background: transparent; border: none; outline: 0; }}
@@ -673,10 +666,10 @@ QListWidget#fileList {{
 }}
 QListWidget#fileList::item {{ padding: 4px 6px; border-bottom: 1px solid {LINE}; }}
 QLabel#rowTitle {{ font-weight: 600; }}
-QLabel#detailTitle {{ font-size: 14pt; font-weight: 700; }}
+QLabel#detailTitle {{ font-size: 12.5pt; font-weight: 600; }}
 QLabel#refLabel {{ color: {PRIMARY}; font-weight: 600; }}
 QLabel#emptyText {{ color: {MUTED}; font-size: 11pt; }}
-QTextBrowser#report {{ background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 10px; }}
+QTextBrowser#report {{ background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 8px; }}
 
 /* ---------- 스크롤바·진행 표시 ---------- */
 QScrollArea {{ background: transparent; border: none; }}

@@ -51,9 +51,29 @@ class SettingsPage(QWidget):
         layout.setSpacing(14)
 
         look = Card("화면")
-        self.follow_system = QCheckBox("Windows 의 밝게/어둡게 설정 따르기 (밝을 때와 어두울 때 쓸 테마를 하나씩 고릅니다)")
-        self.follow_system.toggled.connect(self._toggle_follow)
-        look.body.addWidget(self.follow_system)
+        def seg_row(caption, items, handler, with_swatch):
+            row = QHBoxLayout()
+            row.setSpacing(6)
+            row.addWidget(label(caption, "fieldLabel", wrap=False))
+            buttons = {}
+            for key, text in items:
+                b = QPushButton(text)
+                b.setObjectName("seg")
+                b.setCheckable(True)
+                if with_swatch:
+                    b.setIcon(theme.swatch(key))
+                b.setCursor(Qt.CursorShape.PointingHandCursor)
+                b.clicked.connect(lambda _=False, key=key: handler(key))
+                buttons[key] = b
+                row.addWidget(b)
+            row.addStretch(1)
+            look.body.addLayout(row)
+            return buttons
+
+        # 모드(시스템 설정 따르기 / 밝게 / 어둡게)와, 밝을 때·어두울 때 쓸 테마를 따로 고른다
+        self.mode_buttons = seg_row("테마", theme.MODES, self.set_theme, False)
+        self.theme_buttons = seg_row("밝은 테마", [(t.key, t.name) for t in theme.themes(False)], self.set_palette, True)
+        self.theme_buttons.update(seg_row("어두운 테마", [(t.key, t.name) for t in theme.themes(True)], self.set_palette, True))
         size_row = QHBoxLayout()
         size_row.setSpacing(6)
         size_row.addWidget(label("글자 크기", "fieldLabel", wrap=False))
@@ -68,22 +88,6 @@ class SettingsPage(QWidget):
             size_row.addWidget(b)
         size_row.addStretch(1)
         look.body.addLayout(size_row)
-        self.theme_buttons = {}
-        for caption, dark in (("밝은 테마", False), ("어두운 테마", True)):
-            look.body.addWidget(label(caption, "fieldLabel", wrap=False))
-            row = QHBoxLayout()
-            row.setSpacing(6)
-            for t in theme.themes(dark):
-                b = QPushButton(t.name)
-                b.setObjectName("seg")
-                b.setCheckable(True)
-                b.setIcon(theme.swatch(t.key))
-                b.setCursor(Qt.CursorShape.PointingHandCursor)
-                self.theme_buttons[t.key] = b
-                b.clicked.connect(lambda _=False, key=t.key: self.set_theme(key))
-                row.addWidget(b)
-            row.addStretch(1)
-            look.body.addLayout(row)
         layout.addWidget(look)
 
         defaults = Card("패키지 기본값")
@@ -302,17 +306,31 @@ class SettingsPage(QWidget):
                             on_failed=lambda msg: self.ctx.dialogs.error("새 버전 확인", msg), quiet=True)
 
     def set_theme(self, key: str) -> None:
-        """테마를 바로 바꾸고 이 PC 에 기억한다 (저장 버튼과 상관없음). 시스템 설정을 따르는 중이면
-        그 테마가 밝은지 어두운지에 따라 '밝을 때/어두울 때' 테마로 기억하고, 지금 모드와 맞으면 바로 적용된다."""
+        """모드(system / light / dark)를 바로 바꾸고 이 PC 에 기억한다 (저장 버튼과 상관없음).
+        테마 키를 주면 그 테마를 그 모드의 테마로 고르고 모드도 그쪽으로 바꾼다."""
         key = theme.ALIASES.get(key, key)
+        if key in theme.THEMES and key not in ("light", "dark"):
+            self.set_palette(key)
+            return
+        if key not in ("light", "dark"):
+            key = "system"
+        QSettings().setValue("ui/theme", key)
+        self._apply(key)
+
+    def set_palette(self, key: str) -> None:
+        """밝을 때/어두울 때 쓸 테마를 고른다. 시스템 설정을 따르는 중이면 기억만 하고(그 모드가 되면 쓰임),
+        모드를 고정해 둔 상태면 그 테마 쪽 모드로 바꿔 바로 보여 준다."""
+        t = theme.THEMES.get(theme.ALIASES.get(key, key))
+        if t is None:
+            return
+        mode = "dark" if t.dark else "light"
         settings = QSettings()
-        if self.follow_system.isChecked():
-            settings.setValue("ui/theme_dark" if theme.THEMES[key].dark else "ui/theme_light", key)
-            setting = "system"
-        else:
-            settings.setValue("ui/theme", key)
-            setting = key
-        self._apply(setting)
+        settings.setValue(f"ui/theme_{mode}", t.key)
+        current = str(settings.value("ui/theme", "system"))
+        if current != "system":
+            settings.setValue("ui/theme", mode)
+            current = mode
+        self._apply(current)
 
     def set_font_scale(self, key: str) -> None:
         """글자 크기(작게/보통/크게)를 바로 바꾸고 이 PC 에 기억한다. 고른 단추 하나만 눌린 상태로 둔다."""
@@ -328,16 +346,6 @@ class SettingsPage(QWidget):
         for key, b in self.font_buttons.items():
             b.setChecked(key == size)
 
-    def _toggle_follow(self, on: bool) -> None:
-        settings = QSettings()
-        if on:
-            settings.setValue("ui/theme", "system")
-            self._apply("system")
-        else:
-            key = theme.THEME  # 지금 보이는 테마를 그대로 고정한다
-            settings.setValue("ui/theme", key)
-            self._apply(key)
-
     def _apply(self, setting: str) -> None:
         app = QApplication.instance()
         if app is not None:
@@ -345,20 +353,21 @@ class SettingsPage(QWidget):
         self._sync_theme_buttons()
 
     def _sync_theme_buttons(self) -> None:
-        """시스템을 따르면 밝은 쪽·어두운 쪽에서 하나씩, 아니면 지금 테마 하나만 눌린 상태로."""
-        if self.follow_system.isChecked():
-            checked = {theme.preferred("light"), theme.preferred("dark")}
-        else:
-            checked = {theme.THEME}
+        """모드 단추는 설정값(예전 테마 이름은 밝은/어두운 쪽으로)대로 하나, 테마 단추는 밝은 쪽·어두운 쪽에서 하나씩."""
+        current = str(QSettings().value("ui/theme", "system"))
+        current = theme.ALIASES.get(current, current)
+        if current in theme.THEMES and current not in ("light", "dark"):
+            current = "dark" if theme.THEMES[current].dark else "light"
+        if current not in dict(theme.MODES):
+            current = "system"
+        for key, b in self.mode_buttons.items():
+            b.setChecked(key == current)
+        chosen = {theme.preferred("light"), theme.preferred("dark")}
         for key, b in self.theme_buttons.items():
-            b.setChecked(key in checked)
+            b.setChecked(key in chosen)
 
     def refresh(self) -> None:
         self._sync_font_buttons()
-        current = str(QSettings().value("ui/theme", "system"))
-        self.follow_system.blockSignals(True)
-        self.follow_system.setChecked(current not in theme.THEMES and current not in theme.ALIASES)
-        self.follow_system.blockSignals(False)
         self._sync_theme_buttons()
         exists = self.ctx.config_path.is_file()
         self.path_label.setText(str(self.ctx.config_path))

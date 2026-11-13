@@ -54,7 +54,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle(f"{__app_name__} - {__tagline__}")
         self.setWindowIcon(QIcon(theme.logo_pixmap(32, mode="light")))  # 작업 표시줄은 앱 테마와 무관
-        self.resize(1240, 840)
+        self.resize(1320, 860)
         self.setMinimumSize(1000, 660)   # 실제 최소 폭은 화면 내용에 맞춰 더 커질 수 있다 (_fit_minimum)
         self.ctx = AppContext(config_path=config_path or default_config_path(),
                               runner=runner or TaskRunner(self), dialogs=dialogs or Dialogs(self))
@@ -90,7 +90,7 @@ class MainWindow(QMainWindow):
         page_area.setObjectName("pageArea")
         page_area.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         page_layout = QVBoxLayout(page_area)
-        page_layout.setContentsMargins(28, 22, 28, 20)
+        page_layout.setContentsMargins(24, 20, 24, 18)
         page_layout.addWidget(self.stack)
         layout.addWidget(page_area, 1)
         self.setCentralWidget(central)
@@ -146,7 +146,7 @@ class MainWindow(QMainWindow):
         sidebar = QWidget()
         sidebar.setObjectName("sidebar")
         sidebar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        sidebar.setFixedWidth(236)
+        sidebar.setFixedWidth(224)
         side = QVBoxLayout(sidebar)
         side.setContentsMargins(0, 22, 0, 16)
         side.setSpacing(0)
@@ -165,7 +165,7 @@ class MainWindow(QMainWindow):
         brand_row.addWidget(logo)
         brand_row.addWidget(self.brand_texts, 1)
         side.addLayout(brand_row)
-        side.addSpacing(24)
+        side.addSpacing(20)
 
         # 작업할 프로젝트: 고르면 모든 화면이 이 프로젝트 기준으로 바뀐다
         self.project_box = QWidget()
@@ -245,7 +245,7 @@ class MainWindow(QMainWindow):
     def set_sidebar_collapsed(self, collapsed: bool, remember: bool = True) -> None:
         """사이드바를 아이콘만 남기고 접거나 다시 편다."""
         self.sidebar_collapsed = collapsed
-        self.sidebar.setFixedWidth(72 if collapsed else 236)
+        self.sidebar.setFixedWidth(72 if collapsed else 224)
         for w in (self.brand_texts, self.project_box, self.status_widget):
             w.setVisible(not collapsed)
         for i, (text, _icon) in enumerate(PAGES):

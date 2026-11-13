@@ -626,20 +626,21 @@ def test_settings_export_and_import(qapp, tmp_path, maven_project):
     config_store.save_raw(path, data)
     w.ctx.reload()
     QSettings().setValue("ui/font_scale", "normal")
-    QSettings().setValue("ui/theme", "ivory")
+    QSettings().setValue("ui/theme", "dark")
     theme.set_font_scale("normal")
-    s._apply("ivory")
+    s._apply("dark")
 
     assert s.import_settings(out, mode="merge", apply_ui=False)
     assert sorted(w.ctx.cfg.projects) == ["crm", "erp"] and w.ctx.cfg.projects["erp"].server_path == "/app/MINE"
     assert dialogs.messages[-1] == ("toast", "info", "프로젝트 0개를 더했습니다. 같은 이름 1개는 건너뛰었습니다: erp")
-    assert QSettings().value("ui/font_scale") == "normal" and theme.THEME == "ivory"
+    assert QSettings().value("ui/font_scale") == "normal" and theme.THEME == "dark"
 
     assert s.import_settings(out, mode="replace", apply_ui=True)
     assert sorted(w.ctx.cfg.projects) == ["erp"] and w.ctx.cfg.projects["erp"].server_path == "/app/ROOT"
     assert dialogs.messages[-1] == ("toast", "success", "설정을 파일 내용으로 바꿨습니다 (프로젝트 1개).")
     assert QSettings().value("ui/font_scale") == "large" and theme.FONT_SCALE == 1.15 and s.font_buttons["large"].isChecked()
-    assert QSettings().value("ui/theme") == "sky" and theme.THEME == "sky"
+    assert QSettings().value("ui/theme") == "sky" and theme.THEME == "light"             # 예전 테마 이름은 밝은 쪽으로
+    assert s.mode_buttons["light"].isChecked() and not s.mode_buttons["dark"].isChecked()
     assert "crm" in config_store.load_raw(path.with_name(path.name + ".bak"))["projects"]   # 이전 설정은 .bak
 
     bad = tmp_path / "bad.yaml"                                  # 내보낸 파일이 아니면 오류 창, 설정은 그대로
@@ -717,45 +718,55 @@ def test_min_window_nothing_clipped(qapp, tmp_path, maven_project):
 
 def test_theme_switch(qapp, tmp_path, maven_project, monkeypatch):
     from shipkit.gui import theme
+    from PySide6.QtGui import QFontDatabase
     w = make_window(_config(tmp_path, maven_project))
     s = w.settings_page
     try:
-        assert s.follow_system.isChecked()                     # 처음에는 시스템 설정을 따른다
-        s.follow_system.setChecked(False)
-        s.set_theme("dark")                                    # 예전 값 dark = 기본 어두운 테마(midnight)
-        assert QSettings().value("ui/theme") == "midnight" and theme.is_dark() and theme.THEME == "midnight"
+        assert "Pretendard" in QFontDatabase.families() and qapp.font().family() == "Pretendard"   # 같이 든 글꼴을 등록해 쓴다
+        assert theme.FONT_FAMILY.startswith('"Pretendard"') and theme.load_fonts() == []           # 두 번 등록하지 않는다
+        assert s.mode_buttons["system"].isChecked()            # 처음에는 시스템 설정을 따른다
+        assert s.theme_buttons["light"].isChecked() and s.theme_buttons["dark"].isChecked()   # 기본 테마가 밝은/어두운 쪽에 하나씩
+        s.set_theme("dark")
+        assert QSettings().value("ui/theme") == "dark" and theme.is_dark() and theme.THEME == "dark"
         assert theme.DARK["BG"] in qapp.styleSheet() and qapp.palette().window().color().name() == theme.DARK["BG"].lower()
         arrow = theme.asset("chevron-down.svg")                 # 스타일시트 그림도 그 테마 색 사본
         assert "shipkit-theme" in arrow and theme.DARK["MUTED"] in open(arrow, encoding="utf-8").read()
-        assert s.theme_buttons["midnight"].isChecked() and not s.theme_buttons["ivory"].isChecked()
+        assert s.mode_buttons["dark"].isChecked() and not s.mode_buttons["light"].isChecked()
 
-        for key, t in theme.THEMES.items():                    # 모든 테마가 적용되고, 그림·로고 색도 바뀐다
-            s.set_theme(key)
+        for key, t in theme.THEMES.items():                    # 모든 테마가 적용되고, 그림·로고 색도 바뀐다. 모드도 그쪽으로
+            s.set_palette(key)
             assert theme.THEME == key and theme.is_dark() == t.dark and t.colors["BG"] in qapp.styleSheet()
             assert set(t.colors) == set(theme.LIGHT) and set(t.tones) == set(theme.LIGHT_TONES)
             assert theme.logo_colors(key)["stroke"] in theme.logo_svg()
-            assert [b for b, btn in s.theme_buttons.items() if btn.isChecked()] == [key]
-        assert "#F3F1E9" not in open(theme.asset("chevron-down.svg"), encoding="utf-8").read() or theme.THEME == "ivory"
+            assert QSettings().value("ui/theme") == ("dark" if t.dark else "light")
+            assert s.theme_buttons[key].isChecked() and s.mode_buttons["dark" if t.dark else "light"].isChecked()
+        assert QSettings().value("ui/theme_light") == "one-light" and QSettings().value("ui/theme_dark") == "nord"
+        s.set_theme("light")                                   # 밝게 모드 = 밝은 쪽에서 고른 테마
+        assert theme.THEME == "one-light" and s.theme_buttons["one-light"].isChecked() and s.theme_buttons["nord"].isChecked()
+        s.set_palette("light")                                 # 기본 밝은 테마는 그림 원본 그대로 (사본을 만들지 않는다)
+        assert theme.THEME == "light" and "shipkit-theme" not in theme.asset("chevron-down.svg")
+        assert theme.LIGHT["MUTED"] in open(theme.asset("chevron-down.svg"), encoding="utf-8").read()
 
-        # 시스템 설정 따르기: 밝을 때/어두울 때 테마를 하나씩 기억하고 지금 모드에 맞는 쪽을 쓴다
+        # 시스템 설정 따르기: Windows 의 밝게/어둡게에 맞춰 그 쪽에서 고른 테마를 쓴다. 따르는 중에 고른 테마는 기억만
         monkeypatch.setattr(theme, "system_mode", lambda: "dark")
-        s.follow_system.setChecked(True)
-        assert QSettings().value("ui/theme") == "system" and theme.THEME == "midnight"
-        s.set_theme("oceanic")                                 # 어두운 테마를 고르면 어두울 때 테마로
-        assert QSettings().value("ui/theme_dark") == "oceanic" and theme.THEME == "oceanic"
-        s.set_theme("sky")                                     # 밝은 테마를 고르면 밝을 때 테마로 (지금은 어두운 모드라 안 바뀜)
-        assert QSettings().value("ui/theme_light") == "sky" and theme.THEME == "oceanic"
-        assert s.theme_buttons["oceanic"].isChecked() and s.theme_buttons["sky"].isChecked()
+        s.set_theme("system")
+        assert QSettings().value("ui/theme") == "system" and theme.THEME == "nord" and s.mode_buttons["system"].isChecked()
+        s.set_palette("github-light")
+        assert QSettings().value("ui/theme") == "system" and theme.THEME == "nord" and s.theme_buttons["github-light"].isChecked()
         monkeypatch.setattr(theme, "system_mode", lambda: "light")
         theme.apply(qapp, "system")
-        assert theme.THEME == "sky"
-        s.follow_system.setChecked(False)                      # 따르기를 끄면 지금 보이는 테마로 고정
-        assert QSettings().value("ui/theme") == "sky"
+        assert theme.THEME == "github-light"
+        s.set_theme("oceanic")                                 # 예전 테마 이름은 밝은/어두운 모드로
+        assert QSettings().value("ui/theme") == "dark" and theme.THEME == "nord"
+        s.set_theme("sky")
+        assert QSettings().value("ui/theme") == "light" and theme.THEME == "github-light" and s.mode_buttons["light"].isChecked()
+        QSettings().setValue("ui/theme", "midnight")           # 예전 설정값이 남아 있어도 단추는 어두운 쪽
+        s.refresh()
+        assert s.mode_buttons["dark"].isChecked()
     finally:
-        s.follow_system.setChecked(False)
-        s.set_theme("ivory")
         for key in ("ui/theme", "ui/theme_light", "ui/theme_dark"):
             QSettings().remove(key)
+        s.set_theme("light")
     assert not theme.is_dark() and theme.LIGHT["BG"] in qapp.styleSheet()
 
 
