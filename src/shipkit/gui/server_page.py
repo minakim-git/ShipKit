@@ -1,20 +1,23 @@
 """서버 화면: 프로젝트의 서버 연결(SSH/SFTP)로 접속해 서버 파일을 보고, 올리고, 내려받는다.
 
 배포 자동화(배포 화면)와는 별개로 손으로 하는 일 — 로그 받기, 설정 파일 하나 올리기, 폴더 정리 — 을 WinSCP 없이 한다.
-서버 연결·지문·비밀번호는 배포 화면과 같은 RemoteClient 를 쓰고, 접속은 한 번 하면 서버를 바꾸거나 끊을 때까지 유지한다.
-SFTP 는 한 번에 한 작업만 하므로 작업 중에는 단추를 잠근다. 여기서 한 일은 배포의 백업·되돌리기 대상이 아니다.
+서버 연결·지문·비밀번호는 배포 화면과 같은 RemoteClient 를 쓴다. 화면에 들어오거나 서버를 고르면 바로 접속하고, 접속은
+서버를 바꾸거나 [연결 끊기]를 누르기까지 유지한다(끊거나 실패한 뒤에는 다시 고르거나 [연결]을 눌러야 붙는다).
+접속하면 오른쪽 터미널에 셸이 열리고 끊으면 닫힌다. SFTP 는 한 번에 한 작업만 하므로 작업 중에는 단추를 잠근다.
+여기서 한 일은 배포의 백업·되돌리기 대상이 아니다.
 """
 from __future__ import annotations
 
 import posixpath
+import shlex
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, List, Optional
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QAbstractItemView, QComboBox, QFileDialog, QHBoxLayout, QHeaderView, QInputDialog, QLineEdit, QProgressBar,
-    QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QComboBox, QFileDialog, QHBoxLayout, QHeaderView, QInputDialog, QLineEdit, QMenu, QProgressBar,
+    QSplitter, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from shipkit import remote
@@ -22,6 +25,7 @@ from shipkit.config import ServerProfile
 from shipkit.gui import theme
 from shipkit.gui.context import AppContext
 from shipkit.gui.remote_panel import RemoteClient
+from shipkit.gui.terminal import TerminalView
 from shipkit.gui.widgets import Card, Chip, button, label, page_header, repolish
 from shipkit.history import format_size
 
@@ -70,6 +74,12 @@ class ServerPage(QWidget):
         self.path = ""                             # 지금 보고 있는 서버 폴더 (절대 경로)
         self.entries: List[remote.RemoteEntry] = []
         self.busy = False
+        self._split_done = False                   # 처음 보일 때 분할선을 반반으로 (그 뒤로는 사용자가 끈 대로)
+        self.shell: Optional[Any] = None           # 터미널의 셸 채널 (remote.Shell)
+        self._opening = False                      # 셸을 여는 중 (두 번 열지 않게)
+        self._connecting = False                   # 지문·비밀번호 확인 중 (두 번 붙지 않게)
+        self._auto_connect = True                  # 화면에 들어오면 바로 붙는다 (끊거나 실패하면 False, 서버를 다시 고르면 True)
+        self._picked: Optional[str] = None         # 선택 상자에 고른 서버 이름 (바뀌었는지 보려고)
         self._pending_path: Optional[str] = None  # 접속이 끝나면 열 폴더 (기록 화면에서 왔을 때)
         self._build()
         ctx.listeners.append(self.refresh_servers)
@@ -81,8 +91,23 @@ class ServerPage(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(14)
-        layout.addWidget(page_header("서버", "서버 연결로 접속해 파일을 보고 올리고 내려받습니다. "
-                                            "여기서 한 일은 배포의 백업·되돌리기 대상이 아닙니다."))
+        self.head = QWidget()                     # 제목 줄 오른쪽: 서버 고르기·연결 (파일 카드가 넓어지지 않게 여기에)
+        head_row = QHBoxLayout(self.head)
+        head_row.setContentsMargins(0, 0, 0, 0)
+        head_row.setSpacing(8)
+        self.server_combo = QComboBox()
+        self.server_combo.setMinimumWidth(200)
+        self.server_combo.currentIndexChanged.connect(self._server_picked)
+        self.prod_chip = Chip("운영 서버", "danger")
+        self.prod_chip.hide()
+        self.state_chip = Chip("연결 안 함", "neutral")
+        self.connect_btn = button("연결", "primary")
+        self.connect_btn.clicked.connect(self.toggle_connection)
+        head_row.addWidget(self.prod_chip)
+        head_row.addWidget(self.state_chip)
+        head_row.addWidget(self.server_combo)
+        head_row.addWidget(self.connect_btn)
+        layout.addWidget(page_header("서버", "서버 파일 보기·올리기·내려받기와 터미널", right=self.head))
 
         self.empty_card = Card()
         self.empty_card.body.addWidget(label("프로젝트 설정의 [서버 연결] 탭에서 서버를 등록하면 여기서 서버 파일을 볼 수 있습니다.", "muted"))
@@ -94,23 +119,7 @@ class ServerPage(QWidget):
         self.empty_card.body.addLayout(row)
         layout.addWidget(self.empty_card)
 
-        head = QWidget()
-        head_row = QHBoxLayout(head)
-        head_row.setContentsMargins(0, 0, 0, 0)
-        head_row.setSpacing(8)
-        self.server_combo = QComboBox()
-        self.server_combo.setMinimumWidth(220)
-        self.server_combo.currentIndexChanged.connect(self._server_picked)
-        self.prod_chip = Chip("운영 서버", "danger")
-        self.prod_chip.hide()
-        self.state_chip = Chip("연결 안 함", "neutral")
-        self.connect_btn = button("연결", "primary")
-        self.connect_btn.clicked.connect(self.toggle_connection)
-        head_row.addWidget(self.prod_chip)
-        head_row.addWidget(self.state_chip)
-        head_row.addWidget(self.server_combo)
-        head_row.addWidget(self.connect_btn)
-        self.card = Card("서버 파일", right=head)
+        self.card = Card("서버 파일")
 
         tools = QHBoxLayout()
         tools.setSpacing(6)
@@ -118,29 +127,36 @@ class ServerPage(QWidget):
         self.up_btn.clicked.connect(self.go_up)
         self.refresh_btn = self._icon_button("refresh.svg", "새로고침")
         self.refresh_btn.clicked.connect(self.refresh)
+        self.term_open_btn = self._icon_button("terminal.svg", "이 폴더를 터미널에서 열기 — 터미널이 이 폴더로 이동합니다 (cd)")
+        self.term_open_btn.clicked.connect(lambda: self.open_in_terminal())
         self.path_edit = QLineEdit()
-        self.path_edit.setPlaceholderText("서버 경로 (예: /app/tomcat/webapps/ROOT)   Enter 로 이동")
+        self.path_edit.setPlaceholderText("서버 경로   Enter 로 이동")
         self.path_edit.returnPressed.connect(lambda: self.navigate(self.path_edit.text().strip()))
-        self.home_btn = button("홈", "ghost")
-        self.home_btn.clicked.connect(lambda: self.navigate("~"))
-        self.upload_dir_btn = button("올릴 위치", "ghost")
-        self.upload_dir_btn.setToolTip("서버 연결의 '올릴 위치' (패키지를 올리는 곳)")
-        self.upload_dir_btn.clicked.connect(lambda: self.profile and self.navigate(self.profile.upload_dir))
-        self.target_btn = button("배포 경로", "ghost")
-        self.target_btn.setToolTip("서버 배포 경로 (파일이 반영되는 곳)")
-        self.target_btn.clicked.connect(lambda: self.navigate(self._target_path()))
-        for w in (self.up_btn, self.refresh_btn):
+        self.goto_btn = button("바로 가기 ▾", "ghost")      # 홈 · 올릴 위치 · 배포 경로
+        goto = QMenu(self.goto_btn)
+        self.home_act = goto.addAction("홈 폴더  (~)")
+        self.home_act.triggered.connect(lambda: self.navigate("~"))
+        self.upload_dir_act = goto.addAction("올릴 위치 (패키지를 올리는 곳)")
+        self.upload_dir_act.triggered.connect(lambda: self.profile and self.navigate(self.profile.upload_dir))
+        self.target_act = goto.addAction("서버 배포 경로 (파일이 반영되는 곳)")
+        self.target_act.triggered.connect(lambda: self.navigate(self._target_path()))
+        self.goto_btn.setMenu(goto)
+        for w in (self.up_btn, self.refresh_btn, self.term_open_btn):
             tools.addWidget(w)
         tools.addWidget(self.path_edit, 1)
-        for w in (self.home_btn, self.upload_dir_btn, self.target_btn):
-            tools.addWidget(w)
+        tools.addWidget(self.goto_btn)
         self.card.body.addLayout(tools)
 
+        filter_row = QHBoxLayout()
+        filter_row.setSpacing(8)
         self.filter_edit = QLineEdit()
         self.filter_edit.setPlaceholderText("이름으로 거르기…")
         self.filter_edit.setClearButtonEnabled(True)
         self.filter_edit.textChanged.connect(self._fill_tree)
-        self.card.body.addWidget(self.filter_edit)
+        self.count_label = label("", "muted")
+        filter_row.addWidget(self.filter_edit, 1)
+        filter_row.addWidget(self.count_label)
+        self.card.body.addLayout(filter_row)
 
         self.tree = FileTree()
         self.tree.setObjectName("serverFiles")
@@ -155,6 +171,8 @@ class ServerPage(QWidget):
         self.tree.itemActivated.connect(self._activated)
         self.tree.itemSelectionChanged.connect(self._update_buttons)
         self.tree.dropped.connect(self.upload_paths)
+        self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self._tree_menu)
         self.card.body.addWidget(self.tree, 1)
 
         self.progress = QProgressBar()
@@ -164,8 +182,8 @@ class ServerPage(QWidget):
         self.card.body.addWidget(self.progress)
 
         bar = QHBoxLayout()
-        bar.setSpacing(8)
-        self.upload_btn = button("올리기…")
+        bar.setSpacing(6)
+        self.upload_btn = button("올리기")
         self.upload_btn.setToolTip("이 폴더에 파일을 올립니다. 탐색기에서 목록 위로 끌어다 놓아도 됩니다.")
         self.upload_btn.clicked.connect(lambda: self.upload_dialog())
         self.download_btn = button("내려받기")
@@ -176,16 +194,42 @@ class ServerPage(QWidget):
         self.rename_btn.clicked.connect(lambda: self.rename())
         self.delete_btn = button("지우기", "danger")
         self.delete_btn.clicked.connect(self.delete)
-        self.count_label = label("", "muted")
         for w in (self.upload_btn, self.download_btn, self.mkdir_btn, self.rename_btn, self.delete_btn):
             bar.addWidget(w)
         bar.addStretch(1)
-        bar.addWidget(self.count_label)
         self.card.body.addLayout(bar)
-        layout.addWidget(self.card, 1)
+
+        # 오른쪽: 터미널 (접속하면 셸이 열리고 끊으면 닫힌다. exit 로 끝냈으면 키를 치면 다시 연다)
+        self.term_card = Card("터미널")
+        self.term = TerminalView()
+        self.term.input_bytes.connect(self._term_input)
+        self.term.resized.connect(self._term_resized)
+        self.term.closed.connect(self._term_closed)
+        self.term_card.body.addWidget(self.term, 1)
+        self.term_hint = label("접속하면 서버의 셸이 열립니다. 이 화면에서 한 일은 배포의 백업·되돌리기 대상이 아닙니다.", "muted")
+        self.term_card.body.addWidget(self.term_hint)
+
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.splitter.setChildrenCollapsible(False)
+        self.splitter.addWidget(self.card)
+        self.splitter.addWidget(self.term_card)
+        self.splitter.setStretchFactor(0, 1)
+        self.splitter.setStretchFactor(1, 1)
+        self.splitter.setSizes([520, 520])
+        layout.addWidget(self.splitter, 1)
         theme.on_change(self._refresh_icons)
+        theme.on_change(self.term.apply_font)
         self._refresh_icons()
         self._set_connected(False)
+        self._set_terminal(False)
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        if not self._split_done and self.splitter.width() > 0:
+            self._split_done = True
+            half = self.splitter.width() // 2
+            self.splitter.setSizes([half, self.splitter.width() - half])
+        self._maybe_connect()
 
     @staticmethod
     def _icon_button(icon: str, tooltip: str):
@@ -196,7 +240,7 @@ class ServerPage(QWidget):
         return btn
 
     def _refresh_icons(self) -> None:
-        for btn in (self.up_btn, self.refresh_btn):
+        for btn in (self.up_btn, self.refresh_btn, self.term_open_btn):
             btn.setIcon(theme.svg_icon(btn.property("icon_name"), "MUTED", 16))
         self._fill_tree()
 
@@ -214,7 +258,8 @@ class ServerPage(QWidget):
         self.server_combo.setCurrentIndex(idx if idx >= 0 else (0 if servers else -1))
         self.server_combo.blockSignals(False)
         self.empty_card.setVisible(not servers)
-        self.card.setVisible(bool(servers))
+        self.splitter.setVisible(bool(servers))
+        self.head.setVisible(bool(servers))
         if self.profile is not None and self.profile.name not in [s.name for s in servers]:
             self.disconnect()
         self._server_picked()
@@ -231,39 +276,58 @@ class ServerPage(QWidget):
     def _server_picked(self, *_args) -> None:
         profile = self.current_profile()
         self.prod_chip.setVisible(bool(profile and profile.is_production))
+        name = profile.name if profile else None
+        if name != self._picked:
+            self._picked = name
+            self._auto_connect = True              # 다른 서버를 골랐으니 (끊었거나 실패한 뒤라도) 다시 붙는다
         if self.conn is not None and (profile is None or profile.name != self.profile.name):
             self.disconnect()   # 다른 서버를 고르면 지금 접속은 끊는다
+        self._maybe_connect()
+
+    def _maybe_connect(self) -> None:
+        """화면이 보이고 아직 안 붙었으면 바로 접속한다 (화면에 들어올 때, 서버를 골랐을 때)."""
+        if self._auto_connect and self.isVisible() and self.conn is None and not self._connecting:
+            self.connect()
 
     def toggle_connection(self) -> None:
         if self.conn is not None:
+            self._auto_connect = False             # 끊은 건 사용자 뜻: 다시 고르거나 [연결]을 누르기까지 그대로
             self.disconnect()
         else:
             self.connect()
 
     def connect(self) -> None:
-        """서버 지문 확인 → 비밀번호 준비 → 접속. 끝나면 열려던 폴더(없으면 배포 경로, 그것도 없으면 홈)를 보여 준다."""
+        """서버 지문 확인 → 비밀번호 준비 → 접속. 끝나면 열려던 폴더(없으면 배포 경로, 그것도 없으면 홈)를 보여 주고 셸을 연다."""
         profile = self.current_profile()
-        if profile is None or self.busy or self.conn is not None:
+        if profile is None or self.busy or self.conn is not None or self._connecting:
             return
         self.profile = profile
+        self._auto_connect = True
+        self._connecting = True
 
         def connected(conn) -> None:
+            self._connecting = False
             self.conn = conn
             self._set_connected(True)
             start = self._pending_path or self._target_path() or "~"
             self._pending_path = None
             self.navigate(start, fallback_home=True)
+            self.open_terminal()
 
         def failed(message: str) -> None:
             if "로그인에 실패" in message and self.client.forget(profile):
                 message += "\n저장해 둔 비밀번호를 지웠습니다. 다시 시도하면 새로 묻습니다."
+            self._connecting = False
+            self._auto_connect = False             # 화면을 오갈 때마다 같은 오류를 띄우지 않게
             self.conn = None
             self._set_connected(False)
             self.ctx.dialogs.error("서버 접속 실패", message)
 
         def then() -> None:
             secrets = self.client.secrets(profile)
-            if secrets is None:
+            if secrets is None:                    # 비밀번호 입력을 취소함
+                self._connecting = False
+                self._auto_connect = False
                 self._set_connected(False)
                 return
             self._run("접속", lambda: self.client.connection_factory(profile, secrets), connected, failed)
@@ -274,6 +338,7 @@ class ServerPage(QWidget):
 
     def disconnect(self) -> None:
         conn, self.conn = self.conn, None
+        self.close_terminal()          # conn 을 비운 뒤에: 터미널이 '끊김' 상태로 잠기게
         if conn is not None:
             try:
                 conn.close()
@@ -292,10 +357,84 @@ class ServerPage(QWidget):
         self.connect_btn.setObjectName("ghost" if connected else "primary")   # 접속 중에는 눈에 덜 띄게
         repolish(self.connect_btn)
         self.state_chip.set("연결됨" if connected else "연결 안 함", "success" if connected else "neutral")
-        for w in (self.up_btn, self.refresh_btn, self.path_edit, self.home_btn, self.upload_dir_btn, self.target_btn,
-                  self.filter_edit, self.tree, self.upload_btn, self.mkdir_btn):
+        for w in (self.up_btn, self.refresh_btn, self.path_edit, self.goto_btn, self.filter_edit, self.tree,
+                  self.upload_btn, self.mkdir_btn):
             w.setEnabled(connected and not self.busy)
         self._update_buttons()
+
+    # ------------------------------------------------------------------ 터미널
+    def open_terminal(self) -> None:
+        """접속한 연결로 셸(pty)을 연다. SFTP 작업과 별개 채널이라 파일 작업 중에도 된다."""
+        conn = self.conn
+        if conn is None or self.shell is not None or self._opening:
+            return
+        self._opening = True
+        self._set_terminal(False, "셸을 여는 중…")
+
+        def done(shell) -> None:
+            self._opening = False
+            if self.conn is not conn:       # 그 사이 끊었으면
+                shell.close()
+                return
+            self.shell = shell
+            self._set_terminal(True)
+            self.term.setFocus()
+
+        def failed(message: str) -> None:
+            self._opening = False
+            self._set_terminal(False, "셸을 열지 못했습니다. 아무 키나 누르면 다시 시도합니다.")
+            self.ctx.dialogs.toast(message, "warning")
+
+        cols, rows = self.term.cols, self.term.rows
+        self.ctx.runner.run(lambda: conn.open_shell(self.term.data_in.emit, self.term.closed.emit, cols, rows),
+                            done, failed, quiet=True)
+
+    def close_terminal(self) -> None:
+        shell, self.shell = self.shell, None
+        if shell is not None:
+            shell.close()
+        self._set_terminal(False)
+
+    def _set_terminal(self, open_: bool, hint: str = "") -> None:
+        """터미널 상태. 접속 중에는 셸이 없어도 키를 받아(다시 열게) 켜 두고, 끊겼으면 잠근다."""
+        self.term.setEnabled(self.conn is not None)
+        self.term_open_btn.setEnabled(open_)
+        if open_:
+            self.term_hint.setText("")
+        elif self.conn is None:
+            self.term_hint.setText("접속하면 서버의 셸이 열립니다. 이 화면에서 한 일은 배포의 백업·되돌리기 대상이 아닙니다.")
+        else:
+            self.term_hint.setText(hint)
+        self.term_hint.setVisible(not open_)
+
+    def _term_input(self, data: bytes) -> None:
+        if self.shell is not None:
+            self.shell.send(bytes(data))
+        elif self.conn is not None:         # 셸이 끝난 뒤(exit) 키를 치면 다시 연다
+            self.open_terminal()
+
+    def _term_resized(self, cols: int, rows: int) -> None:
+        if self.shell is not None:
+            self.shell.resize(cols, rows)
+
+    def _term_closed(self) -> None:
+        """셸이 끝났을 때 (exit 를 쳤거나 끊김). 읽기 스레드의 신호라 화면 스레드에서 받는다."""
+        if self.shell is None:
+            return
+        self.shell = None
+        self._set_terminal(False, "셸이 끝났습니다. 아무 키나 누르면 다시 엽니다.")
+
+    def open_in_terminal(self, path: Optional[str] = None) -> None:
+        """[터미널에서 열기]: 터미널이 그 폴더(기본은 왼쪽 목록의 폴더)로 이동한다 (cd 를 보낸다)."""
+        path = path or self.path
+        if self.shell is None or not path:
+            return
+        if self.profile is not None and self.profile.server_os == "windows":
+            command = f'cd /d "{remote.to_windows_path(path)}"'
+        else:
+            command = f"cd {shlex.quote(path)}"
+        self.shell.send((command + "\r").encode("utf-8"))
+        self.term.setFocus()
 
     def _target_path(self) -> str:
         p = self.ctx.project
@@ -353,8 +492,7 @@ class ServerPage(QWidget):
 
     def _lock(self, busy: bool) -> None:
         connected = self.conn is not None
-        for w in (self.up_btn, self.refresh_btn, self.path_edit, self.home_btn, self.upload_dir_btn, self.target_btn,
-                  self.tree, self.upload_btn, self.mkdir_btn):
+        for w in (self.up_btn, self.refresh_btn, self.path_edit, self.goto_btn, self.tree, self.upload_btn, self.mkdir_btn):
             w.setEnabled(connected and not busy)
         self.connect_btn.setEnabled(not busy)
         self._update_buttons()
@@ -366,12 +504,13 @@ class ServerPage(QWidget):
         if idx < 0:
             self.ctx.dialogs.toast(f"'{server}' 서버가 이 프로젝트의 서버 연결에 없습니다.", "warning")
             return
+        self._pending_path = path                  # 서버를 고르면 바로 접속이 시작되므로 그 전에
         self.server_combo.setCurrentIndex(idx)
         if self.conn is not None and self.profile is not None and self.profile.name == server:
+            self._pending_path = None
             self.navigate(path)
-            return
-        self._pending_path = path
-        self.connect()
+        elif not self._connecting:
+            self.connect()
 
     def navigate(self, path: str, fallback_home: bool = False) -> None:
         """그 폴더의 내용을 읽어 보여 준다. fallback_home: 없으면 홈으로."""
@@ -441,6 +580,42 @@ class ServerPage(QWidget):
         total = f"폴더 {dirs}개 · 파일 {files}개" if self.entries else ""
         self.count_label.setText(f"{shown}개 보임 · {total}" if text and self.entries else total)
         self._update_buttons()
+
+    def _tree_menu(self, pos) -> None:
+        """목록 오른쪽 단추: 아래 단추들과 같은 일."""
+        if self.conn is None or self.busy:
+            return
+        picked = self.selected()
+        menu = QMenu(self.tree)
+        download = menu.addAction("내려받기")
+        download.setEnabled(bool(picked))
+        rename = menu.addAction("이름 바꾸기")
+        rename.setEnabled(len(picked) == 1)
+        delete = menu.addAction("지우기")
+        delete.setEnabled(bool(picked))
+        menu.addSeparator()
+        folder = picked[0].path if len(picked) == 1 and picked[0].is_dir else (self.path if not picked else "")
+        in_term = menu.addAction("터미널에서 열기" if not picked else "이 폴더를 터미널에서 열기")
+        in_term.setEnabled(self.shell is not None and bool(folder))
+        menu.addSeparator()
+        upload = menu.addAction("올리기…")
+        mkdir = menu.addAction("새 폴더")
+        refresh = menu.addAction("새로고침")
+        chosen = menu.exec(self.tree.viewport().mapToGlobal(pos))
+        if chosen is in_term:
+            self.open_in_terminal(folder)
+        elif chosen is download:
+            self.download()
+        elif chosen is rename:
+            self.rename()
+        elif chosen is delete:
+            self.delete()
+        elif chosen is upload:
+            self.upload_dialog()
+        elif chosen is mkdir:
+            self.make_dir()
+        elif chosen is refresh:
+            self.refresh()
 
     def selected(self) -> List[remote.RemoteEntry]:
         return [i.data(0, ENTRY_ROLE) for i in self.tree.selectedItems() if i.data(0, ENTRY_ROLE) is not None]

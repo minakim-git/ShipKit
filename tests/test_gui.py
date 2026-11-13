@@ -1199,6 +1199,62 @@ def test_server_test_passphrase_key_elapsed_and_cancel(qapp, tmp_path, maven_pro
     assert not tab._test_timer.isActive()
 
 
+def test_terminal_view(qapp):
+    """터미널 위젯: 받은 바이트를 화면으로(색·넓은 글자), 키를 바이트로, 고르기·복사·붙여넣기, 크기 맞추기, 지난 출력 보기."""
+    from PySide6.QtGui import QGuiApplication, QKeyEvent, QInputMethodEvent
+    from PySide6.QtTest import QTest
+    from shipkit.gui.terminal import TerminalView
+    t = TerminalView(40, 5)
+    t.show()                                                                       # 보여야 크기 변화가 바로 반영된다
+    t.resize(int(40 * t.cell_w) + 8, int(5 * t.cell_h) + 8)
+    assert (t.cols, t.rows) == (40, 5)
+    sent = []
+    t.input_bytes.connect(sent.append)
+    t.data_in.emit(b"fake$ ls\r\n\x1b[31m\xed\x95\x9c\xea\xb8\x80\x1b[0m file.txt\r\nfake$ ")
+    qapp.processEvents()
+    assert t.text() == "fake$ ls\n한글 file.txt\nfake$"
+    assert t.screen.buffer[1][0].fg == "red" and t.screen.buffer[1][1].data == "" and t.screen.buffer[1][2].data == "글"
+    assert (t.screen.cursor.x, t.screen.cursor.y) == (6, 2)
+
+    for key, text, expect in ((Qt.Key.Key_A, "a", b"a"), (Qt.Key.Key_Return, "\r", b"\r"), (Qt.Key.Key_Backspace, "", b"\x7f"),
+                              (Qt.Key.Key_Up, "", b"\x1b[A"), (Qt.Key.Key_Tab, "\t", b"\t"), (Qt.Key.Key_Escape, "", b"\x1b")):
+        sent.clear()
+        t.keyPressEvent(QKeyEvent(QKeyEvent.Type.KeyPress, key, Qt.KeyboardModifier.NoModifier, text))
+        assert sent == [expect], (key, sent)
+    sent.clear()
+    t.keyPressEvent(QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_C, Qt.KeyboardModifier.ControlModifier, ""))
+    assert sent == [b"\x03"]                                                       # Ctrl+C 는 셸로 (복사는 Ctrl+Shift+C)
+    sent.clear()
+    event = QInputMethodEvent()                                                    # 한글 입력기: 조합이 끝난 글자
+    event.setCommitString("한")
+    t.inputMethodEvent(event)
+    assert sent == ["한".encode("utf-8")]
+
+    QGuiApplication.clipboard().setText("echo pasted\nsecond")
+    sent.clear()
+    t.keyPressEvent(QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_V,
+                              Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier, ""))
+    assert sent == [b"echo pasted\rsecond"]                                         # 붙여넣기: 줄바꿈은 Enter 로
+    t.selection = ((1, 0), (1, 12))                                                # 둘째 줄을 고른 것처럼 → 복사
+    assert t.selected_text() == "한글 file.txt" and t.copy_selection()
+    assert QGuiApplication.clipboard().text() == "한글 file.txt"
+    t.selection = ((0, 6), (1, 1))
+    assert t.selected_text() == "ls\n한글"
+
+    resized = []
+    t.resized.connect(lambda c, r: resized.append((c, r)))
+    t.resize(int(60 * t.cell_w) + 8, int(8 * t.cell_h) + 8)
+    assert (t.cols, t.rows) == (60, 8) and resized == [(60, 8)] and t.screen.columns == 60
+    t.data_in.emit(b"".join(f"line{i}\r\n".encode() for i in range(20)))        # 화면보다 긴 출력 → 지난 출력 보기
+    qapp.processEvents()
+    assert t.text().startswith("line13")
+    t.keyPressEvent(QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_PageUp, Qt.KeyboardModifier.ShiftModifier, ""))
+    assert not t.text().startswith("line13")
+    sent.clear()
+    QTest.keyClick(t, Qt.Key.Key_X)                                                # 키를 치면 맨 아래로 돌아온다
+    assert sent == [b"x"] and t.text().startswith("line13")
+
+
 def test_server_page_files(qapp, tmp_path, maven_project, monkeypatch, sshd):
     """서버 화면: 접속해 폴더를 보고, 올리고(끌어다 놓기와 같은 경로), 내려받고, 새 폴더·이름 바꾸기·지우기, 기록 화면의 [서버 폴더 열기]."""
     from shipkit import history
@@ -1219,11 +1275,13 @@ def test_server_page_files(qapp, tmp_path, maven_project, monkeypatch, sshd):
     assert s.card.isVisibleTo(s) and not s.empty_card.isVisibleTo(s)
     assert s.server_combo.currentText().startswith("운영") and s.prod_chip.isVisibleTo(s)
     assert not s.tree.isEnabled() and s.connect_btn.text() == "연결" and s.state_chip.text() == "연결 안 함"
+    assert s.conn is None and not s.term.isEnabled()           # 창이 안 보이는 동안은 붙지 않는다
 
     def names():
         return [s.tree.topLevelItem(i).text(0) for i in range(s.tree.topLevelItemCount())]
 
-    s.connect()                                                 # 지문 확인 + 비밀번호(저장); 배포 경로를 못 열어 홈으로
+    w.show()                                                    # 화면에 들어오면 바로 접속: 지문 확인 + 비밀번호(저장); 배포 경로를 못 열어 홈으로
+    qapp.processEvents()
     assert s.conn is not None and s.connect_btn.text() == "연결 끊기" and s.state_chip.text() == "연결됨", dialogs.messages[-3:]
     assert [m[1] for m in dialogs.messages if m[0] in ("ask", "secret")] == ["새 서버 확인", "비밀번호 입력"]
     assert any(m[0] == "toast" and "홈 폴더를 엽니다" in m[2] for m in dialogs.messages)
@@ -1297,9 +1355,63 @@ def test_server_page_files(qapp, tmp_path, maven_project, monkeypatch, sshd):
     h.browse_server()
     assert w.stack.currentWidget() is s and s.path == f"{home}/deploy"
 
-    s.disconnect()
+    # 터미널: 접속하면 셸이 열리고, 친 명령이 실행되며, [터미널에서 열기] 가 왼쪽 폴더로 보낸다
+    import time
+    from PySide6.QtGui import QKeyEvent
+
+    def wait_for(text, timeout=5.0):
+        deadline = time.monotonic() + timeout
+        while text not in s.term.text() and time.monotonic() < deadline:
+            qapp.processEvents()
+            time.sleep(0.02)
+        return text in s.term.text()
+
+    assert s.shell is not None and s.term.isEnabled() and s.term_open_btn.isEnabled() and not s.term_hint.isVisibleTo(s)
+    assert wait_for("fake$"), s.term.text()
+    for ch in "echo hi":
+        s.term.keyPressEvent(QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_A, Qt.KeyboardModifier.NoModifier, ch))
+    s.term.keyPressEvent(QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_Return, Qt.KeyboardModifier.NoModifier, "\r"))
+    assert wait_for("\nhi\n"), s.term.text()
+    assert sshd.commands[-1] == "echo hi" and sshd.pty_sizes[-1] == (s.term.cols, s.term.rows)   # 창이 보인 뒤 크기가 맞춰진다
+    def next_command(timeout=5.0):
+        """서버가 다음 명령을 받기까지 기다려 돌려준다."""
+        n = len(sshd.commands)
+        deadline = time.monotonic() + timeout
+        while len(sshd.commands) == n and time.monotonic() < deadline:
+            qapp.processEvents()
+            time.sleep(0.02)
+        return sshd.commands[-1]
+
+    s.open_in_terminal()                                                          # 긴 경로는 화면에서 줄바꿈되므로 서버가 받은 명령으로 확인
+    assert next_command() == f"cd {home}/deploy"
+    s.open_in_terminal(f"{home}/deploy/sub")                                      # 오른쪽 단추 메뉴: 고른 폴더로
+    assert next_command() == f"cd {home}/deploy/sub"
+    s.close_terminal()
+    assert s.shell is None and not s.term_open_btn.isEnabled() and s.term.isEnabled()   # 접속은 그대로
+    s.open_terminal()
+    assert s.shell is not None and wait_for("fake$")
+    for ch in "exit":
+        s.term.keyPressEvent(QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_A, Qt.KeyboardModifier.NoModifier, ch))
+    s.term.keyPressEvent(QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_Return, Qt.KeyboardModifier.NoModifier, "\r"))
+    deadline = time.monotonic() + 5
+    while s.shell is not None and time.monotonic() < deadline:                    # 셸이 끝나면(exit) 닫힘으로
+        qapp.processEvents()
+        time.sleep(0.02)
+    assert s.shell is None and "아무 키나 누르면" in s.term_hint.text() and s.term.isEnabled()
+    before = len(sshd.pty_sizes)
+    s.term.keyPressEvent(QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_Return, Qt.KeyboardModifier.NoModifier, "\r"))
+    assert s.shell is not None and len(sshd.pty_sizes) >= before + 1              # 키를 치면 새 셸
+
+    s.toggle_connection()                                                         # [연결 끊기]
     assert s.conn is None and s.connect_btn.text() == "연결" and names() == [] and s.path_edit.text() == ""
-    assert not s.tree.isEnabled() and s.state_chip.text() == "연결 안 함"
+    assert not s.tree.isEnabled() and s.state_chip.text() == "연결 안 함" and not s.term.isEnabled() and not s.term_open_btn.isEnabled()
+    w.hide()
+    w.show()                                                                      # 손으로 끊었으면 화면을 오가도 다시 붙지 않는다
+    qapp.processEvents()
+    assert s.conn is None
+    s.connect_btn.click()                                                         # [연결]: 저장한 비밀번호로 묻지 않고 붙는다
+    assert s.conn is not None and s.shell is not None and dialogs.messages[-1][0] != "secret"
+    s.disconnect()
 
 
 def test_user_guide_dialog(qapp, tmp_path, maven_project):

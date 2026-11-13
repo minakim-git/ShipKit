@@ -129,6 +129,7 @@ class FakeSSHServer:
         self.ran_as: List[str] = []     # 계정 전환 기록 (sudo:계정 / su:계정)
         self.sudo_nopasswd = False      # True 면 sudo -n 이 비밀번호 없이 된다 (sudoers NOPASSWD)
         self.locale = "C"               # 서버 로케일: su·sudo 문구가 번역된다 (C / ko / ja)
+        self.pty_sizes: List[tuple] = []   # 셸(pty) 크기 요청 기록 (열, 줄)
         self.honor_env = True           # False 면 명령 앞의 LC_ALL=C 를 무시한다 (번역된 질문을 그대로 내는 서버)
         self.sock = socket.socket()
         self.sock.bind(("127.0.0.1", 0))
@@ -170,8 +171,58 @@ class _Server(paramiko.ServerInterface):
     def check_channel_request(self, kind, chanid):
         return paramiko.OPEN_SUCCEEDED if kind == "session" else paramiko.OPEN_FAILED_ADMINISTRATIVELY_PROHIBITED
 
-    def check_channel_pty_request(self, *args):
+    def check_channel_pty_request(self, channel, term, width, height, *_args):
+        self.owner.pty_sizes.append((width, height))
         return True
+
+    def check_channel_window_change_request(self, channel, width, height, *_args):
+        self.owner.pty_sizes.append((width, height))
+        return True
+
+    def check_channel_shell_request(self, channel):
+        """대화형 셸 흉내: 친 글자를 되돌려 보내고(에코), Enter 면 bash 로 실행해 출력을 보낸 뒤 프롬프트."""
+        threading.Thread(target=self._shell, args=(channel,), daemon=True).start()
+        return True
+
+    def _shell(self, channel) -> None:
+        try:
+            self._shell_loop(channel)
+        except (OSError, EOFError):   # 손님이 먼저 끊었을 때 (Socket is closed)
+            pass
+
+    def _shell_loop(self, channel) -> None:
+        prompt = b"fake$ "
+        channel.sendall(prompt)
+        line = b""
+        while True:
+            data = channel.recv(1024)
+            if not data:
+                return
+            for b in data:
+                if b in (13, 10):
+                    command = line.decode("utf-8", "replace").strip()
+                    line = b""
+                    channel.sendall(b"\r\n")
+                    if command == "exit":
+                        channel.sendall(b"logout\r\n")
+                        channel.close()
+                        return
+                    if command:
+                        self.owner.commands.append(command)
+                        result = subprocess.run([self.owner.bash, "-c", command], capture_output=True,
+                                                cwd=str(self.owner.home))
+                        channel.sendall((result.stdout + result.stderr).replace(b"\n", b"\r\n"))
+                    channel.sendall(prompt)
+                elif b == 127:
+                    if line:
+                        line = line[:-1]
+                        channel.sendall(b"\b \b")
+                elif b == 3:
+                    line = b""
+                    channel.sendall(b"^C\r\n" + prompt)
+                else:
+                    line += bytes([b])
+                    channel.sendall(bytes([b]))
 
     def check_channel_exec_request(self, channel, command):
         command = command.decode() if isinstance(command, bytes) else command

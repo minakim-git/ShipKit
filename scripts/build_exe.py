@@ -96,6 +96,8 @@ def build(pyinstaller, kind: str) -> Path:
         "--specpath", str(work),
     ]
     if gui:
+        # 터미널 에뮬레이터(pyte)와 글자 폭 표(wcwidth, C 확장 포함)
+        args += ["--collect-submodules", "pyte", "--collect-submodules", "wcwidth", "--collect-binaries", "wcwidth"]
         # 화면 아이콘(svg)과 exe 아이콘
         args += ["--add-data", f"{ROOT / 'src' / 'shipkit' / 'gui' / 'assets'}{os.pathsep}shipkit/gui/assets"]
         args += ["--add-data", f"{ROOT / 'src' / 'shipkit' / 'docs'}{os.pathsep}shipkit/docs"]  # 사용자 가이드

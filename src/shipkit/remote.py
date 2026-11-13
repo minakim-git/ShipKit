@@ -143,6 +143,58 @@ class RemoteEntry:
     link: bool = False  # 심볼릭 링크
 
 
+class Shell:
+    """대화형 셸(pty) 채널. 읽기 스레드가 받은 바이트를 on_data 로 넘기고, 셸이 끝나면 on_closed 를 부른다.
+    (둘 다 읽기 스레드에서 불리므로 화면 쪽은 Qt 신호로 받는다.)"""
+
+    def __init__(self, chan, on_data: Callable[[bytes], None], on_closed: Callable[[], None]):
+        self.chan = chan
+        self._on_data = on_data
+        self._on_closed = on_closed
+        self._closed = False
+        threading.Thread(target=self._reader, daemon=True, name="shipkit-shell").start()
+
+    def _reader(self) -> None:
+        try:
+            while True:
+                data = self.chan.recv(65536)
+                if not data:
+                    break
+                self._on_data(data)
+        except Exception:  # noqa: BLE001  끊기면(취소·네트워크) 그냥 끝난 것으로
+            pass
+        finally:
+            self._closed = True
+            self._on_closed()
+
+    @property
+    def alive(self) -> bool:
+        return not self._closed and not self.chan.closed
+
+    def send(self, data: bytes) -> None:
+        if self._closed or not data:
+            return
+        try:
+            self.chan.sendall(data)
+        except (OSError, EOFError):
+            pass
+
+    def resize(self, cols: int, rows: int) -> None:
+        if self._closed:
+            return
+        try:
+            self.chan.resize_pty(width=cols, height=rows)
+        except (OSError, EOFError):
+            pass
+
+    def close(self) -> None:
+        self._closed = True
+        try:
+            self.chan.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 # ---------------------------------------------------------------------- 연결
 @dataclass
 class Secrets:
@@ -445,6 +497,18 @@ class SSHConnection:
             count += self.remove(child)
         self._sftp_call(f"지우기 ({entry.name})", self.sftp.rmdir, entry.path)
         return count + 1
+
+    def open_shell(self, on_data: Callable[[bytes], None], on_closed: Callable[[], None],
+                   cols: int = 80, rows: int = 24, term: str = "xterm-256color") -> Shell:
+        """대화형 셸을 연다 (서버 화면의 터미널). 반영에 쓰는 명령 채널과는 별개 채널."""
+        import paramiko
+        try:
+            chan = self.client.get_transport().open_session()
+            chan.get_pty(term=term, width=cols, height=rows)
+            chan.invoke_shell()
+        except (paramiko.SSHException, OSError, EOFError, AttributeError) as e:
+            raise RemoteError(f"터미널을 열지 못했습니다: {e}") from e
+        return Shell(chan, on_data, on_closed)
 
     def close(self) -> None:
         if self._sftp is not None:
