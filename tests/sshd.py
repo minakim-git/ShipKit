@@ -97,6 +97,20 @@ class _SFTP(SFTPServerInterface):
             return SFTP_FAILURE
         return SFTP_OK
 
+    def rmdir(self, path):
+        try:
+            os.rmdir(self._local(path))
+        except OSError:
+            return SFTP_FAILURE
+        return SFTP_OK
+
+    def rename(self, oldpath, newpath):
+        try:
+            os.rename(self._local(oldpath), self._local(newpath))
+        except OSError:
+            return SFTP_FAILURE
+        return SFTP_OK
+
 
 # 로케일별 su 암호 질문과 sudo -n 거부 문구 (실제 서버의 gettext 번역)
 MESSAGES = {

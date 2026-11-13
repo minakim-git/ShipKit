@@ -20,10 +20,11 @@ import posixpath
 import re
 import shlex
 import socket
+import stat
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Protocol, Tuple
+from typing import Callable, Dict, List, Optional, Protocol, Sequence, Tuple
 
 from shipkit import SCRIPT_NAME, SCRIPT_NAME_PS
 from shipkit.config import ServerProfile, user_config_path
@@ -128,6 +129,18 @@ def forget_host_key(profile: ServerProfile, path: Optional[Path] = None) -> bool
     del known[label]
     known.save(str(path))
     return True
+
+
+# ---------------------------------------------------------------------- 서버 파일 (탐색 화면)
+@dataclass(frozen=True)
+class RemoteEntry:
+    """서버 폴더 안의 항목 하나 (탐색 화면의 한 줄)."""
+    name: str
+    path: str          # 서버의 절대 경로
+    is_dir: bool
+    size: int = 0
+    mtime: float = 0.0  # epoch 초 (모르면 0)
+    link: bool = False  # 심볼릭 링크
 
 
 # ---------------------------------------------------------------------- 연결
@@ -336,6 +349,102 @@ class SSHConnection:
             return chan.recv_exit_status()
         finally:
             chan.close()
+
+    # ------------------------------------------------------------------ 서버 파일 탐색 (SFTP)
+    def _sftp_call(self, what: str, fn, *args):
+        """SFTP 호출을 감싸 끊김·권한 오류를 RemoteError 로 바꾼다."""
+        self._check_cancelled()
+        try:
+            return fn(*args)
+        except PermissionError as e:
+            raise RemoteError(f"{what}: 권한이 없습니다 ({e})") from e
+        except FileNotFoundError as e:
+            raise RemoteError(f"{what}: 서버에 그런 경로가 없습니다 ({e})") from e
+        except (IOError, EOFError, OSError) as e:
+            self._check_cancelled()
+            raise RemoteError(f"{what}: {e}") from e
+
+    def resolve(self, path: str) -> str:
+        """'~', 상대 경로를 서버의 절대 경로로 (존재해야 한다)."""
+        if path.startswith("~"):
+            path = self.home() + path[1:]
+        return self._sftp_call(f"경로 확인 ({path})", self.sftp.normalize, path or ".")
+
+    def is_dir(self, path: str) -> bool:
+        attrs = self._sftp_call(f"경로 확인 ({path})", self.sftp.stat, path)
+        return stat.S_ISDIR(attrs.st_mode or 0)
+
+    def listdir(self, path: str) -> List[RemoteEntry]:
+        """폴더 내용 (폴더 먼저, 이름순). 심볼릭 링크는 가리키는 쪽이 폴더인지 따라가 본다."""
+        attrs = self._sftp_call(f"폴더 읽기 ({path})", self.sftp.listdir_attr, path)
+        entries: List[RemoteEntry] = []
+        for a in attrs:
+            mode = a.st_mode or 0
+            is_dir, link = stat.S_ISDIR(mode), stat.S_ISLNK(mode)
+            full = posixpath.join(path, a.filename)
+            if link:
+                try:
+                    is_dir = stat.S_ISDIR(self.sftp.stat(full).st_mode or 0)
+                except (IOError, OSError):
+                    is_dir = False
+            entries.append(RemoteEntry(a.filename, full, is_dir, int(a.st_size or 0), float(a.st_mtime or 0), link))
+        entries.sort(key=lambda e: (not e.is_dir, e.name.lower()))
+        return entries
+
+    def upload_paths(self, paths: Sequence[Path], remote_dir: str, progress: Optional[Progress] = None) -> int:
+        """파일·폴더들을 remote_dir 아래에 같은 이름으로 올린다. 반환: 올린 파일 수."""
+        files: List[Tuple[Path, str]] = []
+        for p in paths:
+            if p.is_dir():
+                files += [(f, posixpath.join(remote_dir, p.name, f.relative_to(p).as_posix()))
+                          for f in sorted(p.rglob("*")) if f.is_file()]
+            elif p.is_file():
+                files.append((p, posixpath.join(remote_dir, p.name)))
+            else:
+                raise RemoteError(f"올릴 파일이 없습니다: {p}")
+        total = sum(f.stat().st_size for f, _t in files) or 1
+        sent = 0
+        for f, target in files:
+            self._sftp_call(f"올리기 ({f.name})", self._mkdirs, posixpath.dirname(target))
+            self._sftp_call(f"올리기 ({f.name})", self.sftp.put, str(f), target)
+            sent += f.stat().st_size
+            if progress:
+                progress(sent, total)
+        return len(files)
+
+    def download(self, entry: RemoteEntry, local_dir: Path, progress: Optional[Progress] = None) -> int:
+        """파일(또는 폴더 통째로)을 local_dir 아래에 같은 이름으로 내려받는다. 반환: 받은 파일 수."""
+        items: List[Tuple[str, Path]] = []
+        stack = [(entry, local_dir / entry.name)]
+        while stack:
+            e, dest = stack.pop()
+            if e.is_dir:
+                stack += [(c, dest / c.name) for c in self.listdir(e.path)]
+            else:
+                items.append((e.path, dest))
+        for i, (remote_path, dest) in enumerate(items, 1):
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            self._sftp_call(f"내려받기 ({posixpath.basename(remote_path)})", self.sftp.get, remote_path, str(dest))
+            if progress:
+                progress(i, len(items))
+        return len(items)
+
+    def mkdir(self, path: str) -> None:
+        self._sftp_call(f"새 폴더 ({path})", self.sftp.mkdir, path)
+
+    def rename(self, path: str, new_path: str) -> None:
+        self._sftp_call(f"이름 바꾸기 ({posixpath.basename(path)})", self.sftp.rename, path, new_path)
+
+    def remove(self, entry: RemoteEntry) -> int:
+        """파일 하나, 또는 폴더를 안의 것까지 지운다. 반환: 지운 파일·폴더 수."""
+        if not entry.is_dir or entry.link:
+            self._sftp_call(f"지우기 ({entry.name})", self.sftp.remove, entry.path)
+            return 1
+        count = 0
+        for child in self.listdir(entry.path):
+            count += self.remove(child)
+        self._sftp_call(f"지우기 ({entry.name})", self.sftp.rmdir, entry.path)
+        return count + 1
 
     def close(self) -> None:
         if self._sftp is not None:

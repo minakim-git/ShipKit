@@ -22,7 +22,7 @@ from shipkit.gui.report_view import show_report
 from shipkit.gui.server_status import (
     ACTION_TEXT, RemoteRunDialog, ServerStatusDialog, _profile_by_name, ask_rollback_hooks,
 )
-from shipkit.gui.widgets import Card, Chip, CommandRow, button, label, open_path
+from shipkit.gui.widgets import META_ROLE, Card, Chip, CommandRow, button, label, open_path
 
 SOURCE_LABEL = {"gitlab-mr": "GitLab MR", "github-pr": "GitHub PR", "git-diff": "git 범위", "manual": "파일 목록",
                 "build": "빌드 결과", "unknown": "예전 패키지"}
@@ -110,6 +110,7 @@ def _title(record: history.PackageRecord) -> str:
 
 class HistoryPage(QWidget):
     deploy_requested = Signal()   # 빈 화면의 [배포 화면으로]
+    browse_requested = Signal(str, str)   # (서버 이름, 서버 폴더): 서버 화면에서 그 폴더 열기
     remake_requested = Signal(object)  # PackageRecord: 같은 내용으로 다시 만들기
 
     def __init__(self, ctx: AppContext):
@@ -234,9 +235,20 @@ class HistoryPage(QWidget):
         self.tabs.addTab(commands, "서버 명령")
         self.deploy_list = QListWidget()   # 화면에서 서버에 올리고 실행한 이력
         self.deploy_list.setObjectName("fileList")
-        self.deploy_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
-        self.deploy_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.tabs.addTab(self.deploy_list, "서버 반영")
+        self.deploy_list.itemSelectionChanged.connect(self._update_browse)
+        deploy_tab = QWidget()
+        deploy_col = QVBoxLayout(deploy_tab)
+        deploy_col.setContentsMargins(0, 0, 0, 0)
+        deploy_col.setSpacing(6)
+        deploy_col.addWidget(self.deploy_list, 1)
+        self.browse_btn = button("서버 폴더 열기", "ghost")   # 그 반영 때 올린 패키지 폴더를 서버 화면에서
+        self.browse_btn.setToolTip("서버 화면에서 이 반영 때 올린 서버의 패키지 폴더를 엽니다.")
+        self.browse_btn.clicked.connect(self.browse_server)
+        browse_row = QHBoxLayout()
+        browse_row.addWidget(self.browse_btn)
+        browse_row.addStretch(1)
+        deploy_col.addLayout(browse_row)
+        self.tabs.addTab(deploy_tab, "서버 반영")
         right.body.addWidget(self.tabs, 1)
 
         bar = QHBoxLayout()
@@ -414,9 +426,13 @@ class HistoryPage(QWidget):
                     f"{ACTION_TEXT.get(d.get('action'), d.get('action'))}  "
                     f"{'성공' if d.get('ok') else f'실패 (종료 코드 {d.get('code')})'}")
             item = QListWidgetItem(text)
+            item.setData(META_ROLE, d)
             if not d.get("ok"):
                 item.setForeground(theme.tone_color("danger"))
             self.deploy_list.addItem(item)
+        if self.deploy_list.count():
+            self.deploy_list.setCurrentRow(0)
+        self._update_browse()
         self.tabs.setTabText(2, f"서버 반영 {len(r.deployments)}" if r.deployments else "서버 반영")
         can_remake = bool(r.changes or r.requests or r.source_kind == "build")
         self.remake_btn.setEnabled(can_remake)
@@ -461,6 +477,20 @@ class HistoryPage(QWidget):
         return self.cleanup_dialog
 
     # ------------------------------------------------------------------ 서버
+    def _selected_deployment(self) -> Optional[dict]:
+        item = self.deploy_list.currentItem()
+        return item.data(META_ROLE) if item is not None and item.isSelected() else None
+
+    def _update_browse(self) -> None:
+        d = self._selected_deployment()
+        self.browse_btn.setEnabled(bool(d and d.get("remote_dir")))
+
+    def browse_server(self) -> None:
+        """[서버 폴더 열기]: 고른 반영 이력의 서버·패키지 폴더를 서버 화면에서 연다."""
+        d = self._selected_deployment()
+        if d and d.get("remote_dir"):
+            self.browse_requested.emit(str(d.get("server", "")), str(d.get("remote_dir", "")))
+
     def _rollback_targets(self, r: history.PackageRecord) -> List[tuple]:
         """(서버 연결, 이력): 이 패키지가 반영돼 있고 서버 연결이 아직 설정에 있는 것."""
         p = self.ctx.project

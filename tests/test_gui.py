@@ -14,7 +14,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 from shipkit import PROJECT_FILE, config_store, preflight  # noqa: E402
 from shipkit.config import ConfigError  # noqa: E402
 from shipkit.gui.app import (  # noqa: E402
-    ADD_PROJECT, PAGE_CONNECTIONS, PAGE_DEPLOY, PAGE_HISTORY, PAGE_PROJECTS, MainWindow,
+    ADD_PROJECT, PAGE_CONNECTIONS, PAGE_DEPLOY, PAGE_HISTORY, PAGE_PROJECTS, PAGE_SERVER, MainWindow,
 )
 from shipkit.gui.setup_wizard import STEP_CONNECT, STEP_PROJECT, SetupWizard  # noqa: E402
 from shipkit.gui.deploy_page import (  # noqa: E402
@@ -1197,6 +1197,109 @@ def test_server_test_passphrase_key_elapsed_and_cancel(qapp, tmp_path, maven_pro
     assert dialogs.messages[before:] == [("toast", "info", "연결 시험을 취소했습니다.")]   # 늦게 온 '접속 성공'은 무시
     assert tab.server_test_btn.isEnabled() and tab.server_test_btn.text() == "연결 시험" and not tab.test_cancel_btn.isVisibleTo(tab)
     assert not tab._test_timer.isActive()
+
+
+def test_server_page_files(qapp, tmp_path, maven_project, monkeypatch, sshd):
+    """서버 화면: 접속해 폴더를 보고, 올리고(끌어다 놓기와 같은 경로), 내려받고, 새 폴더·이름 바꾸기·지우기, 기록 화면의 [서버 폴더 열기]."""
+    from shipkit import history
+    from sshd import LOGIN_PW
+    from test_remote import bash_path
+    keyring = FakeKeyring()
+    monkeypatch.setattr("shipkit.secrets._keyring", lambda: keyring)
+    monkeypatch.setattr("shipkit.remote.known_hosts_path", lambda: tmp_path / "known_hosts")
+    server = tmp_path / "server"
+    write(server / "WEB-INF/views/user/list.jsp", "OLD")
+    home = (tmp_path / "home").as_posix()                       # 테스트 SSH 서버의 홈 (SFTP 가 'C:/…' 로 돌려준다)
+    path = _config(tmp_path, maven_project, server_path=bash_path(server),
+                   servers=[{"name": "운영", "host": "127.0.0.1", "port": sshd.port, "user": "deployer"}])
+    dialogs = FakeDialogs(password=LOGIN_PW)
+    w = make_window(path, dialogs)
+    w.go(PAGE_SERVER)
+    s = w.server_page
+    assert s.card.isVisibleTo(s) and not s.empty_card.isVisibleTo(s)
+    assert s.server_combo.currentText().startswith("운영") and s.prod_chip.isVisibleTo(s)
+    assert not s.tree.isEnabled() and s.connect_btn.text() == "연결" and s.state_chip.text() == "연결 안 함"
+
+    def names():
+        return [s.tree.topLevelItem(i).text(0) for i in range(s.tree.topLevelItemCount())]
+
+    s.connect()                                                 # 지문 확인 + 비밀번호(저장); 배포 경로를 못 열어 홈으로
+    assert s.conn is not None and s.connect_btn.text() == "연결 끊기" and s.state_chip.text() == "연결됨", dialogs.messages[-3:]
+    assert [m[1] for m in dialogs.messages if m[0] in ("ask", "secret")] == ["새 서버 확인", "비밀번호 입력"]
+    assert any(m[0] == "toast" and "홈 폴더를 엽니다" in m[2] for m in dialogs.messages)
+    assert s.path == home and s.path_edit.text() == home and names() == [] and s.tree.isEnabled()
+    assert not s.download_btn.isEnabled() and not s.delete_btn.isEnabled() and s.upload_btn.isEnabled()
+
+    s.make_dir("deploy")                                        # 새 폴더 → 목록 갱신
+    assert names() == ["deploy"] and (tmp_path / "home/deploy").is_dir() and s.count_label.text() == "폴더 1개 · 파일 0개"
+    s.make_dir("a/b")
+    assert dialogs.messages[-1][0] == "error" and "/ 를 쓸 수 없습니다" in dialogs.messages[-1][2]
+    s.tree.setCurrentItem(s.tree.topLevelItem(0))
+    s._activated(s.tree.topLevelItem(0), 0)                     # 폴더를 열면(더블클릭·Enter) 들어간다
+    assert s.path == f"{home}/deploy"
+
+    local = tmp_path / "local"
+    write(local / "a.txt", "A")
+    write(local / "sub/b.txt", "BB")
+    write(tmp_path / "c.txt", "CCC")
+    s.upload_paths([str(local), str(tmp_path / "c.txt")])      # 폴더 통째 + 파일 (탐색기에서 끌어다 놓은 것과 같은 경로)
+    assert names() == ["local", "c.txt"] and (tmp_path / "home/deploy/local/sub/b.txt").read_text(encoding="utf-8") == "BB"
+    assert dialogs.messages[-1] == ("toast", "success", f"파일 3개를 {home}/deploy 에 올렸습니다.")
+    assert s.tree.topLevelItem(1).text(1) == "3 B" and s.tree.topLevelItem(0).text(1) == ""
+    s.filter_edit.setText("C.")                                 # 이름으로 거르기 (대소문자 무시)
+    assert names() == ["c.txt"] and s.count_label.text() == "1개 보임 · 폴더 1개 · 파일 1개"
+    s.filter_edit.clear()
+    dialogs.answer = False                                      # 같은 이름이 있으면 덮어쓸지 묻고, [아니요]면 그대로
+    write(tmp_path / "c.txt", "NEW")
+    s.upload_paths([str(tmp_path / "c.txt")])
+    assert dialogs.messages[-1][:2] == ("ask", "덮어쓰기") and "- c.txt" in dialogs.messages[-1][2]
+    assert (tmp_path / "home/deploy/c.txt").read_text(encoding="utf-8") == "CCC"
+    dialogs.answer = True
+
+    s.tree.setCurrentItem(s.tree.topLevelItem(1))               # 이름 바꾸기 (하나 골랐을 때만)
+    assert s.rename_btn.isEnabled() and s.download_btn.isEnabled()
+    s.rename("local")
+    assert dialogs.messages[-1][0] == "error" and "같은 이름이 이미" in dialogs.messages[-1][2]
+    s.rename("d.txt")
+    assert names() == ["local", "d.txt"]
+    s.tree.setCurrentItem(s.tree.topLevelItem(0))               # 폴더 통째로 내려받기
+    out = tmp_path / "down"
+    s.download(target_dir=str(out))
+    assert (out / "local/sub/b.txt").read_text(encoding="utf-8") == "BB" and (out / "local/a.txt").is_file()
+    assert dialogs.messages[-1] == ("toast", "success", f"파일 2개를 {out} 에 내려받았습니다.")
+
+    s.go_up()                                                   # 위로, 경로 칸으로 이동, 없는 경로
+    assert s.path == home
+    s.path_edit.setText(f"{home}/deploy")
+    s.path_edit.returnPressed.emit()
+    assert s.path == f"{home}/deploy"
+    s.navigate(f"{home}/nope")
+    assert dialogs.messages[-1][0] == "error" and "그런 경로가 없습니다" in dialogs.messages[-1][2]
+    assert s.path == f"{home}/deploy" and s.path_edit.text() == s.path
+
+    s.tree.selectAll()                                          # 지우기: 폴더는 안의 것까지, 운영 서버 경고
+    s.delete()
+    ask = dialogs.messages[-2]
+    assert ask[:2] == ("ask", "서버에서 지우기") and "운영 서버" in ask[2] and "- local/" in ask[2] and "- d.txt" in ask[2]
+    assert names() == [] and not (tmp_path / "home/deploy/local").exists() and dialogs.messages[-1][2] == "5개를 지웠습니다."
+
+    w.go(PAGE_DEPLOY)                                           # 기록 화면의 [서버 폴더 열기]: 반영 이력의 서버 폴더로
+    d = w.deploy_page
+    d.files_edit.setPlainText("src/main/webapp/WEB-INF/views/user/list.jsp")
+    d.preview()
+    d.make_package()
+    history.append_deployment(d.last_result.out_dir, "운영", f"deployer@127.0.0.1:{sshd.port}", "check", 0,
+                              f"{home}/deploy", bash_path(server))
+    s.navigate(home)
+    w.go(PAGE_HISTORY)
+    h = w.history_page
+    assert h.deploy_list.count() == 1 and h.browse_btn.isEnabled()
+    h.browse_server()
+    assert w.stack.currentWidget() is s and s.path == f"{home}/deploy"
+
+    s.disconnect()
+    assert s.conn is None and s.connect_btn.text() == "연결" and names() == [] and s.path_edit.text() == ""
+    assert not s.tree.isEnabled() and s.state_chip.text() == "연결 안 함"
 
 
 def test_user_guide_dialog(qapp, tmp_path, maven_project):

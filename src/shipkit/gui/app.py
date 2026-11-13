@@ -23,15 +23,16 @@ from shipkit.gui.deploy_page import DeployPage
 from shipkit.gui.guide_view import show_guide
 from shipkit.gui.history_page import HistoryPage
 from shipkit.gui.projects_page import TAB_SERVERS, ProjectsPage
+from shipkit.gui.server_page import ServerPage
 from shipkit.gui.settings_page import SettingsPage
 from shipkit.gui.setup_wizard import SetupWizard
 from shipkit.gui.tasks import TaskRunner
 from shipkit.gui.widgets import Dialogs, ProjectSwitcher, button, label, open_location
 from shipkit.secrets import token_source
 
-PAGES = (("배포", "nav-deploy.svg"), ("기록", "nav-history.svg"), ("프로젝트", "nav-projects.svg"),
-         ("연결", "nav-connections.svg"), ("앱 설정", "nav-settings.svg"))
-PAGE_DEPLOY, PAGE_HISTORY, PAGE_PROJECTS, PAGE_CONNECTIONS, PAGE_SETTINGS = range(5)
+PAGES = (("배포", "nav-deploy.svg"), ("기록", "nav-history.svg"), ("서버", "nav-server.svg"),
+         ("프로젝트", "nav-projects.svg"), ("연결", "nav-connections.svg"), ("앱 설정", "nav-settings.svg"))
+PAGE_DEPLOY, PAGE_HISTORY, PAGE_SERVER, PAGE_PROJECTS, PAGE_CONNECTIONS, PAGE_SETTINGS = range(6)
 ADD_PROJECT, IMPORT_LEGACY = "__add__", "__legacy__"  # 프로젝트 목록 맨 아래의 동작 항목
 
 
@@ -61,6 +62,7 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.deploy_page = DeployPage(self.ctx)
         self.history_page = HistoryPage(self.ctx)
+        self.server_page = ServerPage(self.ctx)
         self.projects_page = ProjectsPage(self.ctx)
         self.connections_page = ConnectionsPage(self.ctx)
         self.settings_page = SettingsPage(self.ctx)
@@ -71,10 +73,12 @@ class MainWindow(QMainWindow):
         self.settings_page.import_requested.connect(self._import_legacy)
         self.deploy_page.add_project_requested.connect(self.add_project)
         self.history_page.deploy_requested.connect(lambda: self.go(PAGE_DEPLOY))
-        for i in range(len(PAGES)):   # Ctrl+1 ~ Ctrl+5: 메뉴 이동
+        self.history_page.browse_requested.connect(self.browse_server)
+        self.server_page.settings_requested.connect(self._open_server_settings)
+        for i in range(len(PAGES)):   # Ctrl+1 ~ Ctrl+6: 메뉴 이동
             QShortcut(QKeySequence(f"Ctrl+{i + 1}"), self, activated=lambda page=i: self.go(page))
-        for page in (self.deploy_page, self.history_page, self.projects_page, self.connections_page,
-                     self.settings_page):
+        for page in (self.deploy_page, self.history_page, self.server_page, self.projects_page,
+                     self.connections_page, self.settings_page):
             self.stack.addWidget(page)
 
         central = QWidget()
@@ -129,6 +133,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         QSettings().setValue("ui/geometry", self.saveGeometry())
+        self.server_page.disconnect()
         super().closeEvent(event)
 
     def add_project(self) -> None:
@@ -375,6 +380,11 @@ class MainWindow(QMainWindow):
 
     def go(self, page: int) -> None:
         self.nav.setCurrentRow(page)
+
+    def browse_server(self, server: str, path: str) -> None:
+        """기록 화면의 [서버 폴더 열기]: 서버 화면으로 가서 그 서버의 그 폴더를 연다."""
+        self.go(PAGE_SERVER)
+        self.server_page.open_path(server, path)
 
     def remake(self, record) -> None:
         """기록의 [같은 내용으로 다시 만들기]: 배포 화면 ① 고르기에 같은 MR·파일을 채운다."""
