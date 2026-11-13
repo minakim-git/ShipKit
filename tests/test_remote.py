@@ -2,6 +2,8 @@
 from datetime import datetime
 from pathlib import Path
 
+import shlex
+
 import pytest
 
 pytest.importorskip("paramiko")
@@ -501,3 +503,39 @@ def test_login_failure(sshd, tmp_path):
     unknown = tmp_path / "empty_known_hosts"                            # 지문을 확인하지 않은 서버에는 접속하지 않음
     with pytest.raises(remote.RemoteError):
         remote.SSHConnection(p, remote.Secrets(login=LOGIN_PW), unknown)
+
+
+def test_parse_cwd_output():
+    assert remote.parse_cwd_output("R 4321\nC /home/app/deploy\n") == (4321, "/home/app/deploy")
+    assert remote.parse_cwd_output("R 0\nC \n") == (0, "")
+    assert remote.parse_cwd_output("R x\n") == (0, "")
+    assert remote.parse_cwd_output("") == (0, "")
+
+
+@needs_bash
+def test_cwd_script_finds_tagged_shell(tmp_path):
+    """터미널 따라가기 스크립트: 표식(환경 변수)을 심은 셸 프로세스를 /proc 에서 찾아 그 현재 폴더를 돌려준다.
+    (Git Bash 의 /proc 에도 environ·stat·cwd 가 있어 여기서도 돈다.)"""
+    import os
+    import subprocess
+    import time
+    if subprocess.run([BASH, "-c", "test -r /proc/self/environ"]).returncode != 0:
+        pytest.skip("/proc 이 없는 환경")
+    folder = tmp_path / "work dir"
+    folder.mkdir()
+    tag = "t3st12"
+    proc = subprocess.Popen([BASH, "-c", "sleep 30"], env=dict(os.environ, LC_SHIPKIT_SESSION=tag), cwd=str(folder),
+                            stdout=subprocess.DEVNULL)
+    try:
+        time.sleep(0.3)
+
+        def run(pid):
+            script = remote.CWD_SCRIPT % {"tag": shlex.quote(tag), "pid": pid}
+            return remote.parse_cwd_output(subprocess.run([BASH, "-c", script], capture_output=True, timeout=60).stdout.decode())
+
+        found, cwd = run(0)                                   # 처음: /proc 전체에서 표식으로 찾는다
+        assert found > 0 and cwd.endswith("/work dir"), (found, cwd)
+        assert run(found) == (found, cwd)                     # PID 를 알면 바로 그 프로세스를 본다
+        assert run(0)[0] == found
+    finally:
+        proc.kill()

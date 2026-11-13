@@ -130,6 +130,8 @@ class FakeSSHServer:
         self.sudo_nopasswd = False      # True 면 sudo -n 이 비밀번호 없이 된다 (sudoers NOPASSWD)
         self.locale = "C"               # 서버 로케일: su·sudo 문구가 번역된다 (C / ko / ja)
         self.pty_sizes: List[tuple] = []   # 셸(pty) 크기 요청 기록 (열, 줄)
+        self.envs: dict = {}            # 셸 채널의 env 요청 (이름 → 값)
+        self.shell_cwd = home.as_posix()   # 가짜 셸의 현재 폴더 (cd 로 바뀜; 셸 PID 는 4321 로 흉내)
         self.honor_env = True           # False 면 명령 앞의 LC_ALL=C 를 무시한다 (번역된 질문을 그대로 내는 서버)
         self.sock = socket.socket()
         self.sock.bind(("127.0.0.1", 0))
@@ -179,6 +181,13 @@ class _Server(paramiko.ServerInterface):
         self.owner.pty_sizes.append((width, height))
         return True
 
+    def check_channel_env_request(self, channel, name, value):
+        """셸에 심는 표식(환경 변수) 요청. 실제 sshd 는 AcceptEnv 에 따라 받거나 조용히 버린다."""
+        name = name.decode() if isinstance(name, bytes) else name
+        value = value.decode() if isinstance(value, bytes) else value
+        self.owner.envs[name] = value
+        return True
+
     def check_channel_shell_request(self, channel):
         """대화형 셸 흉내: 친 글자를 되돌려 보내고(에코), Enter 면 bash 로 실행해 출력을 보낸 뒤 프롬프트."""
         threading.Thread(target=self._shell, args=(channel,), daemon=True).start()
@@ -207,7 +216,17 @@ class _Server(paramiko.ServerInterface):
                         channel.sendall(b"logout\r\n")
                         channel.close()
                         return
-                    if command:
+                    if command.startswith("cd ") or command == "cd":
+                        target = shlex.split(command[2:])[0] if command.strip() != "cd" else self.owner.home.as_posix()
+                        if not target.startswith("/") and target[1:2] != ":":
+                            target = f"{self.owner.shell_cwd}/{target}"
+                        target = target.rstrip("/") or "/"
+                        if Path(target).is_dir():
+                            self.owner.shell_cwd = str(Path(target).resolve().as_posix())
+                        else:
+                            channel.sendall(f"bash: cd: {target}: No such file or directory\r\n".encode())
+                        self.owner.commands.append(command)   # 폴더를 바꾼 뒤에 (테스트가 명령 수로 기다린다)
+                    elif command:
                         self.owner.commands.append(command)
                         result = subprocess.run([self.owner.bash, "-c", command], capture_output=True,
                                                 cwd=str(self.owner.home))
@@ -241,6 +260,13 @@ class _Server(paramiko.ServerInterface):
 
     def _run(self, channel, command: str) -> None:
         time.sleep(0.05)  # exec 요청에 대한 응답이 먼저 가도록 (바로 닫으면 손님 쪽이 'Channel closed')
+        if command.startswith("# shipkit-cwd"):   # 셸의 현재 폴더 묻기: 가짜 셸의 폴더로 답한다 (표식이 맞을 때만)
+            tag = self.owner.envs.get("LC_SHIPKIT_SESSION")
+            found = tag and f"T={tag};" in command.replace("'", "")
+            channel.sendall(f"R {4321 if found else 0}\nC {self.owner.shell_cwd if found else ''}\n".encode())
+            channel.send_exit_status(0)
+            channel.close()
+            return
         argv = shlex.split(command)
         env = {}
         while argv and "=" in argv[0] and not argv[0].startswith("-"):   # 앞의 VAR=value

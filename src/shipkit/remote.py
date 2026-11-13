@@ -143,6 +143,46 @@ class RemoteEntry:
     link: bool = False  # 심볼릭 링크
 
 
+SHELL_TAG_VAR = "LC_SHIPKIT_SESSION"   # 셸을 열 때 심는 표식 (sshd 기본 AcceptEnv 가 LC_* 를 받는다. RHEL 계열은 XMODIFIERS 로)
+
+# 서버 셸의 현재 폴더 읽기 (서버 화면의 '터미널 따라가기'). 셸 자체는 건드리지 않고 별도 명령 채널에서 /proc 을 본다.
+# 1) 표식(환경 변수)이 든 프로세스 중 부모가 그 묶음에 없는 것이 셸(R). 못 찾으면 내 계정의 셸 중 부모가 sshd 인 가장 최근 것.
+# 2) 셸의 전경 프로세스 그룹(tpgid)의 cwd, 없으면 셸의 cwd. 한 번 찾은 PID 는 다음부터 건네받아 다시 훑지 않는다.
+CWD_SCRIPT = r"""# shipkit-cwd
+T=%(tag)s; R=%(pid)d
+if [ "$R" -le 0 ] || [ ! -d "/proc/$R" ]; then
+ R=0; M=''
+ for d in /proc/[0-9]*; do [ -r "$d/environ" ] || continue; tr '\0' '\n' < "$d/environ" 2>/dev/null | grep -qx -e "LC_SHIPKIT_SESSION=$T" -e "XMODIFIERS=@im=shipkit$T" && M="$M ${d#/proc/}"; done
+ for p in $M; do pp=$(sed 's/^.*) //' "/proc/$p/stat" 2>/dev/null | cut -d' ' -f2); case " $M " in *" $pp "*) ;; *) R=$p; break;; esac; done
+ if [ "$R" -le 0 ]; then
+  R=$(ps -eo pid=,ppid=,uid=,tty=,etimes=,comm= 2>/dev/null | awk -v u="$(id -u)" '{c[$1]=$6} $3==u && $4!="?" && $6 ~ /^-?(bash|sh|zsh|ksh|dash)$/ {n++; p[n]=$1; pp[n]=$2; e[n]=$5} END{best=0; for(i=1;i<=n;i++) if (c[pp[i]] ~ /^sshd/ && (best==0 || e[i]<be)) {best=p[i]; be=e[i]} print best}')
+ fi
+fi
+[ -n "$R" ] || R=0
+c=''
+if [ "$R" -gt 0 ]; then
+ tp=$(sed 's/^.*) //' "/proc/$R/stat" 2>/dev/null | cut -d' ' -f6)
+ [ -n "$tp" ] && [ "$tp" -gt 0 ] && c=$(readlink "/proc/$tp/cwd" 2>/dev/null)
+ [ -z "$c" ] && c=$(readlink "/proc/$R/cwd" 2>/dev/null)
+fi
+echo "R $R"; echo "C $c"
+"""
+
+
+def parse_cwd_output(text: str) -> Tuple[int, str]:
+    """CWD_SCRIPT 의 출력 → (셸 PID, 현재 폴더). 못 찾았으면 (0, '')."""
+    pid, cwd = 0, ""
+    for line in text.splitlines():
+        if line.startswith("R "):
+            try:
+                pid = int(line[2:].strip() or 0)
+            except ValueError:
+                pid = 0
+        elif line.startswith("C "):
+            cwd = line[2:].strip()
+    return pid, cwd
+
+
 class Shell:
     """대화형 셸(pty) 채널. 읽기 스레드가 받은 바이트를 on_data 로 넘기고, 셸이 끝나면 on_closed 를 부른다.
     (둘 다 읽기 스레드에서 불리므로 화면 쪽은 Qt 신호로 받는다.)"""
@@ -499,16 +539,45 @@ class SSHConnection:
         return count + 1
 
     def open_shell(self, on_data: Callable[[bytes], None], on_closed: Callable[[], None],
-                   cols: int = 80, rows: int = 24, term: str = "xterm-256color") -> Shell:
-        """대화형 셸을 연다 (서버 화면의 터미널). 반영에 쓰는 명령 채널과는 별개 채널."""
+                   cols: int = 80, rows: int = 24, term: str = "xterm-256color", tag: str = "") -> Shell:
+        """대화형 셸을 연다 (서버 화면의 터미널). 반영에 쓰는 명령 채널과는 별개 채널.
+        tag 를 주면 환경 변수로 표식을 심어 shell_cwd() 가 그 셸을 찾을 수 있게 한다 (서버가 거부하면 조용히 무시됨)."""
         import paramiko
         try:
             chan = self.client.get_transport().open_session()
+            if tag:
+                for name, value in ((SHELL_TAG_VAR, tag), ("XMODIFIERS", f"@im=shipkit{tag}")):
+                    try:
+                        chan.set_environment_variable(name, value)
+                    except paramiko.SSHException:
+                        pass
             chan.get_pty(term=term, width=cols, height=rows)
             chan.invoke_shell()
         except (paramiko.SSHException, OSError, EOFError, AttributeError) as e:
             raise RemoteError(f"터미널을 열지 못했습니다: {e}") from e
         return Shell(chan, on_data, on_closed)
+
+    def capture(self, command: str, timeout: float = 15.0) -> str:
+        """명령 하나를 별도 채널에서 돌려 출력(stdout)을 돌려준다. 짧은 조회용 (진행 표시·비밀번호 없음)."""
+        import paramiko
+        try:
+            chan = self.client.get_transport().open_session()
+            chan.settimeout(timeout)
+            chan.exec_command(command)
+            chunks = []
+            while True:
+                data = chan.recv(65536)
+                if not data:
+                    break
+                chunks.append(data)
+            chan.close()
+        except (paramiko.SSHException, OSError, EOFError, AttributeError) as e:
+            raise RemoteError(f"서버에서 명령을 실행하지 못했습니다: {e}") from e
+        return b"".join(chunks).decode("utf-8", "replace")
+
+    def shell_cwd(self, tag: str, pid: int = 0) -> Tuple[int, str]:
+        """표식 tag 로 연 셸의 (PID, 현재 폴더). pid 를 알면 건네 /proc 을 다시 훑지 않는다. 못 찾으면 (0, '')."""
+        return parse_cwd_output(self.capture(CWD_SCRIPT % {"tag": shlex.quote(tag), "pid": int(pid)}))
 
     def close(self) -> None:
         if self._sftp is not None:

@@ -9,12 +9,13 @@
 from __future__ import annotations
 
 import posixpath
+import secrets
 import shlex
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, List, Optional
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QSettings, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QFileDialog, QHBoxLayout, QHeaderView, QInputDialog, QLineEdit, QMenu, QProgressBar,
     QSplitter, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
@@ -30,6 +31,9 @@ from shipkit.gui.widgets import Card, Chip, button, label, page_header, repolish
 from shipkit.history import format_size
 
 ENTRY_ROLE = Qt.ItemDataRole.UserRole
+FOLLOW_IDLE_MS = 3000      # 터미널 따라가기: 가만히 있을 때 셸의 현재 폴더를 확인하는 주기
+FOLLOW_AFTER_ENTER_MS = 300   # Enter 를 친 뒤 (cd 가 끝났을 즈음) 바로 확인
+FOLLOW_GIVE_UP = 3         # 셸을 이만큼 연달아 못 찾으면 (리눅스가 아니거나 /proc 없음) 이 셸에서는 그만둔다
 
 
 class FileTree(QTreeWidget):
@@ -81,6 +85,19 @@ class ServerPage(QWidget):
         self._auto_connect = True                  # 화면에 들어오면 바로 붙는다 (끊거나 실패하면 False, 서버를 다시 고르면 True)
         self._picked: Optional[str] = None         # 선택 상자에 고른 서버 이름 (바뀌었는지 보려고)
         self._pending_path: Optional[str] = None  # 접속이 끝나면 열 폴더 (기록 화면에서 왔을 때)
+        # 터미널 따라가기: 셸에 심은 표식, 찾아낸 셸 PID, 마지막으로 본 셸의 폴더(None 이면 아직 기준이 없음)
+        self._shell_tag = ""
+        self._shell_pid = 0
+        self._shell_cwd: Optional[str] = None
+        self._follow_misses = 0
+        self._checking_cwd = False
+        self._follow_timer = QTimer(self)
+        self._follow_timer.setInterval(FOLLOW_IDLE_MS)
+        self._follow_timer.timeout.connect(self._check_cwd)
+        self._follow_soon = QTimer(self)
+        self._follow_soon.setSingleShot(True)
+        self._follow_soon.setInterval(FOLLOW_AFTER_ENTER_MS)
+        self._follow_soon.timeout.connect(self._check_cwd)
         self._build()
         ctx.listeners.append(self.refresh_servers)
         ctx.project_listeners.append(self._project_changed)
@@ -140,6 +157,11 @@ class ServerPage(QWidget):
         self.upload_dir_act.triggered.connect(lambda: self.profile and self.navigate(self.profile.upload_dir))
         self.target_act = goto.addAction("서버 배포 경로 (파일이 반영되는 곳)")
         self.target_act.triggered.connect(lambda: self.navigate(self._target_path()))
+        goto.addSeparator()
+        self.follow_act = goto.addAction("터미널 따라가기 (터미널에서 cd 하면 목록도 이동)")
+        self.follow_act.setCheckable(True)
+        self.follow_act.setChecked(str(QSettings().value("server/follow_terminal", "true")).lower() == "true")
+        self.follow_act.toggled.connect(self._follow_toggled)
         self.goto_btn.setMenu(goto)
         for w in (self.up_btn, self.refresh_btn, self.term_open_btn):
             tools.addWidget(w)
@@ -371,14 +393,20 @@ class ServerPage(QWidget):
         self._opening = True
         self._set_terminal(False, "셸을 여는 중…")
 
+        tag = secrets.token_hex(6)
+
         def done(shell) -> None:
             self._opening = False
             if self.conn is not conn:       # 그 사이 끊었으면
                 shell.close()
                 return
             self.shell = shell
+            self._shell_tag, self._shell_pid, self._shell_cwd, self._follow_misses = tag, 0, None, 0
             self._set_terminal(True)
             self.term.setFocus()
+            if self._can_follow():
+                self._follow_timer.start()
+                self._check_cwd()           # 기준이 될 지금 폴더부터 (목록을 옮기지는 않는다)
 
         def failed(message: str) -> None:
             self._opening = False
@@ -386,14 +414,68 @@ class ServerPage(QWidget):
             self.ctx.dialogs.toast(message, "warning")
 
         cols, rows = self.term.cols, self.term.rows
-        self.ctx.runner.run(lambda: conn.open_shell(self.term.data_in.emit, self.term.closed.emit, cols, rows),
+        self.ctx.runner.run(lambda: conn.open_shell(self.term.data_in.emit, self.term.closed.emit, cols, rows, tag=tag),
                             done, failed, quiet=True)
 
     def close_terminal(self) -> None:
         shell, self.shell = self.shell, None
+        self._follow_timer.stop()
+        self._follow_soon.stop()
         if shell is not None:
             shell.close()
         self._set_terminal(False)
+
+    # ------------------------------------------------------------------ 터미널 따라가기
+    def _can_follow(self) -> bool:
+        """리눅스 서버에서만 (/proc 으로 셸의 폴더를 읽는다). 끄면 안 한다."""
+        return self.follow_act.isChecked() and self.profile is not None and self.profile.server_os != "windows"
+
+    def _follow_toggled(self, on: bool) -> None:
+        QSettings().setValue("server/follow_terminal", "true" if on else "false")
+        if on and self.shell is not None and self._can_follow():
+            self._shell_cwd = None          # 켠 시점의 폴더를 기준으로 다시 시작
+            self._follow_misses = 0
+            self._follow_timer.start()
+            self._check_cwd()
+        elif not on:
+            self._follow_timer.stop()
+            self._follow_soon.stop()
+
+    def _check_cwd(self) -> None:
+        """셸의 현재 폴더를 별도 채널에서 읽어, 지난번과 달라졌으면 목록을 그 폴더로 옮긴다."""
+        conn, shell, tag = self.conn, self.shell, self._shell_tag
+        if conn is None or shell is None or not tag or self._checking_cwd or self.busy or not self._can_follow():
+            return
+        self._checking_cwd = True
+        pid = self._shell_pid
+
+        def done(result) -> None:
+            self._checking_cwd = False
+            if self.shell is not shell:     # 그 사이 셸이 바뀜
+                return
+            found, cwd = result
+            if not found or not cwd:
+                self._follow_misses += 1
+                if self._follow_misses >= FOLLOW_GIVE_UP:
+                    self._follow_timer.stop()
+                return
+            self._follow_misses = 0
+            self._shell_pid = found
+            if self._shell_cwd is None:     # 첫 확인: 기준만 잡는다
+                self._shell_cwd = cwd
+                return
+            if cwd != self._shell_cwd:
+                self._shell_cwd = cwd
+                if cwd != self.path and not self.busy:
+                    self.navigate(cwd)
+
+        def failed(_message: str) -> None:
+            self._checking_cwd = False
+            self._follow_misses += 1
+            if self._follow_misses >= FOLLOW_GIVE_UP:
+                self._follow_timer.stop()
+
+        self.ctx.runner.run(lambda: conn.shell_cwd(tag, pid), done, failed, quiet=True)
 
     def _set_terminal(self, open_: bool, hint: str = "") -> None:
         """터미널 상태. 접속 중에는 셸이 없어도 키를 받아(다시 열게) 켜 두고, 끊겼으면 잠근다."""
@@ -410,6 +492,9 @@ class ServerPage(QWidget):
     def _term_input(self, data: bytes) -> None:
         if self.shell is not None:
             self.shell.send(bytes(data))
+            if b"\r" in data or b"\n" in data:   # 명령을 쳤으면 (cd 였을지 모르니) 곧 셸의 폴더를 확인
+                if self._follow_timer.isActive():
+                    self._follow_soon.start()
         elif self.conn is not None:         # 셸이 끝난 뒤(exit) 키를 치면 다시 연다
             self.open_terminal()
 

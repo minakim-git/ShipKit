@@ -1382,6 +1382,37 @@ def test_server_page_files(qapp, tmp_path, maven_project, monkeypatch, sshd):
             time.sleep(0.02)
         return sshd.commands[-1]
 
+    def type_line(text):
+        for ch in text:
+            s.term.keyPressEvent(QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_A, Qt.KeyboardModifier.NoModifier, ch))
+        s.term.keyPressEvent(QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_Return, Qt.KeyboardModifier.NoModifier, "\r"))
+
+    # 터미널 따라가기: 셸에 표식(환경 변수)이 심기고, 터미널에서 cd 하면 목록이 그 폴더로 간다
+    assert sshd.envs["LC_SHIPKIT_SESSION"] == s._shell_tag and sshd.envs["XMODIFIERS"] == f"@im=shipkit{s._shell_tag}"
+    assert s.follow_act.isChecked() and s._follow_timer.isActive() and s._shell_cwd == home and s._shell_pid == 4321
+    assert s.path == f"{home}/deploy"                                             # 처음 확인은 기준만 잡고 목록을 옮기지 않는다
+    s.make_dir("sub")
+    type_line("cd deploy/sub")
+    assert next_command() == "cd deploy/sub" and sshd.shell_cwd == f"{home}/deploy/sub"
+    s._check_cwd()                                                                # (Enter 뒤 타이머가 하는 일)
+    assert s.path == f"{home}/deploy/sub" and s._shell_cwd == f"{home}/deploy/sub"
+    s.go_up()                                                                     # 목록만 옮기면 (셸은 그대로) 따라가서 되돌리지 않는다
+    s._check_cwd()
+    assert s.path == f"{home}/deploy" and sshd.shell_cwd == f"{home}/deploy/sub"
+    s.follow_act.setChecked(False)                                                # 끄면 cd 해도 목록은 그대로
+    assert not s._follow_timer.isActive()
+    type_line("cd ../..")
+    assert next_command() == "cd ../.." and sshd.shell_cwd == home
+    s._check_cwd()
+    assert s.path == f"{home}/deploy"
+    s.follow_act.setChecked(True)                                                 # 다시 켜면 그 시점을 기준으로
+    assert s._follow_timer.isActive() and s._shell_cwd == home and s.path == f"{home}/deploy"
+    type_line("cd deploy/sub")
+    assert next_command() == "cd deploy/sub"
+    s._check_cwd()
+    assert s.path == f"{home}/deploy/sub"
+    s.navigate(f"{home}/deploy")
+
     s.open_in_terminal()                                                          # 긴 경로는 화면에서 줄바꿈되므로 서버가 받은 명령으로 확인
     assert next_command() == f"cd {home}/deploy"
     s.open_in_terminal(f"{home}/deploy/sub")                                      # 오른쪽 단추 메뉴: 고른 폴더로
@@ -1390,9 +1421,7 @@ def test_server_page_files(qapp, tmp_path, maven_project, monkeypatch, sshd):
     assert s.shell is None and not s.term_open_btn.isEnabled() and s.term.isEnabled()   # 접속은 그대로
     s.open_terminal()
     assert s.shell is not None and wait_for("fake$")
-    for ch in "exit":
-        s.term.keyPressEvent(QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_A, Qt.KeyboardModifier.NoModifier, ch))
-    s.term.keyPressEvent(QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_Return, Qt.KeyboardModifier.NoModifier, "\r"))
+    type_line("exit")
     deadline = time.monotonic() + 5
     while s.shell is not None and time.monotonic() < deadline:                    # 셸이 끝나면(exit) 닫힘으로
         qapp.processEvents()
