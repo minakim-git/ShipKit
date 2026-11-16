@@ -27,7 +27,7 @@ from shipkit.gui import theme
 from shipkit.gui.context import AppContext
 from shipkit.gui.remote_panel import RemoteClient
 from shipkit.gui.terminal import TerminalView
-from shipkit.gui.widgets import Card, Chip, button, label, page_header, repolish
+from shipkit.gui.widgets import Chip, Section, button, label, page_header, repolish
 from shipkit.history import format_size
 
 ENTRY_ROLE = Qt.ItemDataRole.UserRole
@@ -126,7 +126,7 @@ class ServerPage(QWidget):
         head_row.addWidget(self.connect_btn)
         layout.addWidget(page_header("서버", "서버 파일 보기·올리기·내려받기와 터미널", right=self.head))
 
-        self.empty_card = Card()
+        self.empty_card = Section()   # 서버가 없을 때의 안내: 상자 없이 글과 단추만
         self.empty_card.body.addWidget(label("프로젝트 설정의 [서버 연결] 탭에서 서버를 등록하면 여기서 서버 파일을 볼 수 있습니다.", "muted"))
         go = button("서버 등록하러 가기", "ghost")
         go.clicked.connect(self.settings_requested.emit)
@@ -134,6 +134,7 @@ class ServerPage(QWidget):
         row.addWidget(go)
         row.addStretch(1)
         self.empty_card.body.addLayout(row)
+        self.empty_card.body.addStretch(1)   # 서버가 없을 때 화면 전체를 차지하므로 글과 단추는 위에 모은다
         layout.addWidget(self.empty_card)
 
         # 왼쪽: 서버 파일. 카드로 감싸지 않고 도구 줄·거르기·목록 상자·단추 줄이 바로 (상자 안에 상자가 없게)
