@@ -20,7 +20,7 @@ from shipkit.config import PRESETS, ConfigError, GitLabConfig, load_project_file
 from shipkit.gui import theme
 from shipkit.gui.context import AppContext
 from shipkit.gui.guide_view import show_guide
-from shipkit.gui.widgets import Card, PathField, Stepper, button, label
+from shipkit.gui.widgets import PathField, Section, Stepper, button, label
 from shipkit.projectfile import detect_preset, find_repo_root
 from shipkit.secrets import SecretError, set_token
 from shipkit.sources import git_local
@@ -112,8 +112,8 @@ class SetupWizard(QDialog):
         w = QWidget()
         col = QVBoxLayout(w)
         col.setContentsMargins(0, 0, 0, 0)
-        col.setSpacing(12)
-        self.legacy_card = Card("기존 배포 툴 설정을 찾았습니다", "프로젝트와 GitLab 주소를 그대로 가져옵니다. 토큰은 다시 넣어 주세요.")
+        col.setSpacing(18)
+        self.legacy_card = Section("기존 배포 툴 설정을 찾았습니다", "프로젝트와 GitLab 주소를 그대로 가져옵니다. 토큰은 다시 넣어 주세요.")
         row = QHBoxLayout()
         self.legacy_btn = button("가져오기", "primary")
         self.legacy_btn.clicked.connect(self.import_legacy)
@@ -124,7 +124,7 @@ class SetupWizard(QDialog):
         self.legacy_card.setVisible(self.legacy_db is not None)
         col.addWidget(self.legacy_card)
 
-        card = Card("GitLab 연결")
+        card = Section("GitLab 연결", rule=self.legacy_db is not None)   # 위에 가져오기 안내가 있을 때만 선으로 나눈다
         form = _form()
         self.gitlab_url = QLineEdit()
         self.gitlab_url.setPlaceholderText("예: https://gitlab.example.com")
@@ -155,7 +155,7 @@ class SetupWizard(QDialog):
         w = QWidget()
         col = QVBoxLayout(w)
         col.setContentsMargins(0, 0, 0, 0)
-        card = Card("패키지를 만들 위치")
+        card = Section("패키지를 만들 위치")
         form = _form()
         self.output_field = PathField(placeholder="예: D:/deploy/{project}")
         self.output_field.edit.textChanged.connect(self._show_output_example)
@@ -171,11 +171,11 @@ class SetupWizard(QDialog):
         w = QWidget()
         col = QVBoxLayout(w)
         col.setContentsMargins(0, 0, 0, 0)
-        col.setSpacing(12)
+        col.setSpacing(18)
         self.imported_note = label("", "muted")
         self.imported_note.hide()
         col.addWidget(self.imported_note)
-        card = Card("배포할 프로젝트")
+        card = Section("배포할 프로젝트")
         form = _form()
         self.root_field = PathField(placeholder="로컬 git 저장소 최상위 폴더")
         self.root_field.edit.textChanged.connect(self._inspect_root)
