@@ -653,7 +653,7 @@ QLabel#stepNum {{ background: {PRIMARY_SOFT}; color: {PRIMARY}; border-radius: 1
 QLabel#doneTitle {{ font-size: 12.5pt; font-weight: 600; }}
 
 /* ---------- 기록 ---------- */
-QListWidget#records {{ background: transparent; border: none; outline: 0; }}
+QListWidget#records {{ background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 8px; padding: 4px; outline: 0; }}
 QLabel#groupHeader {{ color: {SUBTLE}; font-size: 8.5pt; font-weight: 600; padding: 8px 10px 0; background: transparent; }}
 QListWidget#records::item {{ border-radius: 8px; margin: 1px 0; }}
 QListWidget#records::item:hover {{ background: {HOVER}; }}
@@ -664,7 +664,7 @@ QListWidget#serverList::item:hover {{ background: {HOVER}; }}
 QListWidget#serverList::item:selected {{ background: {PRIMARY_SOFT}; color: {PRIMARY}; font-weight: 600; }}
 QPlainTextEdit#serverLog {{ background: {HEAD}; font-size: 9pt; }}
 QListWidget#fileList {{
-    background: {SURFACE}; border: none; outline: 0;
+    background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 8px; outline: 0;
     font-family: "Cascadia Mono", Consolas, "Malgun Gothic"; font-size: 9.5pt;
 }}
 QListWidget#fileList::item {{ padding: 4px 6px; border-bottom: 1px solid {LINE}; }}

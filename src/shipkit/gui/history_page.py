@@ -22,7 +22,7 @@ from shipkit.gui.report_view import show_report
 from shipkit.gui.server_status import (
     ACTION_TEXT, RemoteRunDialog, ServerStatusDialog, _profile_by_name, ask_rollback_hooks,
 )
-from shipkit.gui.widgets import META_ROLE, Card, Chip, CommandRow, button, label, open_path
+from shipkit.gui.widgets import META_ROLE, Chip, CommandRow, ElidedLabel, button, label, open_path
 
 SOURCE_LABEL = {"gitlab-mr": "GitLab MR", "github-pr": "GitHub PR", "git-diff": "git 범위", "manual": "파일 목록",
                 "build": "빌드 결과", "unknown": "예전 패키지"}
@@ -176,10 +176,14 @@ class HistoryPage(QWidget):
         w = QWidget()
         row = QHBoxLayout(w)
         row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(14)
+        row.setSpacing(16)
 
-        left = Card(padding=12)
+        # 왼쪽 목록·오른쪽 상세를 카드로 감싸지 않는다: 찾기 칸과 목록 상자, 제목과 탭이 바로 (상자 안에 상자가 없게)
+        left = QWidget()
         left.setFixedWidth(320)
+        left.body = QVBoxLayout(left)
+        left.body.setContentsMargins(0, 0, 0, 0)
+        left.body.setSpacing(8)
         self.search = QLineEdit()
         self.search.setPlaceholderText("MR 번호·제목·파일 경로로 찾기")
         search_icon = self.search.addAction(QIcon(), QLineEdit.ActionPosition.LeadingPosition)
@@ -196,14 +200,16 @@ class HistoryPage(QWidget):
         left.body.addWidget(self.count_label)
         row.addWidget(left)
 
-        right = Card(padding=20)
+        right = QWidget()
+        right.body = QVBoxLayout(right)
+        right.body.setContentsMargins(0, 0, 0, 0)
+        right.body.setSpacing(10)
         head = QHBoxLayout()
         texts = QVBoxLayout()
         texts.setSpacing(3)
         self.detail_title = label("", "detailTitle")
         self.detail_title.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.detail_sub = label("", "muted")
-        self.detail_sub.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.detail_sub = ElidedLabel("muted")   # 폴더 이름·시각·출처·서버 경로: 길면 한 줄로 줄이고 전체는 말풍선
         texts.addWidget(self.detail_title)
         texts.addWidget(self.detail_sub)
         head.addLayout(texts, 1)
