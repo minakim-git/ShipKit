@@ -518,7 +518,6 @@ QComboBox#projectSwitcher QAbstractItemView {{ padding: 4px; }}
 /* ---------- 글자 ---------- */
 QLabel#pageTitle {{ font-size: 15pt; font-weight: 600; }}
 QLabel#pageSubtitle {{ color: {MUTED}; }}
-QLabel#cardTitle {{ font-size: 10.5pt; font-weight: 600; }}
 QLabel#sectionTitle {{ font-size: 10.5pt; font-weight: 600; }}
 QLabel#muted {{ color: {MUTED}; }}
 QLabel#fieldLabel {{ color: {LABEL}; font-weight: 500; }}

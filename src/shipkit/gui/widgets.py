@@ -599,7 +599,7 @@ class MessageDialog(QDialog):
         body.addWidget(mark, 0, Qt.AlignmentFlag.AlignTop)
         texts = QVBoxLayout()
         texts.setSpacing(6)
-        texts.addWidget(label(title, "cardTitle"))
+        texts.addWidget(label(title, "sectionTitle"))
         self.text = label(text)
         self.text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         texts.addWidget(self.text)

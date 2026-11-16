@@ -559,7 +559,7 @@ class CleanupDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(22, 20, 22, 16)
         layout.setSpacing(12)
-        self.head = label("", "cardTitle")
+        self.head = label("", "sectionTitle")
         layout.addWidget(self.head)
         self.path_label = label(str(page.ctx.project.output_dir) if page.ctx.project else "", "muted")
         self.path_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -693,7 +693,7 @@ class CompareDialog(QDialog):
         for tag, r in (("A", a), ("B", b)):
             col = QVBoxLayout()
             col.setSpacing(2)
-            col.addWidget(label(f"{tag}  {r.name}", "cardTitle"))
+            col.addWidget(label(f"{tag}  {r.name}", "sectionTitle"))
             col.addWidget(label(f"{r.created_at:%Y-%m-%d %H:%M}  ·  {_title(r)}", "muted"))
             head.addLayout(col, 1)
         layout.addLayout(head)
