@@ -209,3 +209,22 @@ def test_request_commit_warnings(maven_project, tmp_path):
 def _commit_only(root, rel, text):
     write(root / rel, text)
     git(root, "commit", "-q", "-am", f"change {rel}")
+
+
+def test_server_deploy_branch_checks(maven_project, tmp_path):
+    """서버 연결에 배포 브랜치를 적어 두면 지금 브랜치가 어느 서버의 것인지, 어느 서버와도 안 맞는지 알려 준다."""
+    git(maven_project, "init", "-q", "-b", "develop")
+    git(maven_project, "add", "-A")
+    git(maven_project, "commit", "-q", "-m", "init")
+
+    def run(servers):
+        project = make_config(maven_project, tmp_path / "out", servers=servers).projects["erp"]
+        return texts(preflight.run(None, project, fetch=False))
+
+    base = {"host": "h", "user": "u"}
+    result = run([dict(base, name="운영", branch="master"), dict(base, name="개발", branch="develop")])
+    assert result["개발 서버 배포 브랜치"] == "success" and "서버 배포 브랜치 아님" not in result
+    result = run([dict(base, name="운영", branch="master")])
+    assert result["서버 배포 브랜치 아님"] == "warning"
+    result = run([dict(base, name="운영")])
+    assert not any("배포 브랜치" in k for k in result)

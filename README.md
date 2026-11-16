@@ -411,6 +411,7 @@ projects:
                                # su 는 서버 로케일과 상관없이 암호 질문을 알아챕니다 (LC_ALL=C 로 띄우고, 번역된 질문도 인식)
         chown: true            # 올린 패키지 폴더 소유자를 실행 계정으로
         upload_dir: /home/app/deploy
+        branch: master         # 이 서버에 배포할 브랜치 (비우면 확인하지 않음). 점검 띠·서버 반영에서 다르면 경고
         notify:                # 반영·되돌리기가 끝나면 메신저로 한 줄 (비우면 알리지 않음)
           url: https://hooks.slack.com/services/T000/B000/xxxx
           format: slack        # slack | mattermost | teams ({"text"}) / jandi ({"body"}) / discord ({"content"}) / custom (key 지정)

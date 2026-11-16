@@ -49,6 +49,7 @@ def _git_checks(project: ProjectConfig, fetch: bool) -> List[Check]:
         return [Check("warning", "git 상태 확인 실패", str(e))]
     checks = [Check("neutral", f"브랜치 {st.branch}" if st.branch else "브랜치 아님 (detached HEAD)",
                     f"추적: {st.upstream}" if st.upstream else "추적하는 원격 브랜치가 없습니다.", ACTION_BRANCH)]
+    checks += _server_branch_checks(project, st.branch)
     basis = "" if st.fetched else " (마지막으로 받아온 원격 기준)"
     if st.behind:
         checks.append(Check("warning", f"원격보다 {st.behind}커밋 뒤처짐",
@@ -63,6 +64,19 @@ def _git_checks(project: ProjectConfig, fetch: bool) -> List[Check]:
         checks.append(Check("warning", f"커밋 안 된 수정 {dirty}개",
                             "저장소와 다른 내용이 배포될 수 있습니다. 미리보기에서 해당 파일에 경고가 붙습니다."))
     return checks
+
+
+def _server_branch_checks(project: ProjectConfig, branch: Optional[str]) -> List[Check]:
+    """서버 연결에 배포 브랜치를 적어 둔 서버가 있으면 지금 브랜치와 비교한다 (운영=master, 개발=develop 같은 흐름)."""
+    named = [(s.name, s.branch) for s in project.servers if s.branch]
+    if not named:
+        return []
+    listing = ", ".join(f"{name}={b}" for name, b in named)
+    matched = [name for name, b in named if b == branch]
+    if matched:
+        return [Check("success", f"{', '.join(matched)} 서버 배포 브랜치", f"서버별 배포 브랜치: {listing}")]
+    return [Check("warning", "서버 배포 브랜치 아님",
+                  f"서버별 배포 브랜치: {listing}. 배포할 서버의 브랜치로 바꾸세요 (브랜치 배지 옆 [바꾸기]).")]
 
 
 def _build_checks(project: ProjectConfig) -> List[Check]:

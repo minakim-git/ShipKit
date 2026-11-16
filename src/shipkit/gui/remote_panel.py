@@ -259,11 +259,14 @@ class RemotePanel(Section):
         self.prod_chip = Chip("운영 서버", "danger")
         self.prod_chip.setToolTip("이름에 운영·상용·prod·live·real 이 들어간 서버는 운영 서버로 보고 반영 전에 한 번 더 확인합니다.")
         self.prod_chip.hide()
+        self.branch_chip = Chip("브랜치 다름", "danger")   # 서버의 배포 브랜치와 이 패키지를 만든 브랜치가 다를 때
+        self.branch_chip.hide()
         self.current_label = label("", "muted")   # 이 PC 기록으로 보는, 지금 서버에 반영된 패키지
         self.status_btn = button("서버 상태 보기", "ghost")
         self.status_btn.setToolTip("서버의 반영 이력(history)을 읽어 지금 반영된 패키지를 확인합니다.")
         self.status_btn.clicked.connect(self._show_server_status)
         current_row.addWidget(self.prod_chip)
+        current_row.addWidget(self.branch_chip)
         current_row.addWidget(self.current_label, 1)
         current_row.addWidget(self.status_btn)
         col.addLayout(current_row)
@@ -364,7 +367,20 @@ class RemotePanel(Section):
         runner = f"{p.runner} 계정으로 실행 ({p.run_with})" if p.run_as else f"{p.user} 계정으로 실행"
         self.target_label.setText(f"올릴 위치 {p.upload_dir}/{self.result.out_dir.name}  ·  반영 경로 {target}  ·  {runner}")
         self.prod_chip.setVisible(p.is_production)
+        mismatch = self._branch_mismatch(p)
+        self.branch_chip.setVisible(bool(mismatch))
+        self.branch_chip.setToolTip(mismatch)
         self.refresh_current()
+
+    def _branch_mismatch(self, p) -> str:
+        """서버에 배포 브랜치를 적어 뒀는데 이 패키지를 만든 브랜치가 다르면 그 설명, 아니면 빈 글."""
+        if not p.branch or self.result is None or self.result.out_dir is None:
+            return ""
+        record = history.read_record(self.result.out_dir)
+        made = record.git_branch if record else ""
+        if not made or made == p.branch:
+            return ""
+        return f"{p.name} 서버는 {p.branch} 브랜치로 배포하는데, 이 패키지는 {made} 브랜치에서 만들었습니다."
 
     def refresh_current(self) -> None:
         """'지금 이 서버에는 어떤 패키지가 반영돼 있나' 를 이 PC 의 패키지 기록으로 보여 준다 (서버 접속 없이)."""
@@ -563,6 +579,9 @@ class RemotePanel(Section):
     def upload_and_check(self) -> None:
         p = self.profile
         if p is None:
+            return
+        mismatch = self._branch_mismatch(p)
+        if mismatch and not self.ctx.dialogs.ask("브랜치 확인", mismatch + "\n\n그래도 이 패키지를 올릴까요?"):
             return
         self.log.clear()
         self.show_check(None)

@@ -232,6 +232,7 @@ class ServerProfile:
     server_path: Optional[str] = None   # 이 서버만 배포 경로가 다르면 (비우면 프로젝트 server_path)
     server_os: str = "linux"            # linux: bash 로 shipkit.sh / windows: OpenSSH 서버에서 PowerShell 로 shipkit.ps1
     notify: Optional[NotifyConfig] = None   # 반영·되돌리기가 끝나면 알릴 메신저 웹훅 (비우면 알리지 않음)
+    branch: str = ""                    # 이 서버에 배포할 브랜치 (비우면 확인하지 않음). 점검 띠·서버 반영에서 다르면 경고
 
     @property
     def address(self) -> str:
@@ -739,12 +740,15 @@ def parse_servers(raw: Any, where: str, server_os: str) -> List[ServerProfile]:
         if run_with not in RUN_WITH:
             raise ConfigError(f"{at}.run_with 는 {', '.join(RUN_WITH)} 중 하나여야 합니다: {run_with}")
         path = item.get("server_path")
+        branch = _opt_str(item.get("branch")) or ""
+        if branch and not re.match(r"^[\w][\w./-]*$", branch):
+            raise ConfigError(f"{at}.branch (배포 브랜치)가 올바르지 않습니다: {branch}")
         servers.append(ServerProfile(
             name=name, host=host, user=user, port=port, auth=auth, key_file=key_file, upload_dir=upload_dir,
             run_as=None if run_as == user else run_as, run_with=run_with,
             run_password=bool(item.get("run_password", False)), chown=bool(item.get("chown", False)),
             server_path=_parse_server_path(path, at, server_os) if path else None, server_os=server_os,
-            notify=_parse_notify(item.get("notify"), at),
+            notify=_parse_notify(item.get("notify"), at), branch=branch,
         ))
     return servers
 

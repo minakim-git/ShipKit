@@ -1664,3 +1664,35 @@ def test_deploy_switch_branch(qapp, tmp_path, maven_project):
     d.switch_branch("main")
     assert dialogs.messages[-1][1] == "브랜치 바꾸기" and "main 로 바꿀까요?" in dialogs.messages[-1][2]
     assert git_local.current_branch(maven_project) == "feature"
+
+
+def test_remote_panel_warns_when_package_branch_differs(qapp, tmp_path, maven_project):
+    """서버의 배포 브랜치와 패키지를 만든 브랜치가 다르면 점검 띠에 경고, 완료 화면에 [브랜치 다름] 배지,
+    올리기 전에 한 번 더 묻는다 (아니오면 올리지 않는다)."""
+
+    def git(*args):
+        subprocess.run(["git", "-C", str(maven_project), "-c", "user.name=t", "-c", "user.email=t@t", *args],
+                       check=True, capture_output=True)
+
+    git("init", "-q", "-b", "develop")
+    git("add", "-A")
+    git("commit", "-q", "-m", "first")
+    servers = [{"name": "운영", "host": "10.0.0.5", "user": "app", "branch": "master"},
+               {"name": "개발", "host": "10.0.0.6", "user": "app", "branch": "develop"}]
+    dialogs = FakeDialogs()
+    w = make_window(_config(tmp_path, maven_project, servers=servers), dialogs)
+    d = w.deploy_page
+    assert any(c.text == "개발 서버 배포 브랜치" and c.tone == "success" for c in d.last_checks)
+
+    d.tabs.setCurrentIndex(TAB_FILES)
+    d.files_edit.setPlainText("src/main/webapp/WEB-INF/views/user/list.jsp\n")
+    d.preview()
+    d.make_package()
+    panel = d.remote_panel
+    assert panel.server_combo.currentIndex() == 0                       # 운영 (master) 인데 패키지는 develop
+    assert panel.branch_chip.isVisibleTo(panel) and "develop 브랜치에서 만들었습니다" in panel.branch_chip.toolTip()
+    dialogs.answer = False
+    panel.upload_and_check()
+    assert dialogs.messages[-1][:2] == ("ask", "브랜치 확인") and panel.stage == "ready"
+    panel.server_combo.setCurrentIndex(1)                              # 개발 (develop) 은 맞음
+    assert not panel.branch_chip.isVisibleTo(panel)

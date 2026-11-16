@@ -109,6 +109,10 @@ class ServersTab(QWidget):
         self.srv_run_password.setToolTip("끄면 비밀번호 없이 실행합니다. 서버가 비밀번호를 물으면 기다리지 않고 바로 실패합니다.")
         self.srv_chown = QCheckBox("올린 패키지 폴더의 소유자를 실행 계정으로 바꿉니다 (chown)")
         self.srv_path = QLineEdit()
+        self.srv_branch = QLineEdit()                 # 이 서버에 배포할 브랜치: 점검 띠와 서버 반영에서 비교해 경고
+        self.srv_branch.setPlaceholderText("비우면 확인하지 않음.  예: master  (이 서버에 배포할 브랜치)")
+        self.srv_branch.setToolTip("배포 화면 점검 띠에서 지금 브랜치와 비교하고, 완료 화면에서 다른 브랜치로 만든 패키지를 "
+                                   "이 서버에 올리려 하면 한 번 더 묻습니다.")
         self.srv_notify = QComboBox()                 # 메신저 알림: 반영·되돌리기가 끝나면 웹훅으로 한 줄
         self.srv_notify.addItem("알리지 않음", "")
         for fmt, text in NOTIFY_LABELS.items():
@@ -124,7 +128,8 @@ class ServersTab(QWidget):
                              ("접속 계정", self.srv_user), ("인증", self.srv_auth), ("키 파일", self.srv_key),
                              ("올릴 위치", self.srv_upload), ("실행 계정", self.srv_mode), ("계정 이름", self.srv_run_as),
                              ("전환 방법", self.srv_run_with), ("", self.srv_run_password), ("", self.srv_chown),
-                             ("서버 배포 경로", self.srv_path), ("메신저 알림", self.srv_notify), ("웹훅 URL", self.srv_webhook),
+                             ("서버 배포 경로", self.srv_path), ("배포 브랜치", self.srv_branch),
+                             ("메신저 알림", self.srv_notify), ("웹훅 URL", self.srv_webhook),
                              ("JSON 키", self.srv_notify_key)):
             form.addRow(label(text, "fieldLabel", wrap=False), widget)
         right.addLayout(form)
@@ -158,7 +163,7 @@ class ServersTab(QWidget):
         col.addWidget(card)
         col.addStretch(1)
 
-        for edit in (self.srv_name, self.srv_host, self.srv_user, self.srv_upload, self.srv_run_as, self.srv_path,
+        for edit in (self.srv_name, self.srv_host, self.srv_user, self.srv_upload, self.srv_run_as, self.srv_path, self.srv_branch,
                      self.srv_key.edit, self.srv_webhook, self.srv_notify_key):
             edit.textChanged.connect(self._server_edited)
         for combo in (self.srv_auth, self.srv_mode, self.srv_run_with, self.srv_notify):
@@ -203,6 +208,7 @@ class ServersTab(QWidget):
         self.srv_run_password.setChecked(bool(s.get("run_password")))
         self.srv_chown.setChecked(bool(s.get("chown")))
         self.srv_path.setText(str(s.get("server_path", "")))
+        self.srv_branch.setText(str(s.get("branch", "")))
         notify_cfg = s.get("notify") if isinstance(s.get("notify"), dict) else {}
         self._select(self.srv_notify, (notify_cfg.get("format") or "slack") if notify_cfg else "")
         self.srv_webhook.setText(str(notify_cfg.get("url", "")))
@@ -248,6 +254,8 @@ class ServersTab(QWidget):
                 d["chown"] = True
         if self.srv_path.text().strip():
             d["server_path"] = self.srv_path.text().strip()
+        if self.srv_branch.text().strip():
+            d["branch"] = self.srv_branch.text().strip()
         fmt = self.srv_notify.currentData()
         if fmt:
             d["notify"] = {"url": self.srv_webhook.text().strip(), "format": fmt}
@@ -270,7 +278,8 @@ class ServersTab(QWidget):
         """폼 값을 바로 검사해 잘못된 칸을 빨갛게, 이유를 아래에 보여 준다 (저장 때까지 기다리지 않게)."""
         fields = (("host", self.srv_host), ("user", self.srv_user), ("name", self.srv_name), ("port", self.srv_port),
                   ("upload_dir", self.srv_upload), ("key_file", self.srv_key), ("server_path", self.srv_path),
-                  ("run_as", self.srv_run_as), ("notify.key", self.srv_notify_key), ("notify", self.srv_webhook),
+                  ("run_as", self.srv_run_as), ("branch", self.srv_branch),
+                  ("notify.key", self.srv_notify_key), ("notify", self.srv_webhook),
                   ("이름", self.srv_name), ("호스트", self.srv_host), ("계정", self.srv_user))
         message = ""
         try:
