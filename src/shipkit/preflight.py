@@ -16,7 +16,8 @@ from shipkit.sync import build_root
 SERVICE_NAME = {"gitlab": "GitLab", "github": "GitHub"}
 
 
-ACTION_PULL = "pull"  # 화면에서 [pull 받기] 버튼을 보여 줄 점검
+ACTION_PULL = "pull"      # 화면에서 [pull 받기] 버튼을 보여 줄 점검
+ACTION_BRANCH = "branch"  # 화면에서 [바꾸기](브랜치 바꾸기) 버튼을 보여 줄 점검
 
 
 @dataclass
@@ -24,7 +25,7 @@ class Check:
     tone: str
     text: str
     hint: str = ""
-    action: str = ""  # 화면에서 바로 고칠 수 있는 문제 (ACTION_PULL)
+    action: str = ""  # 화면에서 바로 할 수 있는 일 (ACTION_PULL·ACTION_BRANCH)
 
 
 def run(cfg: Optional[Config], project: ProjectConfig, fetch: bool = True) -> List[Check]:
@@ -47,7 +48,7 @@ def _git_checks(project: ProjectConfig, fetch: bool) -> List[Check]:
     except git_local.GitError as e:
         return [Check("warning", "git 상태 확인 실패", str(e))]
     checks = [Check("neutral", f"브랜치 {st.branch}" if st.branch else "브랜치 아님 (detached HEAD)",
-                    f"추적: {st.upstream}" if st.upstream else "추적하는 원격 브랜치가 없습니다.")]
+                    f"추적: {st.upstream}" if st.upstream else "추적하는 원격 브랜치가 없습니다.", ACTION_BRANCH)]
     basis = "" if st.fetched else " (마지막으로 받아온 원격 기준)"
     if st.behind:
         checks.append(Check("warning", f"원격보다 {st.behind}커밋 뒤처짐",

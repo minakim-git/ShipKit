@@ -199,6 +199,53 @@ def branch_status(root: Path, do_fetch: bool = False) -> BranchStatus:
 
 
 @dataclass
+class Branches:
+    current: Optional[str]      # 지금 브랜치 (detached HEAD 면 None)
+    local: List[str]            # 로컬 브랜치 이름
+    remote_only: List[str]      # 원격에만 있는 브랜치 ("origin/feature" 꼴, 같은 이름의 로컬 브랜치가 없는 것)
+
+
+def list_branches(root: Path) -> Branches:
+    local = run_git(root, "for-each-ref", "--format=%(refname:short)", "--sort=refname", "refs/heads").split()
+    remotes = run_git(root, "for-each-ref", "--format=%(refname:short)", "--sort=refname", "refs/remotes").split()
+    names = set(local)
+    remote_only = [r for r in remotes
+                   if "/" in r and not r.endswith("/HEAD") and r.split("/", 1)[1] not in names]
+    return Branches(current_branch(root), local, remote_only)
+
+
+def switch_branch(root: Path, name: str, timeout: int = 60) -> str:
+    """브랜치를 바꾼다 (git checkout). "origin/x" 처럼 원격에만 있는 이름이면 그것을 추적하는 로컬 브랜치 x 를 만든다.
+
+    merge·stash 는 하지 않는다. 커밋 안 한 수정이 바꿀 브랜치와 겹치면 아무것도 바꾸지 않고 GitError.
+    반환: 바뀐 뒤의 브랜치 이름.
+    """
+    local = run_git(root, "for-each-ref", "--format=%(refname:short)", "refs/heads").split()
+    if name in local:
+        args = ["checkout", "--quiet", name]
+    elif "/" in name:
+        args = ["checkout", "--quiet", "--track", name]   # origin/x -> 로컬 x 를 만들어 추적
+    else:
+        raise GitError(f"브랜치 {name} 가 없습니다.")
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0", GCM_INTERACTIVE="never", GIT_ASKPASS="echo")
+    try:
+        proc = subprocess.run(["git", "-C", str(root), *args], capture_output=True, timeout=timeout, env=env, **_QUIET)
+    except FileNotFoundError as e:
+        raise GitError("git 실행 파일을 찾을 수 없습니다. Git 이 설치되어 PATH 에 있는지 확인하세요.") from e
+    except subprocess.TimeoutExpired as e:
+        raise GitError(f"git checkout 이 {timeout}초 안에 끝나지 않았습니다.") from e
+    if proc.returncode != 0:
+        msg = proc.stderr.decode("utf-8", "replace").strip()
+        low = msg.lower()
+        if "would be overwritten" in low or "untracked working tree files" in low:
+            files = [line.strip() for line in msg.splitlines() if line.startswith(("\t", "    "))]
+            raise GitError("커밋하지 않은 수정이 바꿀 브랜치와 겹쳐서 바꾸지 않았습니다. 그 파일을 커밋하거나 되돌린 뒤 "
+                           "다시 하세요." + (f"\n겹치는 파일: {', '.join(files[:5])}" if files else ""))
+        raise GitError(f"브랜치 바꾸기 실패: {msg}")
+    return current_branch(root) or name.split("/", 1)[-1]
+
+
+@dataclass
 class CommitInfo:
     sha: str
     short: str

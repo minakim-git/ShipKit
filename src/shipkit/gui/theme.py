@@ -633,6 +633,12 @@ QPushButton#chipAction {{
 }}
 QPushButton#chipAction:hover {{ background: {WARN_HOVER}; border-color: {WARN_HOVER_BORDER}; }}
 QPushButton#chipAction:disabled {{ color: {SUBTLE}; background: {HOVER}; border-color: {BORDER}; }}
+QPushButton#chipMenu {{
+    background: {SURFACE}; color: {MUTED}; border: 1px solid {BORDER}; border-radius: 12px;
+    min-height: 24px; max-height: 24px; padding: 0 10px; font-size: 9pt; font-weight: 600;
+}}
+QPushButton#chipMenu:hover {{ background: {HOVER}; color: {PRIMARY}; border-color: {BORDER_STRONG}; }}
+QPushButton#chipMenu:disabled {{ color: {SUBTLE}; background: {HOVER}; border-color: {BORDER}; }}
 QTableWidget:disabled {{ color: {MUTED}; background: {HEAD}; }}
 QPushButton#seg {{
     background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 15px; min-height: 28px;

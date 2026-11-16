@@ -13,7 +13,7 @@ from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtGui import QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QCheckBox, QComboBox, QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-    QListWidget, QListWidgetItem, QProgressBar, QPushButton, QScrollArea, QStackedWidget, QTableWidget,
+    QListWidget, QListWidgetItem, QMenu, QProgressBar, QPushButton, QScrollArea, QStackedWidget, QTableWidget,
     QTableWidgetItem, QTabWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -160,6 +160,12 @@ class DeployPage(QWidget):
         self.pull_btn.setToolTip("원격의 최신 커밋을 받습니다 (git pull --ff-only). 합치기(merge)는 하지 않습니다.")
         self.pull_btn.clicked.connect(self.pull)
         self.pull_btn.hide()
+        # '브랜치 develop' 배지 옆에 붙는 작은 메뉴 단추: 다른 브랜치로 checkout
+        self.branch_btn = button("바꾸기", "chipMenu")
+        theme.bind_icon(self.branch_btn, "chevron-down.svg", "MUTED", 14)
+        self.branch_btn.setToolTip("다른 브랜치로 바꿉니다 (git checkout). 합치기(merge)·stash 는 하지 않습니다.")
+        self.branch_btn.clicked.connect(self.show_branch_menu)
+        self.branch_btn.hide()
         self.recheck_btn = button("다시 점검", "ghost")
         theme.bind_icon(self.recheck_btn, "refresh.svg", "PRIMARY", 16)
         self.recheck_btn.clicked.connect(self.run_preflight)
@@ -598,8 +604,9 @@ class DeployPage(QWidget):
         self.ctx.runner.run(lambda: preflight.run(cfg, p), done, failed, quiet=True)
 
     def _show_checks(self, checks: List[preflight.Check]) -> None:
-        self.check_row.removeWidget(self.pull_btn)
-        self.pull_btn.hide()
+        for b in (self.pull_btn, self.branch_btn):
+            self.check_row.removeWidget(b)
+            b.hide()
         for chip in self.check_chips:
             self.check_row.removeWidget(chip)
             chip.hide()  # 지우기는 다음 이벤트 때 일어나므로 그 전에 가린다
@@ -613,6 +620,9 @@ class DeployPage(QWidget):
             if c.action == preflight.ACTION_PULL:
                 self.check_row.addWidget(self.pull_btn, 0, Qt.AlignmentFlag.AlignVCenter)
                 self.pull_btn.show()
+            elif c.action == preflight.ACTION_BRANCH:
+                self.check_row.addWidget(self.branch_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+                self.branch_btn.show()
         self.last_checks = checks
 
     def pull(self) -> None:
@@ -638,23 +648,85 @@ class DeployPage(QWidget):
             if not count:
                 self.ctx.dialogs.toast("이미 최신입니다.", "info")
                 return
-            self.load_commits()
-            self._refresh_since()
-            needs_build = p.mode == "sync" or any(r.build_dir for r in p.rules)
-            text = f"원격에서 커밋 {count}개를 받았습니다."
-            if needs_build:
-                text += "\n빌드가 필요한 프로젝트입니다. 다시 빌드(컴파일)한 뒤 미리보기를 하세요."
-            if self.prepared is not None:  # 받기 전에 만든 미리보기는 옛 내용이므로 다시 하게 한다
-                self._invalidate()
-                self.go_step(STEP_PICK)
-                text += "\n받기 전에 만든 미리보기는 지웠습니다."
-            self.ctx.dialogs.info("pull 받기", text)
+            self._repo_changed("pull 받기", f"원격에서 커밋 {count}개를 받았습니다.", "받기")
 
         def failed(msg: str) -> None:
             finish()
             self.ctx.dialogs.error("pull 받지 못했습니다", msg)
 
         self.ctx.runner.run(lambda: git_local.pull_ff(p.root), done, failed)
+
+    def show_branch_menu(self) -> None:
+        """점검 띠의 [바꾸기]: 로컬 브랜치와 원격에만 있는 브랜치를 보여 주고, 고르면 그 브랜치로 바꾼다."""
+        p = self.project
+        if p is None:
+            return
+        try:
+            branches = git_local.list_branches(p.root)
+        except git_local.GitError as e:
+            self.ctx.dialogs.error("브랜치 목록을 읽지 못했습니다", str(e))
+            return
+        others = [n for n in branches.local if n != branches.current] + branches.remote_only
+        if not others:
+            self.ctx.dialogs.toast("바꿀 다른 브랜치가 없습니다.", "info")
+            return
+        menu = QMenu(self)
+        for name in branches.local:
+            act = menu.addAction(name)
+            if name == branches.current:
+                act.setCheckable(True)
+                act.setChecked(True)
+                act.setEnabled(False)
+            else:
+                act.triggered.connect(lambda _=False, n=name: self.switch_branch(n))
+        if branches.remote_only:
+            menu.addSeparator()
+            menu.addAction("원격에만 있음 (고르면 같은 이름의 로컬 브랜치를 만듭니다)").setEnabled(False)
+            for name in branches.remote_only:
+                menu.addAction(name).triggered.connect(lambda _=False, n=name: self.switch_branch(n))
+        menu.exec(self.branch_btn.mapToGlobal(self.branch_btn.rect().bottomLeft()))
+
+    def switch_branch(self, name: str) -> None:
+        """다른 브랜치로 바꾼다 (git checkout). merge·stash 는 하지 않는다."""
+        p = self.project
+        if p is None:
+            return
+        dirty = next((c for c in self.last_checks if c.text.startswith("커밋 안 된 수정")), None)
+        if dirty and not self.ctx.dialogs.ask(
+                "브랜치 바꾸기", f"{dirty.text}가 있습니다.\n바꿀 브랜치와 겹치지 않으면 수정을 그대로 가지고 가고, "
+                                f"겹치면 아무것도 바꾸지 않고 멈춥니다.\n\n{name} 로 바꿀까요?"):
+            return
+        self.branch_btn.setEnabled(False)
+        self.branch_btn.setText("바꾸는 중…")
+
+        def finish() -> None:
+            self.branch_btn.setEnabled(True)
+            self.branch_btn.setText("바꾸기")
+            self.run_preflight()
+
+        def done(branch: str) -> None:
+            finish()
+            self._repo_changed("브랜치 바꾸기", f"브랜치를 {branch} 로 바꿨습니다.", "바꾸기")
+
+        def failed(msg: str) -> None:
+            finish()
+            self.ctx.dialogs.error("브랜치를 바꾸지 못했습니다", msg)
+
+        self.ctx.runner.run(lambda: git_local.switch_branch(p.root, name), done, failed)
+
+    def _repo_changed(self, title: str, text: str, verb: str) -> None:
+        """pull·브랜치 바꾸기로 작업 폴더가 바뀐 뒤: 커밋 목록을 다시 읽고, 빌드 안내와 옛 미리보기 정리를 알린다."""
+        p = self.project
+        had_preview = self.prepared is not None   # 목록을 다시 읽으면 표 신호로 미리보기가 먼저 지워지므로 미리 본다
+        self.load_commits()
+        self._refresh_since()
+        if p is not None and (p.mode == "sync" or any(r.build_dir for r in p.rules)):
+            text += "\n빌드가 필요한 프로젝트입니다. 다시 빌드(컴파일)한 뒤 미리보기를 하세요."
+        if had_preview:  # 바꾸기 전에 만든 미리보기는 옛 내용이므로 고르기 단계로 돌려 다시 하게 한다
+            self._invalidate()
+            self.go_step(STEP_PICK)
+            text += f"\n{verb} 전에 만든 미리보기는 지웠습니다."
+        self.ctx.dialogs.info(title, text)
 
     # ------------------------------------------------------------------ 상태
     def _invalidate(self, *_args) -> None:

@@ -1617,3 +1617,50 @@ def test_deploy_git_tab_commits_and_since_last(qapp, tmp_path, maven_project):
     d.preview()
     assert f"git diff {second[:9]}..HEAD" in d.summary_label.text()
     assert d.result_tree.topLevelItemCount() == 1 and third
+
+
+def test_deploy_switch_branch(qapp, tmp_path, maven_project):
+    """점검 띠의 [바꾸기]: 다른 브랜치로 checkout 하면 커밋 목록을 다시 읽고 옛 미리보기는 지운다.
+    커밋 안 한 수정이 있으면 먼저 묻고, 아니오면 그대로 둔다."""
+    from shipkit.gui.deploy_page import TAB_GIT
+    from shipkit.sources import git_local
+
+    def git(*args):
+        subprocess.run(["git", "-C", str(maven_project), "-c", "user.name=t", "-c", "user.email=t@t", *args],
+                       check=True, capture_output=True)
+
+    git("init", "-q", "-b", "main")
+    git("add", "-A")
+    git("commit", "-q", "-m", "first")
+    git("checkout", "-q", "-b", "feature")
+    write(maven_project / "src/main/webapp/js/new.js", "x")
+    git("add", "-A")
+    git("commit", "-q", "-m", "feature work")
+    git("checkout", "-q", "main")
+
+    dialogs = FakeDialogs()
+    w = make_window(_config(tmp_path, maven_project), dialogs)
+    d = w.deploy_page
+    assert d.last_checks[0].text == "브랜치 main" and d.branch_btn.isVisibleTo(d)
+    assert d.commit_table.rowCount() == 1
+    branches = git_local.list_branches(maven_project)
+    assert branches.current == "main" and branches.local == ["feature", "main"]
+
+    d.tabs.setCurrentIndex(TAB_GIT)
+    d.commit_table.item(0, 0).setCheckState(Qt.CheckState.Checked)
+    d.preview()
+    assert d.step == STEP_REVIEW and d.prepared is not None
+    d.switch_branch("feature")
+    assert git_local.current_branch(maven_project) == "feature"
+    assert d.last_checks[0].text == "브랜치 feature" and d.commit_table.rowCount() == 2
+    assert d.prepared is None and d.step == STEP_PICK
+    kind, title, text = dialogs.messages[-1]
+    assert title == "브랜치 바꾸기" and text.startswith("브랜치를 feature 로 바꿨습니다") and "미리보기는 지웠습니다" in text
+
+    write(maven_project / "pom.xml", "<project><!-- local edit --></project>")                      # 커밋 안 한 수정 -> 먼저 묻는다
+    d.run_preflight()
+    assert any(c.text.startswith("커밋 안 된 수정") for c in d.last_checks)
+    dialogs.answer = False
+    d.switch_branch("main")
+    assert dialogs.messages[-1][1] == "브랜치 바꾸기" and "main 로 바꿀까요?" in dialogs.messages[-1][2]
+    assert git_local.current_branch(maven_project) == "feature"

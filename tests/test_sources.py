@@ -172,3 +172,45 @@ def test_gitlab_errors_are_friendly():
     client, _ = _client({})
     with pytest.raises(GitLabError, match="!9"):
         client.get_merge_request("group/erp", 9)
+
+
+@pytest.mark.skipif(__import__("shutil").which("git") is None, reason="git 이 없습니다")
+def test_list_and_switch_branches(tmp_path):
+    """브랜치 목록(로컬·원격에만 있는 것)과 바꾸기: 원격에만 있는 브랜치는 추적하는 로컬 브랜치를 만들고,
+    커밋 안 한 수정이 바꿀 브랜치와 겹치면 아무것도 바꾸지 않는다."""
+    from shipkit.sources import git_local
+    origin = tmp_path / "origin.git"
+    origin.mkdir()
+    _git(origin, "init", "-q", "--bare", "-b", "main")
+    root = tmp_path / "repo"
+    root.mkdir()
+    _git(root, "init", "-q", "-b", "main")
+    (root / "a.txt").write_text("a")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "first")
+    _git(root, "remote", "add", "origin", str(origin))
+    _git(root, "push", "-q", "-u", "origin", "main")
+    _git(root, "checkout", "-q", "-b", "hotfix")                     # 원격에만 남길 브랜치
+    (root / "a.txt").write_text("hot")
+    _git(root, "commit", "-q", "-am", "hot")
+    _git(root, "push", "-q", "origin", "hotfix")
+    _git(root, "checkout", "-q", "main")
+    _git(root, "branch", "-q", "-D", "hotfix")
+    _git(root, "checkout", "-q", "-b", "feature")                    # 로컬에만 있는 브랜치
+    (root / "b.txt").write_text("b")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "feat")
+    _git(root, "checkout", "-q", "main")
+
+    b = git_local.list_branches(root)
+    assert b.current == "main" and b.local == ["feature", "main"] and b.remote_only == ["origin/hotfix"]
+    assert git_local.switch_branch(root, "feature") == "feature" and (root / "b.txt").is_file()
+    assert git_local.switch_branch(root, "origin/hotfix") == "hotfix" and (root / "a.txt").read_text() == "hot"
+    assert git_local.list_branches(root).remote_only == []
+    assert git_local.branch_status(root).upstream == "origin/hotfix"
+    (root / "a.txt").write_text("dirty")                             # main 과 내용이 다른 파일을 수정
+    with pytest.raises(git_local.GitError, match="겹쳐서"):
+        git_local.switch_branch(root, "main")
+    assert git_local.current_branch(root) == "hotfix" and (root / "a.txt").read_text() == "dirty"
+    with pytest.raises(git_local.GitError, match="없습니다"):
+        git_local.switch_branch(root, "nope")
