@@ -23,7 +23,7 @@ from shipkit import history, notify, remote
 from shipkit.config import ProjectConfig, ServerProfile
 from shipkit.gui import theme
 from shipkit.gui.context import AppContext
-from shipkit.gui.widgets import Card, Chip, button, label
+from shipkit.gui.widgets import Chip, Section, button, label
 from shipkit.secrets import SecretError, delete_secret, get_secret, server_secret_key, set_secret
 
 HOOK_TEXT = {"pre_apply": "반영 전", "post_apply": "반영 후", "post_rollback": "되돌린 후"}
@@ -224,14 +224,14 @@ class RemoteClient:
 _STAGE_LINE = re.compile(r"^\$ (.+)$")   # remote.py 가 단계마다 찍는 "$ …" 줄
 
 
-class RemotePanel(Card):
-    """배포 완료 화면의 '서버에 바로 반영' 카드."""
+class RemotePanel(Section):
+    """배포 완료 화면의 '서버에 바로 반영' 구역 (접을 수 있다)."""
     settings_requested = Signal()  # 서버가 없을 때 [서버 등록하러 가기]
 
     def __init__(self, ctx: AppContext):
         self.server_combo = QComboBox()
         self.server_combo.setMinimumWidth(220)
-        super().__init__("서버에 바로 반영", right=self.server_combo, collapsible=True)
+        super().__init__("서버에 바로 반영", right=self.server_combo, rule=True, collapsible=True)
         self.ctx = ctx
         self.client = RemoteClient(ctx)
         self.result = None                 # 방금 만든 패키지 (PackageResult)
@@ -307,7 +307,7 @@ class RemotePanel(Card):
         check_col.setContentsMargins(0, 0, 0, 0)
         check_col.setSpacing(6)
         self.check_tree = QTreeWidget()
-        self.check_tree.setObjectName("checkTree")
+        self.check_tree.setObjectName("boxed")   # 평평한 구역 안이라 표 자체에 테두리
         self.check_tree.setHeaderLabels(["상태", "파일 (서버 배포 경로 기준)"])
         self.check_tree.setRootIsDecorated(True)
         self.check_tree.setMaximumHeight(240)

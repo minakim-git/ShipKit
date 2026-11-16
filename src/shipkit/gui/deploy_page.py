@@ -24,7 +24,7 @@ from shipkit.gui.context import AppContext
 from shipkit.gui.remote_panel import RemotePanel
 from shipkit.gui.report_view import show_report
 from shipkit.gui.widgets import (
-    Card, Chip, CommandRow, DropFileList, ElidedLabel, LiveLineEdit, StatusDelegate, Stepper, button, label, open_path,
+    Chip, CommandRow, DropFileList, ElidedLabel, LiveLineEdit, Section, StatusDelegate, Stepper, button, label, open_path,
 )
 from shipkit.models import FileChange, SourceInfo, Status
 from shipkit.sources import git_local, providers
@@ -394,8 +394,8 @@ class DeployPage(QWidget):
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
-        # 결과는 한 줄짜리 머리로 짧게 (제목·개수 배지 한 줄, 경로 한 줄). 화면의 중심은 아래 '서버에 바로 반영' 카드
-        card = Card(padding=16)
+        # 결과는 한 줄짜리 머리로 짧게 (제목·개수 배지 한 줄, 경로 한 줄). 화면의 중심은 아래 '서버에 바로 반영' 구역
+        card = Section()
         top = QHBoxLayout()
         top.setSpacing(12)
         icon = QLabel()
@@ -420,8 +420,8 @@ class DeployPage(QWidget):
         # 서버에 바로 올리고 반영 (서버 연결을 등록한 프로젝트)
         self.remote_panel = RemotePanel(self.ctx)
 
-        # 서버 연결을 등록했으면 이 카드는 접어 두고, 없으면 바로 반영 카드를 접어 둔다 (한 화면에 들어오게)
-        manual = Card("직접 반영할 때 (서버에서 실행할 명령)", collapsible=True)
+        # 서버 연결을 등록했으면 이 구역은 접어 두고, 없으면 바로 반영 구역을 접어 둔다 (한 화면에 들어오게)
+        manual = Section("직접 반영할 때 (서버에서 실행할 명령)", collapsible=True, rule=True)
         self.manual_card = manual
         self.upload_label = label("", "muted")
         manual.body.addWidget(self.upload_label)
@@ -433,8 +433,8 @@ class DeployPage(QWidget):
 
         content = QWidget()
         stack = QVBoxLayout(content)
-        stack.setContentsMargins(0, 0, 6, 0)
-        stack.setSpacing(12)
+        stack.setContentsMargins(0, 2, 6, 4)
+        stack.setSpacing(18)
         stack.addWidget(card)            # 결과
         stack.addWidget(self.remote_panel)  # 바로 반영
         stack.addWidget(manual)          # 직접 반영

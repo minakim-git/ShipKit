@@ -198,18 +198,25 @@ class Banner(QFrame):
 
 class Section(QWidget):
     """카드 대신 쓰는 평평한 구역: 제목 한 줄(선택) 아래 내용. 테두리 없이 여백과 가는 선(rule)으로 구역을 나눈다.
-    설정 폼처럼 한 탭에 구역이 여럿일 때 상자가 겹겹이 쌓이지 않게."""
+    설정 폼처럼 한 탭에 구역이 여럿일 때 상자가 겹겹이 쌓이지 않게.
 
-    def __init__(self, title: str = "", subtitle: str = "", right: Optional[QWidget] = None, rule: bool = False):
+    collapsible=True 면 머리에 접기 단추가 생기고, set_collapsed() 로 내용(section.content)을 숨길 수 있다.
+    """
+
+    def __init__(self, title: str = "", subtitle: str = "", right: Optional[QWidget] = None, rule: bool = False,
+                 collapsible: bool = False):
         super().__init__()
+        self.collapsed = False
+        self.toggle_btn: Optional[QPushButton] = None
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(10)
         if rule:
             outer.addWidget(divider())
             outer.addSpacing(6)
-        if title or right:
-            head = QHBoxLayout()
+        if title or right or collapsible:
+            head_widget = _ClickableHead(self.toggle if collapsible else None)
+            head = QHBoxLayout(head_widget)
             head.setContentsMargins(0, 0, 0, 0)
             texts = QVBoxLayout()
             texts.setSpacing(2)
@@ -220,11 +227,33 @@ class Section(QWidget):
             head.addLayout(texts, 1)
             if right is not None:
                 head.addWidget(right, 0, Qt.AlignmentFlag.AlignTop)
-            outer.addLayout(head)
-        self.body = QVBoxLayout()
+            if collapsible:
+                self.toggle_btn = button("", "ghost")
+                self.toggle_btn.setFixedSize(28, 28)
+                self.toggle_btn.setToolTip("접기 / 펼치기")
+                self.toggle_btn.clicked.connect(self.toggle)
+                head.addWidget(self.toggle_btn, 0, Qt.AlignmentFlag.AlignTop)
+                theme.on_change(self._refresh_toggle_icon)
+                self._refresh_toggle_icon()
+            outer.addWidget(head_widget)
+        self.content = QWidget()
+        self.body = QVBoxLayout(self.content)
         self.body.setContentsMargins(0, 0, 0, 0)
         self.body.setSpacing(8)
-        outer.addLayout(self.body)
+        outer.addWidget(self.content, 1)
+
+    def set_collapsed(self, collapsed: bool) -> None:
+        self.collapsed = collapsed
+        self.content.setVisible(not collapsed)
+        self._refresh_toggle_icon()
+
+    def toggle(self) -> None:
+        self.set_collapsed(not self.collapsed)
+
+    def _refresh_toggle_icon(self) -> None:
+        if self.toggle_btn is not None:
+            name = "chevron-right.svg" if self.collapsed else "chevron-down.svg"
+            self.toggle_btn.setIcon(theme.svg_icon(name, "MUTED", 16))
 
 
 def page_header(title: str, subtitle: str, right: Optional[QWidget] = None) -> QWidget:
