@@ -1235,6 +1235,19 @@ def test_terminal_view(qapp):
     sent.clear()
     t.keyPressEvent(QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_C, Qt.KeyboardModifier.ControlModifier, ""))
     assert sent == [b"\x03"]                                                       # Ctrl+C 는 셸로 (복사는 Ctrl+Shift+C)
+    sent.clear()                                                                   # Tab·Shift+Tab 은 포커스 이동이 아니라 셸로 (자동 완성)
+    assert QApplication.sendEvent(t, QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_Tab, Qt.KeyboardModifier.NoModifier, "\t"))
+    assert QApplication.sendEvent(t, QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_Backtab, Qt.KeyboardModifier.ShiftModifier, ""))
+    assert sent == [b"\t", b"\x1b[Z"] and t.hasFocus()
+    sent.clear()                                                                   # vim 처럼 응용 커서 모드를 켜면 방향키는 ESC O A
+    t.feed(b"\x1b[?1h")
+    t.keyPressEvent(QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_Up, Qt.KeyboardModifier.NoModifier, ""))
+    t.keyPressEvent(QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_Left, Qt.KeyboardModifier.ControlModifier, ""))   # 수식키는 xterm 식
+    t.feed(b"\x1b[?1l")
+    t.keyPressEvent(QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_Up, Qt.KeyboardModifier.NoModifier, ""))
+    t.keyPressEvent(QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_Delete, Qt.KeyboardModifier.NoModifier, ""))
+    t.keyPressEvent(QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_Delete, Qt.KeyboardModifier.ShiftModifier, ""))
+    assert sent == [b"\x1bOA", b"\x1b[1;5D", b"\x1b[A", b"\x1b[3~", b"\x1b[3;2~"], sent
     sent.clear()
     event = QInputMethodEvent()                                                    # 한글 입력기: 조합이 끝난 글자
     event.setCommitString("한")

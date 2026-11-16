@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Optional, Tuple
 
 import pyte
-from PySide6.QtCore import QRect, QSize, Qt, Signal
+from PySide6.QtCore import QEvent, QRect, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetricsF, QGuiApplication, QPainter
 from PySide6.QtWidgets import QMenu, QWidget
 
@@ -32,13 +32,41 @@ PALETTE = {
 # 키 → 서버로 보낼 바이트 (xterm)
 _KEYS = {
     Qt.Key.Key_Return: b"\r", Qt.Key.Key_Enter: b"\r", Qt.Key.Key_Backspace: b"\x7f", Qt.Key.Key_Tab: b"\t",
-    Qt.Key.Key_Escape: b"\x1b", Qt.Key.Key_Up: b"\x1b[A", Qt.Key.Key_Down: b"\x1b[B", Qt.Key.Key_Right: b"\x1b[C",
-    Qt.Key.Key_Left: b"\x1b[D", Qt.Key.Key_Home: b"\x1b[H", Qt.Key.Key_End: b"\x1b[F", Qt.Key.Key_Insert: b"\x1b[2~",
-    Qt.Key.Key_Delete: b"\x1b[3~", Qt.Key.Key_PageUp: b"\x1b[5~", Qt.Key.Key_PageDown: b"\x1b[6~",
+    Qt.Key.Key_Backtab: b"\x1b[Z", Qt.Key.Key_Escape: b"\x1b",
     Qt.Key.Key_F1: b"\x1bOP", Qt.Key.Key_F2: b"\x1bOQ", Qt.Key.Key_F3: b"\x1bOR", Qt.Key.Key_F4: b"\x1bOS",
     Qt.Key.Key_F5: b"\x1b[15~", Qt.Key.Key_F6: b"\x1b[17~", Qt.Key.Key_F7: b"\x1b[18~", Qt.Key.Key_F8: b"\x1b[19~",
     Qt.Key.Key_F9: b"\x1b[20~", Qt.Key.Key_F10: b"\x1b[21~", Qt.Key.Key_F11: b"\x1b[23~", Qt.Key.Key_F12: b"\x1b[24~",
 }
+# 커서 키: 보통은 CSI(ESC [ A), 프로그램이 응용 커서 모드(DECCKM, ESC [ ? 1 h — vim·less 등)를 켜면 SS3(ESC O A).
+# 수식키가 붙으면 xterm 식 ESC [ 1 ; m A (m: 2=Shift 3=Alt 5=Ctrl, 합치면 더함). Ctrl+←/→ 는 bash 에서 낱말 단위 이동
+_CURSOR_KEYS = {Qt.Key.Key_Up: b"A", Qt.Key.Key_Down: b"B", Qt.Key.Key_Right: b"C", Qt.Key.Key_Left: b"D",
+                Qt.Key.Key_Home: b"H", Qt.Key.Key_End: b"F"}
+_TILDE_KEYS = {Qt.Key.Key_Insert: b"2", Qt.Key.Key_Delete: b"3", Qt.Key.Key_PageUp: b"5", Qt.Key.Key_PageDown: b"6"}
+DECCKM = 1 << 5     # pyte 는 private 모드를 번호 << 5 로 screen.mode 에 둔다
+
+
+def _modifier_param(mods) -> int:
+    m = 1
+    if mods & Qt.KeyboardModifier.ShiftModifier:
+        m += 1
+    if mods & Qt.KeyboardModifier.AltModifier:
+        m += 2
+    if mods & Qt.KeyboardModifier.ControlModifier:
+        m += 4
+    return m
+
+
+def key_sequence(key, mods, app_cursor: bool) -> Optional[bytes]:
+    """특수 키 → 서버로 보낼 바이트. 모르는 키면 None."""
+    if key in _CURSOR_KEYS:
+        m = _modifier_param(mods)
+        if m > 1:
+            return b"\x1b[1;" + str(m).encode() + _CURSOR_KEYS[key]
+        return (b"\x1bO" if app_cursor else b"\x1b[") + _CURSOR_KEYS[key]
+    if key in _TILDE_KEYS:
+        m = _modifier_param(mods)
+        return b"\x1b[" + _TILDE_KEYS[key] + (b";" + str(m).encode() if m > 1 else b"") + b"~"
+    return _KEYS.get(key)
 
 
 def _color(value: str, fallback: str) -> QColor:
@@ -122,6 +150,13 @@ class TerminalView(QWidget):
         if data:
             self.input_bytes.emit(data)
 
+    def event(self, e) -> bool:  # noqa: N802
+        """Tab·Shift+Tab 은 Qt 가 포커스 이동에 쓰므로 keyPressEvent 까지 오지 않는다. 여기서 가로채 서버로 보낸다 (자동 완성)."""
+        if e.type() == QEvent.Type.KeyPress and e.key() in (Qt.Key.Key_Tab, Qt.Key.Key_Backtab):
+            self.keyPressEvent(e)
+            return True
+        return super().event(e)
+
     def keyPressEvent(self, event) -> None:  # noqa: N802
         key, mods, text = event.key(), event.modifiers(), event.text()
         ctrl = bool(mods & Qt.KeyboardModifier.ControlModifier)
@@ -140,8 +175,9 @@ class TerminalView(QWidget):
             self.screen.next_page()
             self.update()
             return
-        if key in _KEYS:
-            self.send(_KEYS[key])
+        seq = key_sequence(key, mods, DECCKM in self.screen.mode)
+        if seq is not None:
+            self.send(seq)
             self._scroll_to_bottom()
             return
         if ctrl and Qt.Key.Key_A <= key <= Qt.Key.Key_Z:
