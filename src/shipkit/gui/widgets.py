@@ -196,6 +196,37 @@ class Banner(QFrame):
         self.layout_.addWidget(self.text, 1)
 
 
+class Section(QWidget):
+    """카드 대신 쓰는 평평한 구역: 제목 한 줄(선택) 아래 내용. 테두리 없이 여백과 가는 선(rule)으로 구역을 나눈다.
+    설정 폼처럼 한 탭에 구역이 여럿일 때 상자가 겹겹이 쌓이지 않게."""
+
+    def __init__(self, title: str = "", subtitle: str = "", right: Optional[QWidget] = None, rule: bool = False):
+        super().__init__()
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(10)
+        if rule:
+            outer.addWidget(divider())
+            outer.addSpacing(6)
+        if title or right:
+            head = QHBoxLayout()
+            head.setContentsMargins(0, 0, 0, 0)
+            texts = QVBoxLayout()
+            texts.setSpacing(2)
+            if title:
+                texts.addWidget(label(title, "sectionTitle"))
+            if subtitle:
+                texts.addWidget(label(subtitle, "muted"))
+            head.addLayout(texts, 1)
+            if right is not None:
+                head.addWidget(right, 0, Qt.AlignmentFlag.AlignTop)
+            outer.addLayout(head)
+        self.body = QVBoxLayout()
+        self.body.setContentsMargins(0, 0, 0, 0)
+        self.body.setSpacing(8)
+        outer.addLayout(self.body)
+
+
 def page_header(title: str, subtitle: str, right: Optional[QWidget] = None) -> QWidget:
     w = QWidget()
     layout = QHBoxLayout(w)

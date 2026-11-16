@@ -109,6 +109,7 @@ class TerminalView(QWidget):
         font.setFamilies(MONO)
         font.setPointSizeF(10 * theme.FONT_SCALE)
         font.setFixedPitch(True)
+        font.setHintingPreference(QFont.HintingPreference.PreferDefaultHinting)   # 앱 글꼴(힌팅 끔)과 달리 고정폭은 기본 힌팅으로 또렷하게
         self.setFont(font)
         fm = QFontMetricsF(font)
         self.cell_w = max(fm.horizontalAdvance("M"), 1.0)

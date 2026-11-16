@@ -17,7 +17,7 @@ from shipkit.config import NOTIFY_LABELS, ConfigError, ServerProfile, parse_serv
 from shipkit.gui.context import AppContext
 from shipkit.gui.project_widgets import form_layout as _form
 from shipkit.gui.remote_panel import RemoteClient
-from shipkit.gui.widgets import Card, PathField, button, label, mark_invalid
+from shipkit.gui.widgets import PathField, Section, button, label, mark_invalid
 
 
 class ServersTab(QWidget):
@@ -50,9 +50,9 @@ class ServersTab(QWidget):
 
     def _build(self) -> None:
         col = QVBoxLayout(self)
-        col.setContentsMargins(0, 4, 6, 4)
-        col.setSpacing(14)
-        card = Card("서버 연결")
+        col.setContentsMargins(0, 6, 6, 4)
+        col.setSpacing(18)
+        card = Section()                 # 탭 이름이 곧 제목
         self.note = label("", "muted")
         card.body.addWidget(self.note)
         split = QHBoxLayout()
@@ -98,7 +98,7 @@ class ServersTab(QWidget):
         self.srv_upload = QLineEdit()
         self.srv_upload.setPlaceholderText("~/deploy   (이 아래에 날짜 폴더로 올립니다)")
         self.srv_mode = QComboBox()
-        self.srv_mode.addItem("접속한 계정 그대로", "")
+        self.srv_mode.addItem("접속한 계정으로 실행", "")
         self.srv_mode.addItem("다른 계정으로 실행", "other")
         self.srv_run_as = QLineEdit()
         self.srv_run_as.setPlaceholderText("서버 스크립트를 실행할 계정")

@@ -1238,7 +1238,7 @@ def test_terminal_view(qapp):
     sent.clear()                                                                   # Tab·Shift+Tab 은 포커스 이동이 아니라 셸로 (자동 완성)
     assert QApplication.sendEvent(t, QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_Tab, Qt.KeyboardModifier.NoModifier, "\t"))
     assert QApplication.sendEvent(t, QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_Backtab, Qt.KeyboardModifier.ShiftModifier, ""))
-    assert sent == [b"\t", b"\x1b[Z"] and t.hasFocus()
+    assert sent == [b"\t", b"\x1b[Z"]                                             # (포커스는 창이 활성일 때만 확인되므로 보지 않는다)
     sent.clear()                                                                   # vim 처럼 응용 커서 모드를 켜면 방향키는 ESC O A
     t.feed(b"\x1b[?1h")
     t.keyPressEvent(QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_Up, Qt.KeyboardModifier.NoModifier, ""))

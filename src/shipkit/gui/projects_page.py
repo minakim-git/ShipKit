@@ -27,7 +27,7 @@ from shipkit.gui.context import AppContext
 from shipkit.gui.deploy_page import STATUS_TEXT, STATUS_TONE
 from shipkit.gui.project_widgets import INHERIT, LineList, OverrideBox, ProjectDialog, RowTable, form_layout
 from shipkit.gui.servers_tab import ServersTab
-from shipkit.gui.widgets import Card, Chip, PathField, StatusDelegate, button, label, mark_invalid, page_header
+from shipkit.gui.widgets import Chip, PathField, Section, StatusDelegate, button, label, mark_invalid, page_header
 from shipkit.models import Status
 from shipkit.workflow import InputError
 
@@ -124,8 +124,8 @@ class ProjectsPage(QWidget):
     def _column(self) -> Tuple[QWidget, QVBoxLayout]:
         w = QWidget()
         col = QVBoxLayout(w)
-        col.setContentsMargins(0, 4, 6, 4)
-        col.setSpacing(14)
+        col.setContentsMargins(0, 6, 6, 4)
+        col.setSpacing(18)
         return w, col
 
     def _empty_view(self) -> QWidget:
@@ -181,7 +181,7 @@ class ProjectsPage(QWidget):
     # ------------------------------------------------------------------ 탭: 기본
     def _basic_tab(self) -> QWidget:
         w, col = self._column()
-        card = Card("기본")
+        card = Section()                 # 탭 이름이 곧 제목이라 구역 제목은 없다
         form = _form()
         self.name_edit = QLineEdit()
         self.root_field = PathField(placeholder="로컬 git 저장소 최상위 폴더")
@@ -206,7 +206,7 @@ class ProjectsPage(QWidget):
         self._watch(self.name_edit, self.root_field, self.output_field, self.os_combo, self.server_edit,
                     self.gitlab_edit, self.github_edit, self.package_name_edit)
 
-        danger = Card("프로젝트 지우기")
+        danger = Section("프로젝트 지우기", rule=True)
         delete = button("이 프로젝트 지우기", "danger")
         delete.clicked.connect(self.delete_project)
         row = QHBoxLayout()
@@ -220,7 +220,7 @@ class ProjectsPage(QWidget):
     # ------------------------------------------------------------------ 탭: 반영 규칙
     def _rules_tab(self) -> QWidget:
         w, col = self._column()
-        card = Card("배포 방식")
+        card = Section("배포 방식")
         form = _form()
         self.preset_combo = QComboBox()
         self.preset_combo.addItem(INHERIT, "")
@@ -238,7 +238,7 @@ class ProjectsPage(QWidget):
 
         self.mode_stack = QStackedWidget()
         # changes: 규칙 표
-        changes = Card("반영 규칙")
+        changes = Section("반영 규칙", rule=True)
         self.rules_override = OverrideBox("반영 규칙")
         self.rules_override.toggled.connect(self._rules_toggled)
         self.rules_table = RowTable([("src", "소스 폴더"), ("dest", "서버 위치"), ("build_dir", "빌드 결과 폴더")],
@@ -252,7 +252,7 @@ class ProjectsPage(QWidget):
         changes.body.addLayout(mod_form)
         self._watch(self.rules_table, self.modules_edit)
         # sync: 빌드 폴더
-        sync = Card("빌드 결과 동기화")
+        sync = Section("빌드 결과 동기화", rule=True)
         sync_form = _form()
         self.build_dir_edit = QLineEdit()
         self.dest_edit = QLineEdit()
@@ -267,7 +267,7 @@ class ProjectsPage(QWidget):
         col.addWidget(self.mode_stack)
 
         # 경로 시험
-        test = Card("경로 시험")
+        test = Section("경로 시험", rule=True)
         self.test_input = LineList("예: src/main/java/com/acme/UserController.java\n"
                                    "    src/main/webapp/WEB-INF/jsp/user/list.jsp\n"
                                    "    D\tsrc/main/webapp/old.jsp   (앞에 D 와 탭이면 삭제)", height=84)
@@ -308,7 +308,7 @@ class ProjectsPage(QWidget):
     # ------------------------------------------------------------------ 탭: 서버 명령
     def _hooks_tab(self) -> QWidget:
         w, col = self._column()
-        card = Card("서버 명령 (선택)")
+        card = Section("서버 명령 (선택)")
         self.hooks_override = OverrideBox("서버 명령")
         self.hooks_override.toggled.connect(self._hooks_toggled)
         card.body.addWidget(self.hooks_override)
@@ -328,7 +328,7 @@ class ProjectsPage(QWidget):
             self._watch(table)
         col.addWidget(card)
 
-        self.server_card = Card("새로 생기는 파일의 소유자·권한 (선택, 리눅스 서버)")
+        self.server_card = Section("새로 생기는 파일의 소유자·권한 (선택, 리눅스 서버)", rule=True)
         form = _form()
         self.owner_edit = QLineEdit()
         self.file_mode_edit = QLineEdit()
@@ -364,14 +364,14 @@ class ProjectsPage(QWidget):
     # ------------------------------------------------------------------ 탭: 제외·알림
     def _filters_tab(self) -> QWidget:
         w, col = self._column()
-        exclude = Card("배포에서 뺄 파일")
+        exclude = Section("배포에서 뺄 파일")
         self.exclude_inherited = label("", "muted")
         self.exclude_list = LineList("docs/**")
         exclude.body.addWidget(self.exclude_inherited)
         exclude.body.addWidget(self.exclude_list)
         col.addWidget(exclude)
 
-        sensitive = Card("민감 파일")
+        sensitive = Section("민감 파일", rule=True)
         self.deny_inherited = label("", "muted")
         sensitive.body.addWidget(self.deny_inherited)
         lists = QHBoxLayout()
@@ -387,7 +387,7 @@ class ProjectsPage(QWidget):
         sensitive.body.addLayout(lists)
         col.addWidget(sensitive)
 
-        notices = Card("알림")
+        notices = Section("알림", rule=True)
         self.notices_inherited = label("", "muted")
         self.notices_table = RowTable([("pattern", "파일 패턴"), ("message", "알림 내용")], stretch=1, height=112)
         self.notices_table.table.setColumnWidth(0, 220)

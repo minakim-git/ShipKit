@@ -280,6 +280,9 @@ def app_font() -> QFont:
     font = QFont()
     font.setFamilies(["Pretendard", "Segoe UI Variable Text", "Segoe UI", "Malgun Gothic"])
     font.setPointSizeF(10 * FONT_SCALE)
+    # 세로 힌팅을 끈다: Windows(DirectWrite) 에서 100% 배율일 때 Pretendard 의 가는 가로획이 힌팅에 눌려 사라져
+    # "그" 가 "ㄱ" 처럼 보였다. 스타일시트로 만든 글꼴도 이 설정을 물려받는다
+    font.setHintingPreference(QFont.HintingPreference.PreferNoHinting)
     return font
 
 
@@ -516,6 +519,7 @@ QComboBox#projectSwitcher QAbstractItemView {{ padding: 4px; }}
 QLabel#pageTitle {{ font-size: 15pt; font-weight: 600; }}
 QLabel#pageSubtitle {{ color: {MUTED}; }}
 QLabel#cardTitle {{ font-size: 10.5pt; font-weight: 600; }}
+QLabel#sectionTitle {{ font-size: 10.5pt; font-weight: 600; }}
 QLabel#muted {{ color: {MUTED}; }}
 QLabel#fieldLabel {{ color: {LABEL}; font-weight: 500; }}
 QLabel#chip {{ border-radius: 10px; padding: 2px 8px; font-size: 8.5pt; font-weight: 600; }}
