@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 from shipkit import PROJECT_FILE
 from shipkit.config import PRESETS, ConfigError, load_project_file
 from shipkit.gui import theme
-from shipkit.gui.widgets import Card, PathField, button, label
+from shipkit.gui.widgets import PathField, Section, button, label
 from shipkit.projectfile import detect_preset
 
 INHERIT = "(따름)"
@@ -231,7 +231,7 @@ class ProjectDialog(QDialog):
             form.addRow(label(text, "fieldLabel", wrap=False), widget)
 
         self.project_file_label = label("", "muted")
-        card = Card("새 프로젝트", "반영 규칙·서버 명령 같은 자세한 설정은 추가한 뒤 프로젝트 화면에서 바꿉니다.")
+        card = Section("새 프로젝트", "반영 규칙·서버 명령 같은 자세한 설정은 추가한 뒤 프로젝트 화면에서 바꿉니다.")
         card.body.addLayout(form)
         card.body.addWidget(self.project_file_label)
 
@@ -246,8 +246,8 @@ class ProjectDialog(QDialog):
         buttons.addWidget(save)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(14)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(18)
         layout.addWidget(card)
         layout.addLayout(buttons)
         self._show_project_file()
