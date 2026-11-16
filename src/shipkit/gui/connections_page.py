@@ -10,7 +10,7 @@ from PySide6.QtWidgets import QCheckBox, QFormLayout, QHBoxLayout, QLineEdit, QS
 from shipkit import config_store
 from shipkit.config import GITHUB_API_URL, ConfigError, GitHubConfig, GitLabConfig
 from shipkit.gui.context import AppContext
-from shipkit.gui.widgets import Card, Chip, PathField, button, label, mark_invalid, page_header
+from shipkit.gui.widgets import Chip, PathField, Section, button, label, mark_invalid, page_header
 from shipkit.secrets import SecretError, delete_token, get_token, set_token, token_source
 from shipkit.sources.github import GitHubClient
 from shipkit.sources.gitlab import GitLabClient
@@ -24,14 +24,15 @@ def _form() -> QFormLayout:
     return form
 
 
-class ServiceBox(Card):
-    """GitLab 또는 GitHub 연결 설정 카드."""
+class ServiceBox(Section):
+    """GitLab 또는 GitHub 연결 설정 구역 (제목 오른쪽에 사용 스위치)."""
 
-    def __init__(self, page: "ConnectionsPage", key: str, title: str, url_hint: str, default_url: str = ""):
+    def __init__(self, page: "ConnectionsPage", key: str, title: str, url_hint: str, default_url: str = "",
+                 rule: bool = False):
         self.enabled = QCheckBox("사용")
         self.enabled.setObjectName("switch")
         self.enabled.setCursor(Qt.CursorShape.PointingHandCursor)
-        super().__init__(title, right=self.enabled)
+        super().__init__(title, right=self.enabled, rule=rule)
         self.page, self.key, self.default_url = page, key, default_url
         self.url = QLineEdit()
         self.url.textChanged.connect(self._check_url)
@@ -193,11 +194,11 @@ class ConnectionsPage(QWidget):
 
         content = QWidget()
         layout = QVBoxLayout(content)
-        layout.setContentsMargins(0, 0, 6, 0)
-        layout.setSpacing(14)
+        layout.setContentsMargins(0, 6, 6, 0)
+        layout.setSpacing(18)
         self.gitlab = ServiceBox(self, "gitlab", "GitLab", "예: https://gitlab.example.com")
         self.github = ServiceBox(self, "github", "GitHub",
-                                 f"비우면 {GITHUB_API_URL}  (Enterprise 는 https://<호스트>/api/v3)", GITHUB_API_URL)
+                                 f"비우면 {GITHUB_API_URL}  (Enterprise 는 https://<호스트>/api/v3)", GITHUB_API_URL, rule=True)
         layout.addWidget(self.gitlab)
         layout.addWidget(self.github)
         layout.addStretch(1)
