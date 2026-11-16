@@ -18,7 +18,7 @@ from shipkit.gui import diagnostics, theme
 from shipkit.gui.context import AppContext
 from shipkit.gui.guide_view import show_guide
 from shipkit.gui.widgets import (
-    Card, Chip, ElidedLabel, MessageDialog, PathField, button, label, open_location, open_path, page_header,
+    Chip, ElidedLabel, MessageDialog, PathField, Section, button, label, open_location, open_path, page_header,
 )
 
 
@@ -47,10 +47,10 @@ class SettingsPage(QWidget):
 
         content = QWidget()
         layout = QVBoxLayout(content)
-        layout.setContentsMargins(0, 0, 6, 0)
-        layout.setSpacing(14)
+        layout.setContentsMargins(0, 6, 6, 4)
+        layout.setSpacing(18)
 
-        look = Card("화면")
+        look = Section("화면")
         def seg_row(caption, items, handler, with_swatch):
             row = QHBoxLayout()
             row.setSpacing(6)
@@ -90,7 +90,7 @@ class SettingsPage(QWidget):
         look.body.addLayout(size_row)
         layout.addWidget(look)
 
-        defaults = Card("패키지 기본값")
+        defaults = Section("패키지 기본값", rule=True)
         form = _form()
         self.output_field = PathField(placeholder="예: D:/deploy/{project}   ({project} = 프로젝트 이름)")
         self.package_name = QLineEdit()
@@ -101,7 +101,7 @@ class SettingsPage(QWidget):
         layout.addWidget(defaults)
 
         self.file_chip = Chip("", "neutral")
-        files = Card("설정 파일", right=self.file_chip)
+        files = Section("설정 파일", right=self.file_chip, rule=True)
         self.path_label = ElidedLabel("code")   # 경로가 길어도(글자를 키워도) 카드 폭을 밀어내지 않게 가운데를 줄인다
         files.body.addWidget(self.path_label)
         row = QHBoxLayout()
@@ -126,7 +126,7 @@ class SettingsPage(QWidget):
                                    "토큰·비밀번호는 파일에 들어가지 않으니 가져온 뒤 연결 화면에서 다시 저장하세요.", "muted"))
         layout.addWidget(files)
 
-        start = Card("시작하기")
+        start = Section("시작하기", rule=True)
         row = QHBoxLayout()
         setup = button("처음 실행 안내 다시 보기")
         setup.clicked.connect(self.setup_requested.emit)
@@ -138,7 +138,7 @@ class SettingsPage(QWidget):
         start.body.addLayout(row)
         layout.addWidget(start)
 
-        updates = Card("새 버전 확인")
+        updates = Section("새 버전 확인", rule=True)
         form = _form()
         self.update_location = QLineEdit()
         self.update_location.setPlaceholderText("version.txt 가 있는 공유 폴더(예: \\\\fileserver\\tools\\ShipKit) 또는 URL. 비우면 확인하지 않음")
@@ -152,7 +152,7 @@ class SettingsPage(QWidget):
         updates.body.addLayout(form)
         layout.addWidget(updates)
 
-        about = Card("정보")
+        about = Section("정보", rule=True)
         about.body.addWidget(label(f"<b>{__app_name__}</b>  v{__version__}  ·  {__tagline__}", "muted"))
         row = QHBoxLayout()
         guide = button("사용자 가이드")
