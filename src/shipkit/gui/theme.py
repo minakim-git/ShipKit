@@ -640,6 +640,8 @@ QPushButton#seg:hover {{ background: {HOVER}; }}
 QPushButton#seg:checked {{ background: {PRIMARY_SOFT}; color: {PRIMARY}; border-color: {PRIMARY_DISABLED}; font-weight: 600; }}
 QTreeWidget {{ background: {SURFACE}; border: none; outline: 0; }}
 QTreeWidget::item {{ padding: 5px 4px; border-bottom: 1px solid {LINE}; }}
+QTreeWidget::item:hover {{ background: {HOVER}; }}
+QTreeWidget::item:selected {{ background: {PRIMARY_SOFT}; color: {PRIMARY}; }}   /* 고른 줄이 어느 테마에서도 보이게 */
 QTreeView::branch {{ background: transparent; border-bottom: 1px solid {LINE}; }}
 QTreeView::branch:has-children:closed {{ image: url("{asset('chevron-right.svg')}"); }}
 QTreeView::branch:has-children:open {{ image: url("{asset('chevron-open.svg')}"); }}

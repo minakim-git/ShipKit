@@ -149,7 +149,7 @@ class ServerPage(QWidget):
         self.path_edit = QLineEdit()
         self.path_edit.setPlaceholderText("서버 경로   Enter 로 이동")
         self.path_edit.returnPressed.connect(lambda: self.navigate(self.path_edit.text().strip()))
-        self.goto_btn = button("바로 가기 ▾", "ghost")      # 홈 · 올릴 위치 · 배포 경로
+        self.goto_btn = button("바로 가기", "ghost")      # 홈 · 올릴 위치 · 배포 경로
         goto = QMenu(self.goto_btn)
         self.home_act = goto.addAction("홈 폴더  (~)")
         self.home_act.triggered.connect(lambda: self.navigate("~"))
