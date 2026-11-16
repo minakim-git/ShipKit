@@ -136,7 +136,11 @@ class ServerPage(QWidget):
         self.empty_card.body.addLayout(row)
         layout.addWidget(self.empty_card)
 
-        self.card = Card("서버 파일")
+        # 왼쪽: 서버 파일. 카드로 감싸지 않고 도구 줄·거르기·목록 상자·단추 줄이 바로 (상자 안에 상자가 없게)
+        self.card = QWidget()
+        self.card.body = QVBoxLayout(self.card)
+        self.card.body.setContentsMargins(0, 0, 0, 0)
+        self.card.body.setSpacing(8)
 
         tools = QHBoxLayout()
         tools.setSpacing(6)
@@ -222,7 +226,10 @@ class ServerPage(QWidget):
         self.card.body.addLayout(bar)
 
         # 오른쪽: 터미널 (접속하면 셸이 열리고 끊으면 닫힌다. exit 로 끝냈으면 키를 치면 다시 연다)
-        self.term_card = Card("터미널")
+        self.term_card = QWidget()
+        self.term_card.body = QVBoxLayout(self.term_card)
+        self.term_card.body.setContentsMargins(0, 0, 0, 0)
+        self.term_card.body.setSpacing(8)
         self.term = TerminalView()
         self.term.input_bytes.connect(self._term_input)
         self.term.resized.connect(self._term_resized)

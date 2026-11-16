@@ -10,8 +10,8 @@ from __future__ import annotations
 from typing import Optional, Tuple
 
 import pyte
-from PySide6.QtCore import QEvent, QRect, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetricsF, QGuiApplication, QPainter
+from PySide6.QtCore import QEvent, QRect, QRectF, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QFont, QFontMetricsF, QGuiApplication, QPainter, QPen
 from PySide6.QtWidgets import QMenu, QWidget
 
 from shipkit.gui import theme
@@ -312,7 +312,12 @@ class TerminalView(QWidget):
     # ------------------------------------------------------------------ 그리기
     def paintEvent(self, _event) -> None:  # noqa: N802
         p = QPainter(self)
-        p.fillRect(self.rect(), QColor(PALETTE["bg"]))
+        # 둥근 상자 + 테두리: 어두운 테마에서는 바탕과 터미널 색이 비슷해 테두리가 있어야 상자로 보인다
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(QPen(QColor(theme.BORDER_STRONG if theme.is_dark() else theme.BORDER)))
+        p.setBrush(QColor(PALETTE["bg"]))
+        p.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 8, 8)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
         p.setFont(self.font())
         base_font = self.font()
         bold_font = QFont(base_font)

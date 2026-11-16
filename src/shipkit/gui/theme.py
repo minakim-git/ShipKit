@@ -623,7 +623,7 @@ QPushButton#step[state="current"], QPushButton#step[state="current"]:disabled {{
 QPushButton#step:disabled {{ border-color: {BORDER}; }}
 QFrame#stepLine {{ background: {BORDER_STRONG}; border: none; }}
 QFrame#preflight {{ background: transparent; border: none; }}
-QTableWidget#boxed, QTreeWidget#boxed {{ border: 1px solid {BORDER}; border-radius: 8px; }}
+QTableWidget#boxed, QTreeWidget#boxed, QTreeWidget#serverFiles {{ border: 1px solid {BORDER}; border-radius: 8px; }}
 QFrame#override {{ background: {PRIMARY_SOFT}; border-radius: 8px; }}
 QPushButton#chipAction {{
     background: {TONES['warning'][1]}; color: {TONES['warning'][0]}; border: 1px solid {WARN_BORDER}; border-radius: 12px;
