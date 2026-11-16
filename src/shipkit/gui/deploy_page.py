@@ -43,6 +43,7 @@ EXPAND_LIMIT = 300  # 줄 수가 이보다 많으면 처음에 접어 둔다
 
 def _table(headers: List[str]) -> QTableWidget:
     t = QTableWidget(0, len(headers))
+    t.setObjectName("boxed")   # 카드 없이 표 자체에 테두리
     t.setHorizontalHeaderLabels(headers)
     t.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
     t.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
@@ -145,7 +146,7 @@ class DeployPage(QWidget):
         self.preflight = QFrame()
         self.preflight.setObjectName("preflight")
         row = QHBoxLayout(self.preflight)
-        row.setContentsMargins(14, 5, 6, 5)
+        row.setContentsMargins(2, 0, 2, 0)   # 테두리 없는 한 줄 (제목 아래 점검 결과 배지들)
         row.setSpacing(6)
         row.addWidget(label("시작 전 점검", "fieldLabel", wrap=False))
         row.addSpacing(6)
@@ -172,7 +173,7 @@ class DeployPage(QWidget):
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
-        card = Card(padding=14)
+        # 카드로 감싸지 않는다: 탭 줄 아래에 표·입력 칸이 바로 (상자 안에 상자가 겹치지 않게). 탭이 하나뿐이면 탭 줄은 숨긴다
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)
         self.tabs.addTab(self._requests_tab(), "MR / PR")
@@ -182,8 +183,7 @@ class DeployPage(QWidget):
         self.tabs.currentChanged.connect(self._invalidate)
         self.tabs.currentChanged.connect(lambda i: self.req_hint.setVisible(i == TAB_REQUESTS))
         self.tabs.setCornerWidget(self.req_hint, Qt.Corner.TopRightCorner)
-        card.body.addWidget(self.tabs, 1)
-        layout.addWidget(card, 1)
+        layout.addWidget(self.tabs, 1)
 
         bar = _bar()
         self.pick_summary = label("", "muted", wrap=False)
@@ -304,10 +304,9 @@ class DeployPage(QWidget):
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(12)
-        card = Card(padding=16)
+        layout.setSpacing(10)
         self.summary_label = label("", "muted")
-        card.body.addWidget(self.summary_label)
+        layout.addWidget(self.summary_label)
         self.messages = QListWidget()
         self.messages.setObjectName("messages")
         # 알림은 읽기만 하는 목록: 고르면 글자색이 선택색으로 바뀌어 안 보이므로 선택을 막는다
@@ -315,7 +314,7 @@ class DeployPage(QWidget):
         self.messages.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.messages.setWordWrap(True)
         self.messages.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        card.body.addWidget(self.messages)
+        layout.addWidget(self.messages)
 
         filters = QHBoxLayout()
         filters.setSpacing(6)
@@ -335,9 +334,10 @@ class DeployPage(QWidget):
         self.expand_btn = button("모두 접기", "ghost")
         self.expand_btn.clicked.connect(lambda: self._set_expanded(not self._expanded))
         filters.addWidget(self.expand_btn)
-        card.body.addLayout(filters)
+        layout.addLayout(filters)
 
         self.result_tree = QTreeWidget()
+        self.result_tree.setObjectName("boxed")   # 카드 대신 표 자체에 테두리
         self.result_tree.setColumnCount(3)
         self.result_tree.setHeaderLabels(["상태", "구분", "소스 파일  →  서버에 반영될 파일"])
         self.result_tree.setItemDelegateForColumn(0, StatusDelegate(self.result_tree))
@@ -352,8 +352,7 @@ class DeployPage(QWidget):
         header.setSectionsMovable(False)
         self.result_tree.setColumnWidth(0, 100)
         self.result_tree.setColumnWidth(1, 60)
-        card.body.addWidget(self.result_tree, 1)
-        layout.addWidget(card, 1)
+        layout.addWidget(self.result_tree, 1)
 
         bar = _bar()
         self.back_btn = button("이전")
@@ -568,6 +567,7 @@ class DeployPage(QWidget):
             self.req_hint.setText("")
         self.tabs.setTabVisible(TAB_GIT, is_git)
         self.tabs.setTabVisible(TAB_BUILD, p.mode == "sync")
+        self.tabs.tabBar().setVisible(sum(self.tabs.isTabVisible(i) for i in range(self.tabs.count())) > 1)
         self.build_hint.setText(f"빌드 결과 폴더: {p.build_dir}" if p.mode == "sync" else "")
         self.range_edit.setText(workflow.latest_tag_range(p) if is_git else "")
         self.load_commits()
