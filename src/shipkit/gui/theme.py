@@ -526,7 +526,6 @@ QLabel#chip {{ border-radius: 10px; padding: 2px 8px; font-size: 8.5pt; font-wei
 {chips}
 
 /* ---------- 카드 ---------- */
-QFrame#card {{ background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 10px; }}
 QFrame#banner {{ border-radius: 10px; }}
 QFrame#detail {{ background: {HEAD}; border: 1px solid {BORDER}; border-radius: 6px; }}
 QFrame#banner[tone="success"] {{ background: {TONES['success'][1]}; border: 1px solid {OK_BORDER}; }}

@@ -107,7 +107,7 @@ class Chip(QLabel):
 
 
 class _ClickableHead(QWidget):
-    """카드 머리: 접을 수 있는 카드에서는 어디를 눌러도 접고 편다."""
+    """구역 머리: 접을 수 있는 구역에서는 어디를 눌러도 접고 편다."""
 
     def __init__(self, on_click: Optional[Callable[[], None]] = None):
         super().__init__()
@@ -121,63 +121,6 @@ class _ClickableHead(QWidget):
             event.accept()
             return
         super().mousePressEvent(event)
-
-
-class Card(QFrame):
-    """흰 카드. title 을 주면 위에 제목(과 오른쪽 위젯)을 놓는다. 내용은 card.body 에 넣는다.
-
-    collapsible=True 면 머리에 접기 단추가 생기고, set_collapsed() 로 내용(card.content)을 숨길 수 있다.
-    """
-
-    def __init__(self, title: str = "", subtitle: str = "", right: Optional[QWidget] = None, padding: int = 16,
-                 collapsible: bool = False):
-        super().__init__()
-        self.setObjectName("card")
-        self.collapsed = False
-        self.toggle_btn: Optional[QPushButton] = None
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(padding, padding - 2, padding, padding)
-        outer.setSpacing(10)
-        if title or right or collapsible:
-            head_widget = _ClickableHead(self.toggle if collapsible else None)
-            head = QHBoxLayout(head_widget)
-            head.setContentsMargins(0, 0, 0, 0)
-            texts = QVBoxLayout()
-            texts.setSpacing(2)
-            if title:
-                texts.addWidget(label(title, "cardTitle"))
-            if subtitle:
-                texts.addWidget(label(subtitle, "muted"))
-            head.addLayout(texts, 1)
-            if right is not None:
-                head.addWidget(right, 0, Qt.AlignmentFlag.AlignTop)
-            if collapsible:
-                self.toggle_btn = button("", "ghost")
-                self.toggle_btn.setFixedSize(28, 28)
-                self.toggle_btn.setToolTip("접기 / 펼치기")
-                self.toggle_btn.clicked.connect(self.toggle)
-                head.addWidget(self.toggle_btn, 0, Qt.AlignmentFlag.AlignTop)
-                theme.on_change(self._refresh_toggle_icon)
-                self._refresh_toggle_icon()
-            outer.addWidget(head_widget)
-        self.content = QWidget()
-        self.body = QVBoxLayout(self.content)
-        self.body.setContentsMargins(0, 0, 0, 0)
-        self.body.setSpacing(10)
-        outer.addWidget(self.content, 1)
-
-    def set_collapsed(self, collapsed: bool) -> None:
-        self.collapsed = collapsed
-        self.content.setVisible(not collapsed)
-        self._refresh_toggle_icon()
-
-    def toggle(self) -> None:
-        self.set_collapsed(not self.collapsed)
-
-    def _refresh_toggle_icon(self) -> None:
-        if self.toggle_btn is not None:
-            name = "chevron-right.svg" if self.collapsed else "chevron-down.svg"
-            self.toggle_btn.setIcon(theme.svg_icon(name, "MUTED", 16))
 
 
 class Banner(QFrame):
