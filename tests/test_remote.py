@@ -162,6 +162,12 @@ def test_commands_for_each_account_mode():
     assert remote.script_command(su, "/d/p", "rollback", no_hooks=True) == \
         "LC_ALL=C su - app -c 'cd /d/p && bash shipkit.sh rollback /srv/other --no-hooks'"
     assert remote.chown_command(su, "/d/p") is None                      # chown 안 켬
+    # 비밀번호는 설정에서 켰을 때만 묻는다: chown 을 켜도(sudo 가 필요해도) 끄면 sudo -n 으로 해 보고 거부될 때 안내
+    nopw_chown = ServerProfile("a", "h", "cloud-user", run_as="harami", chown=True)
+    assert [k for k, _key, _text in remote.secret_slots(nopw_chown)] == ["login"]
+    assert remote.chown_command(nopw_chown, "/d/p") == "sudo -n chown -R harami: /d/p"
+    assert remote.run_password(nopw_chown, remote.Secrets(), "chown") == {"password": None, "pty": False}
+    assert [k for k, _key, _text in remote.secret_slots(sudo)] == ["login", "run"]
     assert remote.expand_dir("~/deploy", "/home/app") == "/home/app/deploy"
     # 비밀번호를 보내지 않을 때는 sudo 가 묻지 않고 바로 실패하게(-n) 해서 영원히 기다리는 일이 없게 한다
     nopw = ServerProfile("a", "h", "admin", run_as="app", chown=True)

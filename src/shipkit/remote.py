@@ -252,7 +252,9 @@ def secret_slots(profile: ServerProfile) -> List[Tuple[str, str, str]]:
     elif p.key_file and key_needs_passphrase(p.key_file):
         slots.append(("login", server_secret_key("passphrase", p.user, p.host, p.port),
                       f"SSH 키 암호 ({p.key_file})"))
-    needs_run = p.run_as and (p.run_password or (p.chown and p.user != "root"))
+    # 비밀번호는 설정에서 켰을 때만 묻는다. 소유자 변경(chown)의 sudo 도 다른 명령과 같이 sudo -n 으로 먼저 해 보고,
+    # 서버가 비밀번호를 요구하면 그때 안내한다 (sudoers 에 NOPASSWD 가 흔하므로 미리 묻지 않는다)
+    needs_run = p.run_as and p.run_password
     if needs_run:
         if p.run_with == "su" and p.run_password:
             key, text = server_secret_key(f"su:{p.run_as}", p.user, p.host, p.port), f"{p.run_as} 계정 비밀번호 (su)"
