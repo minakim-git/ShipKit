@@ -321,8 +321,24 @@ class _Server(paramiko.ServerInterface):
             channel.send_exit_status(0)
             channel.close()
             return
+        if argv[:3] == ["bash", "-c", 'printf %s "$HOME"']:   # 실행 계정의 홈: 가짜 서버의 홈으로 답한다
+            channel.sendall(self.owner.home.as_posix().encode())
+            channel.send_exit_status(0)
+            channel.close()
+            return
+        stdin_data: Optional[bytes] = None
+        if "tar xzf -" in command:   # 실행 계정으로 바로 올리기: 표준 입력으로 tar.gz 가 온다 (EOF 까지 받는다)
+            stdin_data = b""
+            while True:
+                chunk = channel.recv(65536)
+                if not chunk:
+                    break
+                stdin_data += chunk
         argv = [self.owner.bash] + argv[1:] if argv[0] == "bash" else [self.owner.bash, "-c", command]
-        proc = subprocess.run(argv, capture_output=True, cwd=str(self.owner.home), stdin=subprocess.DEVNULL)
+        if stdin_data is None:
+            proc = subprocess.run(argv, capture_output=True, cwd=str(self.owner.home), stdin=subprocess.DEVNULL)
+        else:
+            proc = subprocess.run(argv, capture_output=True, cwd=str(self.owner.home), input=stdin_data)
         try:
             channel.sendall(proc.stdout + proc.stderr)
             channel.send_exit_status(proc.returncode)

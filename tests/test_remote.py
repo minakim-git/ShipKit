@@ -243,7 +243,7 @@ def test_missing_run_password_fails_fast(sshd, tmp_path, maven_project):
         text = "".join(out)
         assert not res.ok and "a password is required" in text and "run_password" in text
         sshd.sudo_nopasswd = True                                        # NOPASSWD 서버면 비밀번호 없이 된다
-        res = remote.run_action(conn, sudo, remote.Secrets(LOGIN_PW), res.remote_dir, "check", out.append)
+        res = remote.upload_and_check(conn, sudo, remote.Secrets(LOGIN_PW), result.out_dir, out.append)  # 거부되면 아무것도 안 올라가므로 올리기부터
         assert res.ok and sshd.ran_as[-1] == "sudo:app", "".join(out)
     finally:
         conn.close()
@@ -324,7 +324,8 @@ def test_run_as_other_account_with_passwords(sshd, tmp_path, maven_project):
     try:
         res = remote.upload_and_check(conn, sudo, remote.Secrets(LOGIN_PW, SUDO_PW), result.out_dir, out.append)
         assert res.ok, "".join(out)
-        assert sshd.ran_as[-2:] == ["sudo:root", "sudo:app"]              # chown(관리자 권한) 다음 실행 계정으로 check
+        # sudo 면 실행 계정으로 바로 올린다 (비밀번호는 sudo -S 첫 줄로): 홈 조회·올리기·check 모두 실행 계정, chown 없음
+        assert sshd.ran_as[-3:] == ["sudo:app"] * 3 and not any(c.startswith("sudo -S -p '' chown") for c in sshd.commands)
     finally:
         conn.close()
 
@@ -548,3 +549,55 @@ def test_cwd_script_finds_tagged_shell(tmp_path):
         assert run(0)[0] == found
     finally:
         proc.kill()
+
+
+@needs_bash
+def test_upload_as_runner_streams_tar(sshd, tmp_path, maven_project):
+    """다른 계정 + sudo: SFTP 대신 패키지를 tar 로 묶어 'sudo -u 계정 tar' 에 흘려 넣는다
+    (접속 계정의 쓰기 권한·chown 이 필요 없다). sudo 가 비밀번호를 요구하면 거부 안내를 붙인다."""
+    server = tmp_path / "server"
+    server.mkdir()
+    result = _package(maven_project, tmp_path, server)
+    sshd.sudo_nopasswd = True
+    p = _profile(sshd, user="cloud-user", run_as="app", upload_dir=bash_path(tmp_path / "home/deploy"))
+    conn = _connect(sshd, tmp_path, p, remote.Secrets(login=LOGIN_PW))
+    out = []
+    try:
+        res = remote.upload_and_check(conn, p, remote.Secrets(LOGIN_PW), result.out_dir, out.append)
+        assert res.ok, "".join(out)
+        assert sshd.ran_as == ["sudo:app", "sudo:app"]                     # 올리기·check 모두 실행 계정
+        assert any("tar xzf -" in c for c in sshd.commands) and not any("chown" in c for c in sshd.commands)
+        uploaded = tmp_path / "home/deploy" / result.out_dir.name
+        assert (uploaded / "shipkit.sh").is_file()
+        assert (uploaded / "manifest.txt").read_bytes() == (result.out_dir / "manifest.txt").read_bytes()
+    finally:
+        conn.close()
+    sshd.sudo_nopasswd = False                                             # NOPASSWD 가 아닌 서버: 거부 + 안내
+    conn = _connect(sshd, tmp_path, p, remote.Secrets(login=LOGIN_PW))
+    out = []
+    try:
+        res = remote.upload_and_check(conn, p, remote.Secrets(LOGIN_PW), result.out_dir, out.append)
+        assert not res.ok and res.action == "upload" and "sudo 에 비밀번호가 필요합니다" in "".join(out)
+    finally:
+        conn.close()
+
+
+def test_package_archive_modes(tmp_path):
+    """tar 로 묶을 때 권한은 리눅스 기준: 서버 스크립트·hooks/*.sh 755, 나머지 644."""
+    import tarfile
+    pkg = tmp_path / "pkg"
+    write(pkg / "shipkit.sh", "#!/bin/bash")
+    write(pkg / "hooks/pre.sh", "x")
+    write(pkg / "files/a.txt", "a")
+    path = remote.package_archive(pkg)
+    try:
+        with tarfile.open(path) as tar:
+            modes = {m.name: m.mode for m in tar.getmembers()}
+        assert modes == {"files/a.txt": 0o644, "hooks/pre.sh": 0o755, "shipkit.sh": 0o755}
+    finally:
+        path.unlink()
+    assert remote.upload_command(ServerProfile("a", "h", "cloud-user", run_as="app"), "/opt/d/p") == \
+        "sudo -n -u app bash -c 'mkdir -p /opt/d/p && tar xzf - -C /opt/d/p'"
+    assert remote.stream_upload(ServerProfile("a", "h", "cloud-user", run_as="app"))
+    assert not remote.stream_upload(ServerProfile("a", "h", "cloud-user", run_as="app", run_with="su"))
+    assert not remote.stream_upload(ServerProfile("a", "h", "cloud-user"))

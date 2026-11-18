@@ -225,8 +225,12 @@ class ServersTab(QWidget):
         other = self.srv_mode.currentData() == "other" and not windows
         for widget in (self.srv_run_as, self.srv_run_with, self.srv_run_password, self.srv_chown):
             form.setRowVisible(widget, other)
-        self.srv_upload.setPlaceholderText("~/deploy 또는 D:/deploy   (이 아래에 날짜 폴더로 올립니다, PowerShell 로 실행)"
-                                           if windows else "~/deploy   (이 아래에 날짜 폴더로 올립니다)")
+        sudo = other and self.srv_run_with.currentData() == "sudo"
+        form.setRowVisible(self.srv_chown, other and not sudo)   # sudo 면 실행 계정으로 바로 올리므로 소유자 변경이 필요 없다
+        self.srv_upload.setPlaceholderText(
+            "~/deploy 또는 D:/deploy   (이 아래에 날짜 폴더로 올립니다, PowerShell 로 실행)" if windows else
+            "~/deploy   (실행 계정으로 바로 올리므로 실행 계정이 쓸 수 있는 폴더, ~ 는 실행 계정의 홈)" if sudo else
+            "~/deploy   (이 아래에 날짜 폴더로 올립니다)")
         project_path = self.project_path()
         self.srv_path.setPlaceholderText(f"비우면 프로젝트 값: {project_path}" if project_path else "")
         fmt = self.srv_notify.currentData()

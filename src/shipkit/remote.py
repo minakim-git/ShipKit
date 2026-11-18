@@ -16,11 +16,14 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import os
 import posixpath
 import re
 import shlex
 import socket
 import stat
+import tarfile
+import tempfile
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -279,6 +282,8 @@ def secret_slots(profile: ServerProfile) -> List[Tuple[str, str, str]]:
 class Connection(Protocol):
     def home(self) -> str: ...
     def upload(self, local_dir: Path, remote_dir: str, progress: Optional[Progress] = None) -> None: ...
+    def upload_stream(self, command: str, local_dir: Path, output: Output, progress: Optional[Progress] = None,
+                      password: Optional[str] = None) -> int: ...   # local_dir 를 tar.gz 로 묶어 command 의 표준 입력으로
     def run(self, command: str, output: Output, password: Optional[str] = None, pty: bool = False) -> int: ...
     def cancel(self) -> None: ...   # 다른 스레드에서: 진행 중인 올리기·명령을 끊는다 (RemoteCancelled 로 끝남)
     def close(self) -> None: ...
@@ -380,6 +385,60 @@ class SSHConnection:
         except (IOError, EOFError) as e:
             self._check_cancelled()
             raise RemoteError(f"올리지 못했습니다 ({remote_dir}): {e}") from e
+
+    def upload_stream(self, command: str, local_dir: Path, output: Output, progress: Optional[Progress] = None,
+                      password: Optional[str] = None) -> int:
+        """local_dir 를 tar.gz 로 묶어 command(서버에서 'tar xzf -' 로 받는 명령)의 표준 입력으로 보낸다.
+        sudo -S 면 비밀번호를 첫 줄로 먼저 보낸다. 서버 출력은 output 으로 보내고 명령 종료 코드를 돌려준다.
+        SFTP 는 접속 계정으로만 되므로, 실행 계정으로 바로 올릴 때 쓴다 (stream_upload)."""
+        archive = package_archive(local_dir)
+        try:
+            total = archive.stat().st_size or 1
+            chan = self.client.get_transport().open_session()
+            with self._lock:
+                self._chan = chan
+            try:
+                chan.settimeout(self.idle_timeout)
+                chan.set_combine_stderr(True)
+                chan.exec_command(command)
+                try:
+                    if password is not None:
+                        chan.sendall((password + "\n").encode("utf-8"))
+                    sent = 0
+                    with archive.open("rb") as f:
+                        while True:
+                            self._check_cancelled()
+                            chunk = f.read(64 * 1024)
+                            if not chunk:
+                                break
+                            chan.sendall(chunk)
+                            sent += len(chunk)
+                            if progress:
+                                progress(sent, total)
+                    chan.shutdown_write()
+                except (OSError, EOFError):
+                    # 서버가 먼저 끊은 경우 (sudo 거부, tar 없음 등): 남은 출력과 종료 코드로 이유를 알린다
+                    self._check_cancelled()
+                while True:
+                    data = chan.recv(4096)
+                    if not data:
+                        break
+                    output(data.decode("utf-8", "replace"))
+                self._check_cancelled()
+                code = chan.recv_exit_status()
+                if code < 0:
+                    raise RemoteError("올리는 중 서버와의 연결이 끊겼습니다.")
+                return code
+            except socket.timeout as e:
+                self._check_cancelled()
+                raise RemoteError(f"{int(self.idle_timeout)}초 동안 서버 응답이 없어 올리기를 중단했습니다.") from e
+            except (IOError, EOFError) as e:
+                self._check_cancelled()
+                raise RemoteError(f"올리지 못했습니다: {e}") from e
+            finally:
+                chan.close()
+        finally:
+            archive.unlink(missing_ok=True)
 
     def run(self, command: str, output: Output, password: Optional[str] = None, pty: bool = False) -> int:
         import paramiko
@@ -698,6 +757,66 @@ def script_command(profile: ServerProfile, package_dir: str, action: str, yes: b
     return as_runner(profile, inner, password)
 
 
+def stream_upload(profile: ServerProfile) -> bool:
+    """패키지를 실행 계정으로 바로 올리는지: 다른 계정으로 실행 + sudo (리눅스).
+    SFTP 는 접속 계정으로만 되므로, 패키지를 tar 로 묶어 'sudo -u 계정 tar' 에 흘려 넣는다. 그러면 올릴 위치는
+    실행 계정만 쓸 수 있으면 되고 소유자 변경(chown)도 필요 없다. su 는 비밀번호를 가상 터미널로 넣어야 해서
+    이진 스트림을 보낼 수 없으니 SFTP + chown 그대로."""
+    return bool(profile.run_as) and profile.run_with == "sudo" and profile.server_os != "windows"
+
+
+def upload_command(profile: ServerProfile, remote_dir: str, password: Optional[bool] = None) -> str:
+    """실행 계정으로 패키지 폴더를 만들고 표준 입력의 tar.gz 를 푸는 명령."""
+    q = shlex.quote(remote_dir)
+    return as_runner(profile, f"mkdir -p {q} && tar xzf - -C {q}", password)
+
+
+def package_archive(local_dir: Path) -> Path:
+    """패키지 폴더를 임시 tar.gz 로 묶는다 (실행 계정으로 바로 올릴 때 보내는 스트림). 다 쓴 뒤 지울 것.
+    권한은 리눅스 기준으로 정한다: 파일 644, 서버 스크립트·hooks/*.sh 755 (Windows 의 권한 비트는 믿을 수 없다)."""
+    fd, name = tempfile.mkstemp(prefix="shipkit-", suffix=".tar.gz")
+    os.close(fd)
+    path = Path(name)
+
+    def fix(info: tarfile.TarInfo) -> tarfile.TarInfo:
+        info.uid = info.gid = 0
+        info.uname = info.gname = ""
+        rel = info.name
+        if info.isdir():
+            info.mode = 0o755
+        elif rel in EXECUTABLES or (rel.startswith("hooks/") and rel.endswith(".sh")):
+            info.mode = 0o755
+        else:
+            info.mode = 0o644
+        return info
+
+    try:
+        with tarfile.open(path, "w:gz", compresslevel=1) as tar:
+            for f in sorted(local_dir.rglob("*")):
+                if f.is_file():
+                    tar.add(f, arcname=f.relative_to(local_dir).as_posix(), filter=fix)
+    except Exception:
+        path.unlink(missing_ok=True)
+        raise
+    return path
+
+
+def runner_home(conn: Connection, profile: ServerProfile, opts: dict, output: Optional[Output] = None) -> Optional[str]:
+    """실행 계정의 홈 폴더 (실행 계정으로 바로 올릴 때 올릴 위치의 ~ 는 실행 계정 기준).
+    알아내지 못하면(sudo 거부 등) 서버 출력과 안내를 output 으로 내보내고 None. output 이 없으면 RemoteError."""
+    lines: List[str] = []
+    cmd = as_runner(profile, 'printf %s "$HOME"', opts["password"] is not None)
+    code = _run_sudo_aware(conn, profile, cmd, lines.append, opts)
+    home = ("".join(lines).strip().splitlines() or [""])[-1].strip()
+    if code or not home:
+        text = f"{profile.runner} 계정의 홈 폴더를 알아내지 못했습니다:\n{''.join(lines).strip()}\n"
+        if output is None:
+            raise RemoteError(text.strip())
+        output(text)
+        return None
+    return home
+
+
 def chown_command(profile: ServerProfile, package_dir: str, password: Optional[bool] = None) -> Optional[str]:
     """올린 패키지 폴더를 실행 계정 소유로 (접속 계정이 root 가 아니면 sudo).
     password: sudo 비밀번호를 보내는지 (None = 설정의 run_password)."""
@@ -739,7 +858,30 @@ class StepResult:
 
 def upload_and_check(conn: Connection, profile: ServerProfile, secrets: Secrets, package_dir: Path,
                      output: Output, progress: Optional[Progress] = None) -> StepResult:
-    """패키지를 올리고(필요하면 소유자 변경) check 를 실행한다."""
+    """패키지를 올리고(필요하면 소유자 변경) check 를 실행한다. 다른 계정 + sudo 면 실행 계정으로 바로 올린다."""
+    if stream_upload(profile):
+        opts = run_password(profile, secrets)
+        home = ""
+        if profile.upload_dir.startswith("~"):
+            home = runner_home(conn, profile, opts, output)
+            if home is None:
+                return StepResult("upload", 1, "")
+        remote_dir = remote_package_dir(profile, package_dir.name, home)
+        cmd = upload_command(profile, remote_dir, opts["password"] is not None)
+        output(f"$ 올리기: {package_dir.name} → {profile.address}:{remote_dir}  ({profile.runner} 계정으로 바로 풀기)\n$ {cmd}\n")
+        seen: List[str] = []
+
+        def out(text: str) -> None:
+            seen.append(text)
+            output(text)
+
+        code = conn.upload_stream(cmd, package_dir, out, progress, opts["password"])
+        if code:
+            if opts["password"] is None and cmd.startswith("sudo -n") and _sudo_refused("".join(seen)):
+                output(f"[안내] {profile.user} 계정의 sudo 에 비밀번호가 필요합니다. "
+                       "서버 연결 설정에서 '비밀번호 필요(run_password)'를 켜거나, 서버의 sudoers 에 NOPASSWD 를 설정하세요.\n")
+            return StepResult("upload", code, remote_dir)
+        return run_action(conn, profile, secrets, remote_dir, "check", output)
     remote_dir = remote_package_dir(profile, package_dir.name, conn.home())
     output(f"$ 올리기: {package_dir.name} → {profile.address}:{remote_dir}\n")
     conn.upload(package_dir, remote_dir, progress)

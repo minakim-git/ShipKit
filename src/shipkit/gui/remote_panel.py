@@ -206,17 +206,23 @@ class RemoteClient:
 
         def step(conn, secrets):
             lines: List[str] = []
-            home = conn.home()
-            upload = remote.expand_dir(profile.upload_dir, home)
             opts = remote.run_password(profile, secrets)
             code = conn.run(remote.as_runner(profile, "id -un", opts["password"] is not None), lines.append, **opts)
             who = "".join(lines).strip().splitlines()[-1:] or [""]
             if code or who[0].strip() != profile.runner:
                 return False, f"{profile.runner} 계정으로 실행하지 못했습니다 (종료 코드 {code}): {''.join(lines).strip()}"
+            streams = remote.stream_upload(profile)   # 실행 계정으로 바로 올리면 올릴 위치도 실행 계정 기준
+            home = remote.runner_home(conn, profile, opts) if streams and profile.upload_dir.startswith("~") else conn.home()
+            upload = remote.expand_dir(profile.upload_dir, home)
             probe = f"mkdir -p {shlex.quote(upload)} && test -w {shlex.quote(upload)}"
-            if conn.run(probe, lines.append):
-                return False, f"올릴 위치 {upload} 에 쓸 수 없습니다 ({profile.user} 계정)."
-            return True, f"접속 성공: {profile.address}\n실행 계정: {profile.runner}\n올릴 위치: {upload}"
+            if streams:
+                writable = conn.run(remote.as_runner(profile, probe, opts["password"] is not None), lines.append, **opts) == 0
+            else:
+                writable = conn.run(probe, lines.append) == 0
+            if not writable:
+                return False, f"올릴 위치 {upload} 에 쓸 수 없습니다 ({profile.runner if streams else profile.user} 계정)."
+            how = f"  ({profile.runner} 계정으로 바로 올림)" if streams else ""
+            return True, f"접속 성공: {profile.address}\n실행 계정: {profile.runner}\n올릴 위치: {upload}{how}"
 
         def finished(result) -> None:
             ok, text = result
@@ -368,7 +374,12 @@ class RemotePanel(Section):
         if p is None:
             return
         target = p.server_path or self.project.server_path
-        runner = f"{p.runner} 계정으로 실행 ({p.run_with})" if p.run_as else f"{p.user} 계정으로 실행"
+        if remote.stream_upload(p):
+            runner = f"{p.runner} 계정으로 올리고 실행 (sudo)"
+        elif p.run_as:
+            runner = f"{p.runner} 계정으로 실행 ({p.run_with})"
+        else:
+            runner = f"{p.user} 계정으로 실행"
         self.target_label.setText(f"올릴 위치 {p.upload_dir}/{self.result.out_dir.name}  ·  반영 경로 {target}  ·  {runner}")
         self.prod_chip.setVisible(p.is_production)
         mismatch = self._branch_mismatch(p)
