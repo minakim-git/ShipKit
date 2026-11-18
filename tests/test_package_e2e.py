@@ -1,6 +1,7 @@
 """패키지 생성 -> 서버(임시 폴더)에서 shipkit.sh check/backup/apply/rollback 까지 실제 실행."""
 import os
 import shutil
+import stat
 import subprocess
 import tarfile
 from datetime import datetime
@@ -123,6 +124,33 @@ def test_deploy_script_backup_apply_rollback(maven_project, tmp_path):
     assert snapshot() == before
     assert "빈 폴더 정리 2개" in out                                # WEB-INF/views/user, WEB-INF/views
     assert not (server / "WEB-INF/views").exists() and (server / "keep-empty").is_dir()
+
+
+@needs_bash
+def test_apply_and_rollback_keep_existing_file_mode(maven_project, tmp_path):
+    """기존 파일을 덮어써도 원래 권한이 남는다. cp 가 파일을 지웠다 새로 만드는 서버(권한이 644 로 바뀜)를 흉내 내도 같다."""
+    pkg = build(maven_project, tmp_path).out_dir
+    server = tmp_path / "server"
+    old = server / "WEB-INF/classes/com/acme/User.class"
+    write(old, "OLD")
+    os.chmod(old, 0o755)
+    want = stat.S_IMODE(old.stat().st_mode)                  # Windows 에서는 chmod 가 듣지 않으므로 실제 값을 기준으로 삼는다
+    fake_bin = tmp_path / "bin"                               # 덮어쓰기 대신 지우고 새로 만드는 cp
+    real_cp = subprocess.run([BASH, "-c", "command -v cp"], capture_output=True, text=True).stdout.strip()
+    fake_bin.mkdir()                                          # 줄 끝이 CRLF 면 bash 가 못 읽을 수 있어 바이트로 쓴다
+    (fake_bin / "cp").write_bytes(f'#!/bin/bash\nfor last; do :; done\n[ -f "$last" ] && rm -f "$last"\nexec {real_cp} "$@"\n'.encode())
+    os.chmod(fake_bin / "cp", 0o755)
+    env = {"PATH": f"{fake_bin.as_posix()}:{os.environ.get('PATH', '')}"}
+
+    for action in ("backup", "apply"):
+        code, out = run_deploy(pkg, action, server.as_posix(), env=env)
+        assert code == 0 and "돌리지 못했습니다" not in out, out
+    assert old.read_text(encoding="utf-8") == "bytecode" and stat.S_IMODE(old.stat().st_mode) == want
+
+    os.chmod(old, 0o600)                                      # apply 뒤 권한이 바뀌었어도 rollback 은 백업본의 권한으로 되돌린다
+    code, out = run_deploy(pkg, "rollback", server.as_posix(), env=env)
+    assert code == 0 and "돌리지 못했습니다" not in out, out
+    assert old.read_text(encoding="utf-8") == "OLD" and stat.S_IMODE(old.stat().st_mode) == want
 
 
 @needs_bash

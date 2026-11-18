@@ -174,14 +174,31 @@ remove_created_dirs() {
     echo "$n"
 }
 
-# src 를 서버의 rel 위치로 복사. 새로 생긴 파일에만 소유자/권한을 적용한다.
+# src 를 서버의 rel 위치로 복사. 새로 생긴 파일에만 소유자/권한을 적용하고, 이미 있던 파일은 원래 권한·소유자를 지킨다.
 put_file() {
-    local src="$1" rel="$2" existed=0
-    [ -e "$TARGET/$rel" ] && existed=1
+    local src="$1" rel="$2" dst="$TARGET/$rel" existed=0 orig=""
+    if [ -e "$dst" ]; then
+        existed=1
+        # 원래 권한·소유자의 기준: 백업본(backup 이 cp -p 로 보관)이 있으면 그것, 없으면 덮어쓰기 직전의 파일
+        orig="$(stat -c '%a %u:%g' "$BACKUP_FILES/$rel" 2>/dev/null || stat -c '%a %u:%g' "$dst" 2>/dev/null)"
+    fi
     # 수정 시각을 '지금'으로 두어 WAS 가 변경을 감지하도록 -p 를 쓰지 않는다.
-    ensure_parent "$TARGET/$rel" && cp "$src" "$TARGET/$rel" || return 1
-    [ "$existed" -eq 0 ] && set_attrs file "$TARGET/$rel"
+    ensure_parent "$dst" && cp "$src" "$dst" || return 1
+    if [ "$existed" -eq 0 ]; then
+        set_attrs file "$dst"
+    elif [ -n "$orig" ]; then
+        keep_attrs "$dst" "$orig"
+    fi
     return 0
+}
+
+# 덮어쓴 파일의 권한·소유자를 원래대로 맞춘다 ("755 1001:1001" 꼴).
+# cp 는 보통 내용만 바꾸지만, 파일을 지웠다 새로 만드는 서버에서는 권한이 기본값(644 등)으로 바뀌어 버린다.
+keep_attrs() {
+    local path="$1" mode="${2%% *}" owner="${2#* }" now
+    now="$(stat -c '%a %u:%g' "$path" 2>/dev/null)" || return 0
+    [ "${now%% *}" = "$mode" ] || chmod "$mode" "$path" 2>/dev/null || warn "권한을 원래대로($mode) 돌리지 못했습니다: $path"
+    [ "${now#* }" = "$owner" ] || chown "$owner" "$path" 2>/dev/null || warn "소유자를 원래대로($owner) 돌리지 못했습니다: $path"
 }
 
 # ------------------------------------------------------------------ 반영 전·후 명령 (hooks)
