@@ -131,6 +131,18 @@ def forget_host_key(profile: ServerProfile, path: Optional[Path] = None) -> bool
     return True
 
 
+def has_host_key(profile: ServerProfile, path: Optional[Path] = None) -> bool:
+    """이 서버의 지문을 기억하고 있는지 (known_hosts 파일 기준)."""
+    import paramiko
+    path = path or known_hosts_path()
+    if not path.is_file():
+        return False
+    known = paramiko.HostKeys()
+    known.load(str(path))
+    return bool(known.lookup(host_label(profile.host, profile.port)))
+    return True
+
+
 # ---------------------------------------------------------------------- 서버 파일 (탐색 화면)
 @dataclass(frozen=True)
 class RemoteEntry:

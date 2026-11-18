@@ -109,9 +109,13 @@ class RemoteClient:
     def with_host_key(self, profile: ServerProfile, then: Callable[[], None],
                       failed: Callable[[str], None]) -> None:
         """서버 지문을 확인한 뒤 then() (처음이면 사용자에게 묻고 기억한다)."""
+        # 이 실행에서 이미 확인한 서버는 다시 묻지 않는다. 단, 그 뒤 [서버 지문 잊기] 등으로 known_hosts 에서 지워졌으면
+        # 접속이 거부되므로(RejectPolicy) 처음처럼 다시 확인한다
         if (profile.host, profile.port) in self._trusted:
-            then()
-            return
+            if remote.has_host_key(profile):
+                then()
+                return
+            self._trusted.discard((profile.host, profile.port))
 
         def checked(status: remote.HostKeyStatus) -> None:
             if status.state == "changed":
