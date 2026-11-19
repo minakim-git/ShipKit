@@ -197,11 +197,14 @@ class RemoteClient:
 
         self.with_host_key(profile, connect, on_failed)
 
-    def test(self, profile: ServerProfile, done: Callable[[str], None], failed: Callable[[str], None],
-             cancelled: Callable[[], None]) -> None:
-        """[연결 시험]: 로그인, 실행 계정 전환, 올릴 위치 확인까지."""
+    def test(self, profile: ServerProfile, done: Callable[[Any], None], failed: Callable[[str], None],
+             cancelled: Callable[[], None], server_path: str = "") -> None:
+        """[연결 시험]: 리눅스 서버는 remote.diagnose 로 접속 계정·실행 계정 전환·올릴 위치·배포 경로·명령·로그 파일을 확인해
+        done(Diagnosis). Windows 서버는 로그인·올릴 위치만 확인해 done(글)."""
 
         def make_step(secrets):
+            if profile.server_os != "windows":
+                return lambda conn, output, progress: remote.diagnose(conn, profile, secrets, server_path)
             return lambda conn, output, progress: step(conn, secrets)
 
         def step(conn, secrets):
@@ -225,6 +228,9 @@ class RemoteClient:
             return True, f"접속 성공: {profile.address}\n실행 계정: {profile.runner}\n올릴 위치: {upload}{how}"
 
         def finished(result) -> None:
+            if isinstance(result, remote.Diagnosis):
+                done(result)
+                return
             ok, text = result
             (done if ok else failed)(text)
 

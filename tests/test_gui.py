@@ -1148,15 +1148,29 @@ def test_remote_panel_upload_apply_rollback(qapp, tmp_path, maven_project, monke
     assert tab.srv_webhook.property("invalid") and "notify.url" in tab.srv_error.text()
     tab.srv_notify.setCurrentIndex(0)                                       # 알리지 않음: 설정에서 빠지고 시험 단추도 숨는다
     assert "notify" not in tab.servers[0] and not tab.srv_error.isVisibleTo(tab) and not tab.notify_test_btn.isVisibleTo(tab)
-    page.servers_tab.test_server()
-    assert dialogs.messages[-1][:2] == ("info", "연결 시험") and "접속 성공" in dialogs.messages[-1][2], dialogs.messages[-1]
+    page.servers_tab.test_server()                                          # 연결 시험 = 진단: 결과 창에 항목별 ✓/△/✗
+    diag = tab.last_diagnosis
+    assert diag.ok and diag.summary().startswith("접속 성공") and [c.name for c in diag.checks][:2] == ["접속", "실행 계정"]
+    assert tab.diagnosis_dialog.tree.topLevelItemCount() == len(diag.checks) and not tab.diagnosis_dialog.apply_btn.isVisibleTo(tab.diagnosis_dialog)
+    tab.diagnosis_dialog.close()
+    tab.srv_mode.setCurrentIndex(1)                                         # 다른 계정 + sudo, 비밀번호 없이: 가짜 서버의 sudo 는 비밀번호가 필요
+    tab.srv_run_as.setText("app")
+    tab.test_server()
+    diag = tab.last_diagnosis
+    fail = next(c for c in diag.checks if c.name == "실행 계정")
+    assert not diag.ok and fail.state == "fail" and "비밀번호가 필요합니다" in fail.fix and diag.suggestions == {"run_password": True}
+    assert tab.diagnosis_dialog.apply_btn.isVisibleTo(tab.diagnosis_dialog) and "비밀번호가 필요합니다: 켬" in tab.diagnosis_dialog.suggestion_label.text()
+    tab.diagnosis_dialog.apply_btn.click()                                  # [추천 설정 적용] -> 폼의 '비밀번호 필요' 가 켜진다 (저장은 사용자가)
+    assert tab.srv_run_password.isChecked() and tab.servers[0]["run_password"] is True
+    assert dialogs.messages[-1][0] == "toast" and "추천 설정" in dialogs.messages[-1][2]
+    tab.srv_mode.setCurrentIndex(0)
     page.servers_tab.forget_host_key()                                      # 서버 지문 잊기 (확인 후 지움)
     assert dialogs.messages[-2][:2] == ("ask", "서버 지문 잊기") and "지문을 지웠습니다" in dialogs.messages[-1][2]
     assert "127.0.0.1" not in (tmp_path / "known_hosts").read_text(encoding="utf-8")
     before = len(dialogs.messages)                                          # 잊은 뒤 다시 시험: 이 실행에서 믿은 서버였어도 다시 묻는다
     page.servers_tab.test_server()
     assert any(m[:2] == ("ask", "새 서버 확인") for m in dialogs.messages[before:])
-    assert dialogs.messages[-1][:2] == ("info", "연결 시험") and "127.0.0.1" in (tmp_path / "known_hosts").read_text(encoding="utf-8")
+    assert tab.last_diagnosis.ok and "127.0.0.1" in (tmp_path / "known_hosts").read_text(encoding="utf-8")
     page.servers_tab.forget_host_key()
     assert "지문을 지웠습니다" in dialogs.messages[-1][2]
     page.servers_tab.forget_host_key()
@@ -1226,7 +1240,7 @@ def test_server_test_passphrase_key_elapsed_and_cancel(qapp, tmp_path, maven_pro
     secret = [m for m in dialogs.messages if m[0] == "secret"][-1]
     assert secret[1] == "비밀번호 입력" and secret[2].startswith("개발 서버: SSH 키 암호 (")
     assert seen["secrets"].login == "secret" and keyring.store[("shipkit", "ssh:passphrase:harami@10.0.0.5:1979")] == "secret"
-    assert dialogs.messages[-1][:2] == ("info", "연결 시험") and "접속 성공: harami@10.0.0.5:1979" in dialogs.messages[-1][2]
+    assert tab.last_diagnosis.summary().startswith("접속 성공: harami@10.0.0.5:1979") and tab.diagnosis_dialog is not None
     assert tab.server_test_btn.isEnabled() and tab.server_test_btn.text() == "연결 시험" and not tab.test_cancel_btn.isVisibleTo(tab)
 
     class CancellingConn(FakeConn):                                       # 접속하는 동안 사용자가 [취소]를 누른 상황

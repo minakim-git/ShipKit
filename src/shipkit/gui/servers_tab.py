@@ -30,6 +30,8 @@ class ServersTab(QWidget):
         super().__init__()
         self.ctx = ctx
         self.client = RemoteClient(ctx)
+        self.last_diagnosis: Optional[remote.Diagnosis] = None   # 마지막 [연결 시험] 결과 (테스트·결과 창)
+        self.diagnosis_dialog: Optional[Any] = None
         self.project_path = project_path
         self.server_os = server_os
         self.project_name = project_name
@@ -348,11 +350,14 @@ class ServersTab(QWidget):
             if run == self._test_run:
                 self._finish_test()
 
-        def done(text: str) -> None:
+        def done(result) -> None:
             if run != self._test_run:   # 취소한 뒤 늦게 온 결과
                 return
             finish()
-            self.ctx.dialogs.info("연결 시험", text)
+            if isinstance(result, remote.Diagnosis):
+                self.show_diagnosis(profile, result)
+            else:
+                self.ctx.dialogs.info("연결 시험", result)
 
         def failed(text: str) -> None:
             if run != self._test_run:
@@ -360,7 +365,24 @@ class ServersTab(QWidget):
             finish()
             self.ctx.dialogs.error("연결 시험 실패", text)
 
-        self.client.test(profile, done, failed, finish)  # 비밀번호 입력을 취소하면 finish
+        self.client.test(profile, done, failed, finish, server_path=self.project_path() or "")  # 비밀번호 입력을 취소하면 finish
+
+    def show_diagnosis(self, profile: ServerProfile, diag: remote.Diagnosis) -> None:
+        """진단 결과 창. 설정으로 고칠 수 있는 것은 [추천 설정 적용]으로 폼에 넣는다."""
+        from shipkit.gui.diagnosis import DiagnosisDialog
+        self.last_diagnosis = diag
+        self.diagnosis_dialog = DiagnosisDialog(profile.name, diag, self.window(), on_apply=self.apply_suggestions)
+        self.diagnosis_dialog.show()
+
+    def apply_suggestions(self, suggestions: Dict[str, Any]) -> None:
+        """진단이 추천한 값(전환 방법·비밀번호 필요·소유자 변경)을 서버 연결 폼에 넣는다. 저장은 사용자가."""
+        if "run_with" in suggestions:
+            self._select(self.srv_run_with, str(suggestions["run_with"]))
+        if "run_password" in suggestions:
+            self.srv_run_password.setChecked(bool(suggestions["run_password"]))
+        if "chown" in suggestions:
+            self.srv_chown.setChecked(bool(suggestions["chown"]))
+        self.ctx.dialogs.toast("추천 설정을 폼에 넣었습니다. [저장]을 눌러야 반영됩니다.", "info")
 
     def _tick_test(self) -> None:
         """연결 시험이 얼마나 걸리고 있는지 단추에 보여 준다 (멈춘 것인지 기다리는 중인지 알 수 있게)."""

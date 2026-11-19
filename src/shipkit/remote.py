@@ -25,9 +25,9 @@ import stat
 import tarfile
 import tempfile
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Protocol, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Protocol, Sequence, Tuple
 
 from shipkit import SCRIPT_NAME, SCRIPT_NAME_PS
 from shipkit.config import ServerProfile, user_config_path
@@ -853,6 +853,196 @@ def run_password(profile: ServerProfile, secrets: Secrets, command_kind: str = "
     # sudo: 비밀번호가 있으면(설정에서 켰거나, 소유자 변경 때문에 이미 물어봤으면) 보낸다
     password = secrets.run if secrets.run else ("" if profile.run_password else None)
     return {"password": password, "pty": False}
+
+
+# ---------------------------------------------------------------------- 연결 진단
+REQUIRED_TOOLS = ("bash", "tar", "cmp", "stat")   # 서버 스크립트가 꼭 쓰는 명령
+CHECKSUM_TOOLS = ("sha256sum", "shasum")          # 둘 중 하나는 있어야 패키지를 검증한다 (없으면 건너뛴다)
+
+
+@dataclass
+class Check:
+    """연결 진단 항목 하나."""
+    name: str
+    state: str          # ok | warn | fail | info
+    text: str
+    fix: str = ""       # 고칠 방법 (설정이나 서버에서)
+
+
+@dataclass
+class Diagnosis:
+    """[연결 시험] 결과: 항목별 확인 결과와, 서버 연결 설정에 넣으면 되는 추천값."""
+    address: str
+    checks: List[Check] = field(default_factory=list)
+    suggestions: Dict[str, Any] = field(default_factory=dict)   # run_with / run_password / chown
+
+    @property
+    def ok(self) -> bool:
+        return not any(c.state == "fail" for c in self.checks)
+
+    def summary(self) -> str:
+        """글로 (명령어·알림·테스트용): 첫 줄은 접속 결과, 그 뒤 항목마다 한 줄."""
+        marks = {"ok": "✓", "warn": "△", "fail": "✗", "info": "·"}
+        connected = bool(self.checks) and self.checks[0].state != "fail"
+        lines = [f"접속 성공: {self.address}" if connected else f"접속 실패: {self.address}"]
+        for c in self.checks:
+            lines.append(f"{marks[c.state]} {c.name}: {c.text}")
+            if c.fix:
+                lines.append(f"    → {c.fix}")
+        return "\n".join(lines)
+
+
+def _capture(conn: Connection, cmd: str, **opts) -> Tuple[int, str]:
+    """명령 하나의 (종료 코드, 출력). 암호 질문 등으로 중단되면(RemoteError) 그 설명을 출력으로."""
+    lines: List[str] = []
+    try:
+        code = conn.run(cmd, lines.append, **opts)
+    except RemoteError as e:
+        return 1, str(e)
+    return code, "".join(lines).strip()
+
+
+def _last_line(text: str) -> str:
+    return (text.strip().splitlines() or [""])[-1].strip()
+
+
+def diagnose(conn: Connection, profile: ServerProfile, secrets: Secrets, server_path: str = "") -> Diagnosis:
+    """[연결 시험]: 접속 계정, 실행 계정 전환, 올릴 위치, 배포 경로, 필요한 명령, 로그 파일을 서버에서 확인하고
+    설정을 어떻게 고치면 되는지 추천한다 (리눅스). 비밀번호는 설정대로만 쓰고, 다른 전환 방법은 비밀번호 없는 sudo -n 으로만
+    더듬어 본다 (su 는 비밀번호 없이는 알 수 없다)."""
+    d = Diagnosis(address=profile.address)
+    q = shlex.quote
+    code, out = _capture(conn, "id -un")
+    who = _last_line(out)
+    if code or not who:
+        d.checks.append(Check("접속", "fail", f"접속은 됐지만 명령을 실행하지 못했습니다: {out}"))
+        return d
+    code2, uname = _capture(conn, "uname -sr")
+    d.checks.append(Check("접속", "ok", f"{who} 계정으로 접속" + (f"  ({_last_line(uname)})" if not code2 and uname else "")))
+
+    # 실행 계정: 설정대로 실행해 보고, 안 되거나 더 나은 방법이 있으면 추천한다
+    opts = run_password(profile, secrets)
+    with_pw = opts["password"] is not None
+    runner_ok = True
+    if profile.run_as:
+        code, out = _capture(conn, as_runner(profile, "id -un", with_pw), **opts)
+        runner_ok = code == 0 and _last_line(out) == profile.runner
+        nopw_sudo = sudo_refused = False
+        if who != profile.run_as:
+            probe = replace(profile, run_with="sudo", run_password=False)
+            c, o = _capture(conn, as_runner(probe, "id -un", False))
+            nopw_sudo = c == 0 and _last_line(o) == profile.run_as
+            sudo_refused = not nopw_sudo and _sudo_refused(o)
+        how = "sudo -u" if profile.run_with == "sudo" else "su -"
+        if runner_ok:
+            text = f"{profile.runner} 계정으로 실행됩니다 ({how}, {'비밀번호 사용' if with_pw else '비밀번호 없이'})"
+            if profile.run_with == "sudo" and with_pw and nopw_sudo:
+                d.checks.append(Check("실행 계정", "warn", text, "비밀번호 없이도 sudo 가 되므로 '실행할 때 비밀번호가 필요합니다' 를 꺼도 됩니다."))
+                d.suggestions["run_password"] = False
+            elif profile.run_with == "su" and nopw_sudo:
+                d.checks.append(Check("실행 계정", "warn", text,
+                                      f"비밀번호 없이 sudo -u {profile.run_as} 가 됩니다. 전환 방법을 'sudo -u 계정' 으로 바꾸면 비밀번호 없이 "
+                                      "실행하고 패키지도 실행 계정으로 바로 올립니다 (올릴 위치는 실행 계정만 쓸 수 있으면 되고 소유자 변경이 필요 없음)."))
+                d.suggestions.update(run_with="sudo", run_password=False, chown=False)
+            else:
+                d.checks.append(Check("실행 계정", "ok", text))
+        else:
+            if profile.run_with == "sudo":
+                if nopw_sudo:
+                    fix = "비밀번호 없이 sudo 가 됩니다. '실행할 때 비밀번호가 필요합니다' 를 끄세요 (보낸 비밀번호가 맞지 않았습니다)."
+                    d.suggestions["run_password"] = False
+                elif sudo_refused and not with_pw:
+                    fix = (f"{who} 계정의 sudo 에 비밀번호가 필요합니다. '실행할 때 비밀번호가 필요합니다' 를 켜거나, "
+                           f"서버의 sudoers 에 '{who} ALL=({profile.run_as}) NOPASSWD: ALL' 을 넣으세요.")
+                    d.suggestions["run_password"] = True
+                elif sudo_refused:
+                    fix = "sudo 비밀번호가 맞지 않거나 거부됐습니다. [저장된 비밀번호 지우기] 뒤 다시 시험하세요."
+                else:
+                    fix = (f"{who} 계정이 sudo -u {profile.run_as} 를 할 수 없습니다 (sudoers). 서버 관리자에게 "
+                           f"'{who} ALL=({profile.run_as}) NOPASSWD: ALL' 추가를 요청하거나, 실행 계정의 비밀번호를 안다면 "
+                           "전환 방법을 'su - 계정' 으로 바꾸고 '실행할 때 비밀번호가 필요합니다' 를 켜세요.")
+            elif nopw_sudo:
+                fix = (f"비밀번호 없이 sudo -u {profile.run_as} 가 됩니다. 전환 방법을 'sudo -u 계정' 으로 바꾸세요 "
+                       "(비밀번호 없이 실행하고 패키지도 실행 계정으로 바로 올립니다).")
+                d.suggestions.update(run_with="sudo", run_password=False, chown=False)
+            elif not with_pw:
+                fix = "su 는 실행 계정의 비밀번호가 필요합니다. '실행할 때 비밀번호가 필요합니다' 를 켜세요."
+                if sudo_refused:
+                    fix += f" (또는 {who} 계정의 sudo 비밀번호를 안다면 전환 방법 'sudo -u 계정' + 비밀번호 필요)"
+                d.suggestions["run_password"] = True
+            else:
+                fix = "실행 계정의 비밀번호가 맞지 않습니다. [저장된 비밀번호 지우기] 뒤 다시 시험하세요."
+            d.checks.append(Check("실행 계정", "fail", f"{profile.runner} 계정으로 실행하지 못했습니다 ({how}): {_last_line(out)}", fix))
+    else:
+        d.checks.append(Check("실행 계정", "ok", f"접속 계정 {who} 그대로 실행"))
+
+    def as_runner_ok(inner: str) -> bool:
+        c, _o = _capture(conn, as_runner(profile, inner, with_pw), **opts)
+        return c == 0
+
+    # 올릴 위치: 실행 계정으로 바로 올리면(sudo) 실행 계정이, 아니면 접속 계정이 쓸 수 있어야 한다
+    streams = stream_upload(profile)
+    if streams and not runner_ok:
+        d.checks.append(Check("올릴 위치", "info", f"{profile.upload_dir}  (실행 계정 전환이 안 돼 확인하지 못했습니다)"))
+    else:
+        try:
+            home = runner_home(conn, profile, opts) if streams and profile.upload_dir.startswith("~") else conn.home()
+        except RemoteError as e:
+            home = ""
+            d.checks.append(Check("올릴 위치", "fail", str(e)))
+        if home:
+            upload = expand_dir(profile.upload_dir, home)
+            probe = f"mkdir -p {q(upload)} && test -w {q(upload)}"
+            writable = as_runner_ok(probe) if streams else _capture(conn, probe)[0] == 0
+            account = profile.runner if streams else who
+            if writable:
+                d.checks.append(Check("올릴 위치", "ok", f"{upload}  ({account} 계정이 씀)"))
+            elif not streams and profile.run_as and runner_ok and as_runner_ok(probe):
+                fix = (f"접속 계정 {who} 는 쓸 수 없지만 실행 계정 {profile.runner} 는 쓸 수 있습니다. 전환 방법이 'sudo -u 계정' 이면 "
+                       "실행 계정으로 바로 올리므로 그대로 됩니다. su 를 써야 하면 두 계정이 모두 쓸 수 있는 폴더로 바꾸세요.")
+                d.checks.append(Check("올릴 위치", "fail", f"{upload} 에 {account} 계정이 쓸 수 없습니다.", fix))
+            else:
+                d.checks.append(Check("올릴 위치", "fail", f"{upload} 에 {account} 계정이 쓸 수 없습니다.",
+                                      f"{account} 계정이 쓸 수 있는 폴더로 바꾸거나 서버에서 권한을 주세요."))
+
+    # 배포 경로: 실행 계정이 들어가고 쓸 수 있어야 apply 가 된다
+    target = profile.server_path or server_path
+    if target:
+        if not runner_ok:
+            d.checks.append(Check("배포 경로", "info", f"{target}  (실행 계정 전환이 안 돼 확인하지 못했습니다)"))
+        elif not as_runner_ok(f"test -d {q(target)}"):
+            d.checks.append(Check("배포 경로", "fail", f"{target} 폴더가 없습니다 ({profile.runner} 계정 기준).",
+                                  "서버 배포 경로를 확인하세요. Java 웹이면 WEB-INF 바로 위 폴더입니다."))
+        elif not as_runner_ok(f"test -w {q(target)}"):
+            d.checks.append(Check("배포 경로", "warn", f"{target} 에 {profile.runner} 계정이 쓸 수 없습니다.",
+                                  "기존 파일만 바꾸는 반영은 되지만 새 파일·폴더가 생기면 실패합니다. 실행 계정에 쓰기 권한을 주세요."))
+        else:
+            d.checks.append(Check("배포 경로", "ok", f"{target}  ({profile.runner} 계정이 씀)"))
+
+    # 서버 스크립트가 쓰는 명령
+    tools = " ".join(REQUIRED_TOOLS + CHECKSUM_TOOLS)
+    _c, out = _capture(conn, f"for c in {tools}; do command -v \"$c\" >/dev/null 2>&1 || printf '%s ' \"$c\"; done")
+    missing = [m for m in out.split() if m in REQUIRED_TOOLS + CHECKSUM_TOOLS]
+    required = [m for m in missing if m in REQUIRED_TOOLS]
+    if required:
+        d.checks.append(Check("필요한 명령", "fail", f"서버에 {', '.join(required)} 이(가) 없습니다.",
+                              "서버 스크립트(shipkit.sh)가 쓰는 명령입니다. 서버에 설치하세요 (coreutils·diffutils·tar)."))
+    elif all(t in missing for t in CHECKSUM_TOOLS):
+        d.checks.append(Check("필요한 명령", "warn", "sha256sum·shasum 이 없어 올린 패키지의 손상 검증을 건너뜁니다."))
+    else:
+        d.checks.append(Check("필요한 명령", "ok", "bash · tar · cmp · stat · sha256sum 모두 있습니다."))
+
+    # 로그 파일: [로그 보기]는 접속 계정의 터미널에서 tail 한다
+    if profile.log_file:
+        if _capture(conn, f"test -r {q(profile.log_file)}")[0] == 0:
+            d.checks.append(Check("로그 파일", "ok", f"{profile.log_file}  ({who} 계정이 읽음)"))
+        elif profile.run_as and runner_ok and as_runner_ok(f"test -r {q(profile.log_file)}"):
+            d.checks.append(Check("로그 파일", "warn", f"{profile.log_file} 을 접속 계정 {who} 는 읽을 수 없고 실행 계정만 읽습니다.",
+                                  "[로그 보기]는 접속 계정의 터미널에서 tail 하므로 파일에 읽기 권한을 주거나 터미널에서 sudo 를 붙이세요."))
+        else:
+            d.checks.append(Check("로그 파일", "warn", f"{profile.log_file} 을 읽을 수 없습니다 (없거나 권한 없음).",
+                                  "서버 연결의 로그 파일 경로를 확인하세요."))
+    return d
 
 
 # ---------------------------------------------------------------------- 배포 단계

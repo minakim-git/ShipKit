@@ -265,6 +265,46 @@ def test_missing_run_password_fails_fast(sshd, tmp_path, maven_project):
 
 
 # ---------------------------------------------------------------------- 실제 접속 (테스트용 서버)
+def test_diagnose(sshd, tmp_path):
+    """연결 진단: 접속·실행 계정 전환·올릴 위치·배포 경로·명령·로그 파일을 확인하고, 설정으로 고칠 것은 추천한다."""
+    from sshd import LOGIN_PW, SUDO_PW
+    target = tmp_path / "target"
+    target.mkdir()
+
+    def run(profile, secrets=None, server_path=bash_path(target)):
+        secrets = secrets or remote.Secrets(login=LOGIN_PW)
+        conn = _connect(sshd, tmp_path, profile, secrets)
+        try:
+            return remote.diagnose(conn, profile, secrets, server_path)
+        finally:
+            conn.close()
+
+    d = run(_profile(sshd))
+    assert d.ok and [c.state for c in d.checks] == ["ok"] * 5 and d.suggestions == {}
+    assert d.summary().startswith(f"접속 성공: deployer@127.0.0.1:{sshd.port}\n✓ 접속: ")
+    assert [c.name for c in d.checks] == ["접속", "실행 계정", "올릴 위치", "배포 경로", "필요한 명령"] and "deploy" in d.checks[2].text
+    d = run(_profile(sshd), server_path=bash_path(tmp_path / "nope"))          # 배포 경로 없음
+    assert not d.ok and d.checks[3].state == "fail" and "폴더가 없습니다" in d.checks[3].text
+    d = run(_profile(sshd, log_file="/var/log/nope.log"))                       # 로그 파일은 없어도 경고만
+    assert d.ok and d.checks[-1].name == "로그 파일" and d.checks[-1].state == "warn"
+
+    d = run(_profile(sshd, run_as="app", run_with="sudo"))                      # sudo 에 비밀번호가 필요 -> '비밀번호 필요' 켜라고 추천
+    fail = d.checks[1]
+    assert not d.ok and fail.state == "fail" and "비밀번호가 필요합니다" in fail.fix and d.suggestions == {"run_password": True}
+    assert d.checks[2].state == "info" and d.checks[3].state == "info"         # 전환이 안 되면 올릴 위치·배포 경로는 못 본다
+    sshd.sudo_nopasswd = True
+    d = run(_profile(sshd, run_as="app", run_with="sudo"))                      # NOPASSWD: 그대로 정상, 올릴 위치도 실행 계정으로 확인
+    assert d.ok and d.checks[1].state == "ok" and "비밀번호 없이" in d.checks[1].text and d.suggestions == {}
+    assert d.checks[2].state == "ok" and "(app 계정이 씀)" in d.checks[2].text
+    d = run(_profile(sshd, run_as="app", run_with="sudo", run_password=True), remote.Secrets(login=LOGIN_PW, run=SUDO_PW))
+    assert d.ok and d.checks[1].state == "warn" and d.suggestions == {"run_password": False}   # 비밀번호 없이도 되니 꺼도 된다
+    d = run(_profile(sshd, run_as="app", run_with="su"))                        # su 는 비밀번호 필요, sudo 는 없이 됨 -> sudo 로 바꾸라고
+    assert not d.ok and d.checks[1].state == "fail" and d.suggestions == {"run_with": "sudo", "run_password": False, "chown": False}
+    sshd.sudo_nopasswd = False
+    d = run(_profile(sshd, run_as="app", run_with="su"))                        # su 비밀번호 없음, sudo 도 비밀번호 필요
+    assert d.checks[1].state == "fail" and d.suggestions == {"run_password": True} and "sudo -u 계정" in d.checks[1].fix
+
+
 def test_host_key_new_known_changed(sshd, tmp_path):
     known = tmp_path / "known_hosts"
     p = _profile(sshd)
