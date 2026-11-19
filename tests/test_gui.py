@@ -1712,6 +1712,73 @@ def test_deploy_switch_branch(qapp, tmp_path, maven_project):
     assert git_local.current_branch(maven_project) == "feature"
 
 
+def test_batch_deploy_dialog(qapp, tmp_path, maven_project, monkeypatch, sshd):
+    """여러 서버에 차례로: 고른 서버마다 올리고 확인 → 백업 후 반영 → 되돌리기. 확인은 실패해도 다음 서버로, 체크 끈 서버는 건너뛴다."""
+    from shipkit import history
+    from sshd import LOGIN_PW
+    from test_remote import bash_path
+    keyring = FakeKeyring()
+    monkeypatch.setattr("shipkit.secrets._keyring", lambda: keyring)
+    monkeypatch.setattr("shipkit.remote.known_hosts_path", lambda: tmp_path / "known_hosts")
+    servers = [tmp_path / "server1", tmp_path / "server2"]
+    for server in servers:
+        write(server / "WEB-INF/views/user/list.jsp", "OLD")
+    home = tmp_path / "home"
+    path = _config(tmp_path, maven_project, server_path=bash_path(servers[0]),
+                   server={"history_file": bash_path(home / ".shipkit/history.log")},
+                   servers=[{"name": "WAS1", "host": "127.0.0.1", "port": sshd.port, "user": "deployer",
+                             "upload_dir": "~/deploy1"},
+                            {"name": "WAS2", "host": "127.0.0.1", "port": sshd.port, "user": "deployer",
+                             "upload_dir": "~/deploy2", "server_path": bash_path(servers[1])},
+                            {"name": "운영", "host": "127.0.0.1", "port": sshd.port, "user": "deployer",
+                             "upload_dir": "~/deploy3", "server_path": bash_path(tmp_path / "missing")}])
+    dialogs = FakeDialogs(password=LOGIN_PW)
+    w = make_window(path, dialogs)
+    d = w.deploy_page
+    d.files_edit.setPlainText("src/main/webapp/WEB-INF/views/user/list.jsp")
+    d.preview()
+    d.make_package()
+    panel = d.remote_panel
+    assert panel.batch_btn.isVisibleTo(panel)
+    panel.open_batch()
+    dlg = panel.batch
+    assert dlg is not None and dlg.tree.topLevelItemCount() == 3 and [s.name for s in dlg.selected()] == ["WAS1", "WAS2", "운영"]
+    assert dlg.check_btn.isEnabled() and not dlg.apply_btn.isEnabled() and not dlg.rollback_btn.isEnabled()
+    assert dlg.tree.topLevelItem(2).text(0) == "운영  (운영)"
+
+    dlg.upload_and_check()                                      # 세 서버 차례로: 운영은 배포 경로가 없어 check 실패, 그래도 끝까지
+    assert dlg.summary()["WAS1"][0] == "checked", dlg.log.toPlainText()
+    assert dlg.summary()["WAS1"] == ("checked", "apply 때 바뀌는 파일 1개") and dlg.summary()["WAS2"][0] == "checked"
+    assert dlg.summary()["운영"][0] == "check_failed" and not dlg._busy and dlg.apply_btn.isEnabled()
+    text = dlg.log.toPlainText()
+    assert text.index("━━ WAS1") < text.index("━━ WAS2") < text.index("━━ 운영") and text.count("✓ 확인 끝.") == 2
+    assert "확인 끝 2" in dlg.state_chip.text() and "확인 실패 1" in dlg.state_chip.text()
+    assert dlg.remote_dirs["WAS1"].endswith(d.last_result.out_dir.name) and "deploy2" in dlg.remote_dirs["WAS2"]
+
+    dlg.tree.topLevelItem(1).setCheckState(0, Qt.CheckState.Unchecked)   # WAS2 는 빼고 반영
+    dlg.apply()                                                 # 운영은 확인 실패라 대상이 아님 -> WAS1 만
+    assert dialogs.messages[-1][1] == "여러 서버에 반영하기" and "1개 서버" in dialogs.messages[-1][2]
+    assert dlg.summary()["WAS1"][0] == "applied" and dlg.summary()["WAS2"][0] == "checked"
+    assert (servers[0] / "WEB-INF/views/user/list.jsp").read_text(encoding="utf-8") == "<%-- jsp --%>"
+    assert (servers[1] / "WEB-INF/views/user/list.jsp").read_text(encoding="utf-8") == "OLD"
+    record = history.read_record(d.last_result.out_dir)
+    assert [(x["server"], x["action"], x["ok"]) for x in record.deployments] == [
+        ("WAS1", "check", True), ("WAS2", "check", True), ("운영", "check", False), ("WAS1", "apply", True)]
+    assert "지금 WAS1 서버에는" in panel.current_label.text() or panel.server_combo.currentText().startswith("WAS1")
+
+    dlg.rollback()
+    assert dlg.summary()["WAS1"][0] == "rolled_back" and dlg.summary()["WAS1"][1].startswith("되돌림")
+    assert (servers[0] / "WEB-INF/views/user/list.jsp").read_text(encoding="utf-8") == "OLD"
+    assert record.path == d.last_result.out_dir and len(history.read_record(d.last_result.out_dir).deployments) == 5
+    dlg.close()                                                 # 닫아도 남아 있다가 다시 열면 그대로
+    panel.open_batch()
+    assert panel.batch is dlg and dlg.summary()["WAS1"][0] == "rolled_back"
+    d.files_edit.setPlainText("src/main/webapp/WEB-INF/views/user/list.jsp")   # 새 패키지를 만들면 창은 버린다
+    d.preview()
+    d.make_package()
+    assert panel.batch is None
+
+
 def test_remote_panel_warns_when_package_branch_differs(qapp, tmp_path, maven_project):
     """서버의 배포 브랜치와 패키지를 만든 브랜치가 다르면 점검 띠에 경고, 완료 화면에 [브랜치 다름] 배지,
     올리기 전에 한 번 더 묻는다 (아니오면 올리지 않는다)."""

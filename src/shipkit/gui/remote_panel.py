@@ -234,6 +234,124 @@ class RemoteClient:
 _STAGE_LINE = re.compile(r"^\$ (.+)$")   # remote.py 가 단계마다 찍는 "$ …" 줄
 
 
+class ServerLog(QPlainTextEdit):
+    """서버 작업 출력 창: 단계 구분선·걸린 시간·실패 강조 (배포 완료 화면과 여러 서버 차례 반영 창이 같이 쓴다).
+    출력에서 "$ 올리기: …", "$ check  (계정)" 줄이 단계의 시작이다 (remote.py). 그 줄을 시각이 붙은 구분선으로 바꾸고,
+    단계가 끝나면 걸린 시간을 한 줄 덧붙인다. ✓/✗/[오류]/[경고] 줄은 색으로 구분한다."""
+
+    def __init__(self):
+        super().__init__()
+        self.setReadOnly(True)
+        self.setObjectName("serverLog")
+        self.reset()
+
+    def reset(self) -> None:
+        self.clear()
+        self._stage: Optional[Tuple[str, float]] = None   # (이름, 시작 시각 monotonic)
+        self._at_line_start = True
+        self._line_fmt: Optional[QTextCharFormat] = None
+
+    @staticmethod
+    def fmt(color: str, bold: bool = False) -> QTextCharFormat:
+        fmt = QTextCharFormat()
+        fmt.setForeground(QColor(color))
+        if bold:
+            fmt.setFontWeight(QFont.Weight.Bold)
+        return fmt
+
+    @classmethod
+    def _line_format(cls, line: str) -> Optional[QTextCharFormat]:
+        s = line.lstrip()
+        if s.startswith("✓"):
+            return cls.fmt(theme.TONES["success"][0], True)
+        if s.startswith(("✗", "[오류]", "[취소]", "[실패]")):
+            return cls.fmt(theme.TONES["danger"][0], True)
+        if s.startswith(("[경고]", "[안내]")):
+            return cls.fmt(theme.TONES["warning"][0])
+        return None
+
+    def _insert(self, text: str, fmt: Optional[QTextCharFormat] = None) -> None:
+        cursor = self.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        cursor.insertText(text, fmt or QTextCharFormat())
+        self.setTextCursor(cursor)
+        self.ensureCursorVisible()
+
+    def append(self, text: str) -> None:
+        for piece in text.replace("\r\n", "\n").splitlines(keepends=True):
+            line = piece.rstrip("\n")
+            if self._at_line_start:
+                m = _STAGE_LINE.match(line)
+                if m:
+                    self._stage_header(m.group(1).strip())
+                    self._at_line_start = True
+                    continue
+                self._line_fmt = self._line_format(line)
+            self._insert(piece, self._line_fmt)
+            self._at_line_start = piece.endswith("\n")
+
+    def banner(self, text: str) -> None:
+        """서버가 바뀔 때의 머리줄 (여러 서버 차례 반영)."""
+        self.close_stage()
+        if not self._at_line_start:
+            self._insert("\n")
+        self._insert(f"\n━━ {text} ━━━━━━━━━━━━━━━━━━━━━━━━\n", self.fmt(theme.PRIMARY, True))
+        self._at_line_start = True
+
+    def _stage_header(self, name: str) -> None:
+        self.close_stage()
+        self._stage = (name, time.monotonic())
+        self._insert(f"── {datetime.now():%H:%M:%S}  {name} ──────────\n", self.fmt(theme.PRIMARY, True))
+
+    def close_stage(self) -> None:
+        """단계가 끝났을 때 걸린 시간을 덧붙인다 (다음 단계가 시작되거나 작업이 끝났을 때)."""
+        if self._stage is None:
+            return
+        _name, started = self._stage
+        self._stage = None
+        if not self._at_line_start:
+            self._insert("\n")
+            self._at_line_start = True
+        self._insert(f"   ⏱ {time.monotonic() - started:.1f}초\n", self.fmt(theme.MUTED))
+
+
+def ask_hooks(ctx: AppContext, project: ProjectConfig, result, stages: Tuple[str, ...]) -> bool:
+    """패키지에 서버 명령(hooks)이 있으면 함께 실행할지 묻는다 (명령이 없으면 True).
+    지난 패키지 때와 서버 명령 설정이 달라졌으면 누가 바꿨는지 확인하라고 덧붙인다."""
+    hooks = {s: c for s, c in (result.hooks or {}).items() if s in stages and c}
+    if not hooks:
+        return True
+    lines = "\n".join(f"- {HOOK_TEXT.get(s, s)}: {cmd}" for s, cmds in hooks.items() for cmd in cmds)
+    prev_name, changed = history.hooks_changed_since(project, exclude=result.out_dir)
+    warn = ("\n\n⚠ 지난 패키지 " + prev_name + " 때와 서버 명령 설정이 다릅니다. 누가 바꿨는지 확인하세요:\n"
+            + "\n".join(f"  · {c}" for c in changed)) if changed else ""
+    return ctx.dialogs.ask("서버 명령", f"이 패키지에는 서버에서 실행할 명령이 있습니다.\n\n{lines}{warn}\n\n"
+                                       "함께 실행할까요? ([아니요]를 누르면 파일만 반영합니다)")
+
+
+def branch_mismatch(result, p: ServerProfile) -> str:
+    """서버에 배포 브랜치를 적어 뒀는데 이 패키지를 만든 브랜치가 다르면 그 설명, 아니면 빈 글."""
+    if not p.branch or result is None or result.out_dir is None:
+        return ""
+    record = history.read_record(result.out_dir)
+    made = record.git_branch if record else ""
+    if not made or made == p.branch:
+        return ""
+    return f"{p.name} 서버는 {p.branch} 브랜치로 배포하는데, 이 패키지는 {made} 브랜치에서 만들었습니다."
+
+
+def record_deployment(result, project: ProjectConfig, p: ServerProfile, res: remote.StepResult) -> str:
+    """서버에서 한 일을 패키지 기록 파일에 남긴다 (기록 화면의 '서버 반영' 탭, 서버에서 되돌리기). 못 남기면 경고 글."""
+    if result is None or result.out_dir is None:
+        return ""
+    try:
+        history.append_deployment(result.out_dir, p.name, p.address, res.action, res.code, res.remote_dir,
+                                  p.server_path or project.server_path)
+    except OSError as e:
+        return f"\n[경고] 반영 이력을 기록 파일에 남기지 못했습니다: {e}\n"
+    return ""
+
+
 class RemotePanel(Section):
     """배포 완료 화면의 '서버에 바로 반영' 구역 (접을 수 있다)."""
     settings_requested = Signal()  # 서버가 없을 때 [서버 등록하러 가기]
@@ -248,6 +366,7 @@ class RemotePanel(Section):
         self.result = None                 # 방금 만든 패키지 (PackageResult)
         self.remote_dir: Optional[str] = None
         self.stage = "ready"               # ready / checked / applied
+        self.batch: Optional[Any] = None   # [여러 서버에 차례로…] 창 (BatchDeployDialog). 패키지를 새로 만들면 버린다
 
         self.empty = label("프로젝트 설정의 [서버 연결] 탭에서 서버를 등록하면 여기서 바로 올리고 반영할 수 있습니다.", "muted")
         go = button("서버 등록하러 가기", "ghost")
@@ -303,6 +422,10 @@ class RemotePanel(Section):
         for b in (self.check_btn, self.apply_btn, self.rollback_btn, self.log_btn):
             buttons.addWidget(b)
         buttons.addStretch(1)
+        self.batch_btn = button("여러 서버에 차례로…", "ghost")   # 서버가 둘 이상일 때만
+        self.batch_btn.setToolTip("같은 패키지를 고른 서버들에 순서대로 올리고 확인 → 백업 후 반영합니다. 서버마다 결과가 한 줄로 보입니다.")
+        self.batch_btn.clicked.connect(self.open_batch)
+        buttons.addWidget(self.batch_btn)
         col.addLayout(buttons)
         status = QHBoxLayout()  # 상태 배지와 [취소]는 둘째 줄 (버튼과 한 줄에 두면 좁은 창에서 오른쪽이 잘린다)
         status.setSpacing(6)
@@ -332,9 +455,7 @@ class RemotePanel(Section):
         check_col.addWidget(self.check_tree)
         self.check_box.hide()
         col.addWidget(self.check_box)
-        self.log = QPlainTextEdit()
-        self.log.setReadOnly(True)
-        self.log.setObjectName("serverLog")
+        self.log = ServerLog()
         self.log.setMinimumHeight(220)
         self.log.hide()
         col.addWidget(self.log)
@@ -365,6 +486,11 @@ class RemotePanel(Section):
         self.server_combo.setVisible(bool(servers))
         self.empty_row.setVisible(not servers)
         self.main.setVisible(bool(servers))
+        self.batch_btn.setVisible(len(servers) >= 2)
+        if self.batch is not None and not self.batch._busy:
+            self.batch.close()
+            self.batch.deleteLater()
+            self.batch = None
         self.set_collapsed(not servers)  # 서버가 없으면 접어 두고, 펼치면 등록 안내가 보인다
         self._reset_log()
         self.log.hide()
@@ -395,13 +521,7 @@ class RemotePanel(Section):
 
     def _branch_mismatch(self, p) -> str:
         """서버에 배포 브랜치를 적어 뒀는데 이 패키지를 만든 브랜치가 다르면 그 설명, 아니면 빈 글."""
-        if not p.branch or self.result is None or self.result.out_dir is None:
-            return ""
-        record = history.read_record(self.result.out_dir)
-        made = record.git_branch if record else ""
-        if not made or made == p.branch:
-            return ""
-        return f"{p.name} 서버는 {p.branch} 브랜치로 배포하는데, 이 패키지는 {made} 브랜치에서 만들었습니다."
+        return branch_mismatch(self.result, p)
 
     def refresh_current(self) -> None:
         """'지금 이 서버에는 어떤 패키지가 반영돼 있나' 를 이 PC 의 패키지 기록으로 보여 준다 (서버 접속 없이)."""
@@ -425,6 +545,17 @@ class RemotePanel(Section):
         window = self.window()
         if window is not None and not window.isActiveWindow():
             self.ctx.notify(title, text)
+
+    def open_batch(self) -> None:
+        """[여러 서버에 차례로…]: 이 패키지의 일괄 반영 창 (닫았다 열어도 상태와 로그가 남는다)."""
+        if self.result is None:
+            return
+        if self.batch is None:
+            from shipkit.gui.batch_deploy import BatchDeployDialog
+            self.batch = BatchDeployDialog(self.ctx, self.result, self.window(), on_finished=self.refresh_current)
+        self.batch.show()
+        self.batch.raise_()
+        self.batch.activateWindow()
 
     def _show_server_status(self) -> None:
         from shipkit.gui.server_status import ServerStatusDialog
@@ -457,69 +588,15 @@ class RemotePanel(Section):
             self.cancel_btn.setEnabled(True)
             self.cancel_btn.setText("취소")
 
-    # ------------------------------------------------------------------ 로그: 단계 구분선·걸린 시간·실패 강조
-    # 서버 작업 출력에서 "$ 올리기: …", "$ check  (계정)" 줄이 단계의 시작이다 (remote.py). 그 줄을 시각이 붙은
-    # 구분선으로 바꾸고, 단계가 끝나면 걸린 시간을 한 줄 덧붙인다. ✓/✗/[오류]/[경고] 줄은 색으로 구분한다.
+    # ------------------------------------------------------------------ 로그 (ServerLog: 단계 구분선·걸린 시간·실패 강조)
     def _reset_log(self) -> None:
-        self.log.clear()
-        self._stage: Optional[Tuple[str, float]] = None   # (이름, 시작 시각 monotonic)
-        self._at_line_start = True
-        self._line_fmt: Optional[QTextCharFormat] = None
-
-    @staticmethod
-    def _fmt(color: str, bold: bool = False) -> QTextCharFormat:
-        fmt = QTextCharFormat()
-        fmt.setForeground(QColor(color))
-        if bold:
-            fmt.setFontWeight(QFont.Weight.Bold)
-        return fmt
-
-    @classmethod
-    def _line_format(cls, line: str) -> Optional[QTextCharFormat]:
-        s = line.lstrip()
-        if s.startswith("✓"):
-            return cls._fmt(theme.TONES["success"][0], True)
-        if s.startswith(("✗", "[오류]", "[취소]", "[실패]")):
-            return cls._fmt(theme.TONES["danger"][0], True)
-        if s.startswith(("[경고]", "[안내]")):
-            return cls._fmt(theme.TONES["warning"][0])
-        return None
-
-    def _insert(self, text: str, fmt: Optional[QTextCharFormat] = None) -> None:
-        cursor = self.log.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
-        cursor.insertText(text, fmt or QTextCharFormat())
-        self.log.setTextCursor(cursor)
-        self.log.ensureCursorVisible()
+        self.log.reset()
 
     def _append(self, text: str) -> None:
-        for piece in text.replace("\r\n", "\n").splitlines(keepends=True):
-            line = piece.rstrip("\n")
-            if self._at_line_start:
-                m = _STAGE_LINE.match(line)
-                if m:
-                    self._stage_header(m.group(1).strip())
-                    self._at_line_start = True
-                    continue
-                self._line_fmt = self._line_format(line)
-            self._insert(piece, self._line_fmt)
-            self._at_line_start = piece.endswith("\n")
-
-    def _stage_header(self, name: str) -> None:
-        self._close_stage()
-        self._stage = (name, time.monotonic())
-        self._insert(f"── {datetime.now():%H:%M:%S}  {name} ──────────\n", self._fmt(theme.PRIMARY, True))
+        self.log.append(text)
 
     def _close_stage(self) -> None:
-        """단계가 끝났을 때 걸린 시간을 덧붙인다 (다음 단계가 시작되거나 작업이 끝났을 때)."""
-        if self._stage is None:
-            return
-        _name, started = self._stage
-        self._stage = None
-        if not self._at_line_start:
-            self._insert("\n")
-            self._at_line_start = True
-        self._insert(f"   ⏱ {time.monotonic() - started:.1f}초\n", self._fmt(theme.MUTED))
+        self.log.close_stage()
 
     def show_check(self, result: Optional[remote.CheckResult]) -> None:
         """check 로그를 표로: 상태 배지 옆의 상태별 개수 배지와, 상태마다 접을 수 있는 파일 목록."""
@@ -554,13 +631,9 @@ class RemotePanel(Section):
 
     def _record(self, p: ServerProfile, res: remote.StepResult) -> None:
         """서버에서 한 일을 패키지 기록 파일에 남긴다 (기록 화면의 '서버 반영' 탭, 서버에서 되돌리기)."""
-        if self.result is None or self.result.out_dir is None:
-            return
-        try:
-            history.append_deployment(self.result.out_dir, p.name, p.address, res.action, res.code, res.remote_dir,
-                                      p.server_path or self.project.server_path)
-        except OSError as e:
-            self._append(f"\n[경고] 반영 이력을 기록 파일에 남기지 못했습니다: {e}\n")
+        warning = record_deployment(self.result, self.project, p, res)
+        if warning:
+            self._append(warning)
         self.refresh_current()
 
     def _progress(self, sent: int, total: int) -> None:
@@ -624,15 +697,7 @@ class RemotePanel(Section):
 
     def _hooks_answer(self, stages: Tuple[str, ...]) -> bool:
         """서버 명령을 함께 실행할지 묻는다 (명령이 없으면 True)."""
-        hooks = {s: c for s, c in (self.result.hooks or {}).items() if s in stages and c}
-        if not hooks:
-            return True
-        lines = "\n".join(f"- {HOOK_TEXT.get(s, s)}: {cmd}" for s, cmds in hooks.items() for cmd in cmds)
-        prev_name, changed = history.hooks_changed_since(self.project, exclude=self.result.out_dir)
-        warn = ("\n\n⚠ 지난 패키지 " + prev_name + " 때와 서버 명령 설정이 다릅니다. 누가 바꿨는지 확인하세요:\n"
-                + "\n".join(f"  · {c}" for c in changed)) if changed else ""
-        return self.ctx.dialogs.ask("서버 명령", f"이 패키지에는 서버에서 실행할 명령이 있습니다.\n\n{lines}{warn}\n\n"
-                                               "함께 실행할까요? ([아니요]를 누르면 파일만 반영합니다)")
+        return ask_hooks(self.ctx, self.project, self.result, stages)
 
     def apply(self) -> None:
         p = self.profile
