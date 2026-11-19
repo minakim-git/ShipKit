@@ -53,15 +53,22 @@ def test_servers_config():
     p = parse_config({"projects": {"a": dict(base, servers=[
         {"name": "개발", "host": "10.0.0.5", "user": "admin", "run_as": "app", "run_with": "su", "chown": True},
         {"name": "운영", "host": "prod.acme.local", "port": 2222, "user": "app", "auth": "key",
-         "key_file": "C:/keys/id_ed25519", "server_path": "/srv/prod", "branch": "release/1.0"}])}}).project("a")
+         "key_file": "C:/keys/id_ed25519", "server_path": "/srv/prod", "branch": "release/1.0",
+         "log_file": "/var/log/app/catalina.out"}])}}).project("a")
     dev, prod = p.servers
     assert (dev.runner, dev.run_with, dev.chown, dev.upload_dir) == ("app", "su", True, "~/deploy")
     assert prod.address == "app@prod.acme.local:2222" and prod.server_path == "/srv/prod" and prod.runner == "app"
     assert prod.branch == "release/1.0" and dev.branch == ""
+    assert prod.log_file == "/var/log/app/catalina.out" and dev.log_file == ""
+    assert remote.tail_command(prod) == "tail -n 200 -F /var/log/app/catalina.out"
+    win = ServerProfile(name="w", host="h", user="u", server_os="windows", log_file="D:/tomcat/logs/catalina.out")
+    assert remote.tail_command(win) == "Get-Content -Path 'D:\\tomcat\\logs\\catalina.out' -Tail 200 -Wait"
     for bad, msg in [({"name": "x", "host": "h"}, "user"), ({"name": "x", "host": "h", "user": "u", "auth": "key"}, "key_file"),
                      ({"name": "x", "host": "h; rm", "user": "u"}, "host"),
                      ({"name": "x", "host": "h", "user": "u", "upload_dir": "deploy"}, "upload_dir"),
-                     ({"name": "x", "host": "h", "user": "u", "branch": "ma ster"}, "branch")]:
+                     ({"name": "x", "host": "h", "user": "u", "branch": "ma ster"}, "branch"),
+                     ({"name": "x", "host": "h", "user": "u", "log_file": "logs/app.log"}, "log_file"),
+                     ({"name": "x", "host": "h", "user": "u", "log_file": "/var/log/$x"}, "log_file")]:
         with pytest.raises(ConfigError, match=msg):
             parse_config({"projects": {"a": dict(base, servers=[bad])}})
 

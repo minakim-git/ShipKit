@@ -373,6 +373,7 @@ GUI 테스트는 화면 없이(`QT_QPA_PLATFORM=offscreen`) 실제 위젯을 조
 | 올릴 위치 | 패키지 폴더를 올릴 곳 (기본 `~/deploy`) |
 | 실행 계정 | 접속한 계정 그대로 / 다른 계정으로 실행 (`sudo -u 계정` 또는 `su - 계정`, 필요하면 비밀번호). `sudo -u` 면 파일 올리기도 실행 계정으로(tar 스트림), `su -` 면 접속 계정으로 올린 뒤 소유자 바꾸기 |
 | 서버 배포 경로 | 서버마다 다르면 따로 (비우면 프로젝트 값) |
+| 로그 파일 | 적어 두면 완료 화면의 **로그 보기**·서버 화면의 **로그 따라가기**가 터미널에서 `tail -F` 로 따라감 (Windows 는 `Get-Content -Wait`) |
 | 메신저 알림 | 반영·되돌리기가 끝나면 웹훅으로 한 줄: Slack·Mattermost·Teams(`text`) / 잔디(`body`) / Discord(`content`) / 직접 입력(JSON 키 지정). **알림 시험**으로 채널에 도착하는지 확인 |
 
 - 비밀번호·키 암호는 처음 접속할 때 묻고, 저장을 고르면 Windows 자격 증명 관리자에 넣어 다음부터 묻지 않습니다. 설정 파일에는 들어가지 않습니다. 로그인에 실패하면 저장한 비밀번호를 지우고 다음에 다시 묻습니다.
@@ -412,6 +413,7 @@ projects:
         chown: true            # 올린 패키지 폴더 소유자를 실행 계정으로
         upload_dir: /home/app/deploy   # sudo 로 실행하면 실행 계정으로 바로 올리므로 실행 계정만 쓸 수 있으면 된다
         branch: master         # 이 서버에 배포할 브랜치 (비우면 확인하지 않음). 점검 띠·서버 반영에서 다르면 경고
+        log_file: /opt/tomcat/logs/catalina.out   # 적어 두면 완료 화면 [로그 보기]·서버 화면 [로그 따라가기]가 터미널에서 tail -F
         notify:                # 반영·되돌리기가 끝나면 메신저로 한 줄 (비우면 알리지 않음)
           url: https://hooks.slack.com/services/T000/B000/xxxx
           format: slack        # slack | mattermost | teams ({"text"}) / jandi ({"body"}) / discord ({"content"}) / custom (key 지정)

@@ -995,6 +995,7 @@ def test_remote_panel_upload_apply_rollback(qapp, tmp_path, maven_project, monke
     path = _config(tmp_path, maven_project, server_path=bash_path(server),
                    server={"history_file": bash_path(tmp_path / "home/.shipkit/history.log")},  # 진짜 홈을 안 건드리게
                    servers=[{"name": "개발", "host": "127.0.0.1", "port": sshd.port, "user": "deployer",
+                             "log_file": "/var/log/app.log",
                              "notify": {"url": "https://hooks.slack.com/services/T/B/x", "format": "slack"}}])
     posts = []                                                  # 메신저 알림(웹훅)은 가짜 requests.post 로 받는다
     monkeypatch.setattr("requests.post", lambda url, json=None, timeout=None: (posts.append(json), FakeResponse(200, "ok"))[1])
@@ -1007,6 +1008,11 @@ def test_remote_panel_upload_apply_rollback(qapp, tmp_path, maven_project, monke
     panel = d.remote_panel
     assert panel.main.isVisibleTo(panel) and panel.server_combo.currentText().startswith("개발")
     assert not panel.prod_chip.isVisibleTo(panel) and "반영한 기록이 이 PC 에는 없습니다" in panel.current_label.text()
+    assert panel.log_btn.isVisibleTo(panel) and "/var/log/app.log" in panel.log_btn.toolTip()   # 로그 파일이 있는 서버: [로그 보기]
+    log_asked = []
+    panel.log_requested.connect(log_asked.append)
+    panel.log_btn.click()
+    assert log_asked == ["개발"]
 
     panel.upload_and_check()                                    # 처음: 지문 확인 + 비밀번호 입력(저장)
     assert panel.stage == "checked", panel.log.toPlainText()
@@ -1026,6 +1032,7 @@ def test_remote_panel_upload_apply_rollback(qapp, tmp_path, maven_project, monke
     assert not posts                                            # 올리고 확인만으로는 메신저에 알리지 않는다
     panel.apply()
     assert panel.stage == "applied", panel.log.toPlainText()
+    assert "서버 로그는 [로그 보기]." in panel.log.toPlainText()
     assert (server / "WEB-INF/views/user/list.jsp").read_text(encoding="utf-8") == "<%-- jsp --%>"
     assert notes and notes[-1][0] == "erp → 개발 반영 완료" and notes[-1][1].startswith("패키지 ")
     assert len(posts) == 1 and posts[0]["text"].startswith(f"✅ erp 개발에 {d.last_result.out_dir.name} 반영, 파일 1개")
@@ -1297,7 +1304,8 @@ def test_server_page_files(qapp, tmp_path, maven_project, monkeypatch, sshd):
     write(server / "WEB-INF/views/user/list.jsp", "OLD")
     home = (tmp_path / "home").as_posix()                       # 테스트 SSH 서버의 홈 (SFTP 가 'C:/…' 로 돌려준다)
     path = _config(tmp_path, maven_project, server_path=bash_path(server),
-                   servers=[{"name": "운영", "host": "127.0.0.1", "port": sshd.port, "user": "deployer"}])
+                   servers=[{"name": "운영", "host": "127.0.0.1", "port": sshd.port, "user": "deployer",
+                             "log_file": "/var/log/app.log"}])
     dialogs = FakeDialogs(password=LOGIN_PW)
     w = make_window(path, dialogs)
     w.go(PAGE_SERVER)
@@ -1447,6 +1455,9 @@ def test_server_page_files(qapp, tmp_path, maven_project, monkeypatch, sshd):
     assert next_command() == f"cd {home}/deploy"
     s.open_in_terminal(f"{home}/deploy/sub")                                      # 오른쪽 단추 메뉴: 고른 폴더로
     assert next_command() == f"cd {home}/deploy/sub"
+    assert s.log_btn.isEnabled() and "/var/log/app.log" in s.log_btn.toolTip()
+    s.follow_log()                                                                # [로그 따라가기]: (Ctrl+C 뒤) tail -F 를 친다
+    assert next_command() == "tail -n 200 -F /var/log/app.log" and wait_for("(tail)")
     s.close_terminal()
     assert s.shell is None and not s.term_open_btn.isEnabled() and s.term.isEnabled()   # 접속은 그대로
     s.open_terminal()
@@ -1470,6 +1481,12 @@ def test_server_page_files(qapp, tmp_path, maven_project, monkeypatch, sshd):
     assert s.conn is None
     s.connect_btn.click()                                                         # [연결]: 저장한 비밀번호로 묻지 않고 붙는다
     assert s.conn is not None and s.shell is not None and dialogs.messages[-1][0] != "secret"
+    s.disconnect()
+    assert not s.log_btn.isEnabled()
+    w.go(PAGE_DEPLOY)
+    w.follow_log("운영")                                                          # 완료 화면의 [로그 보기]: 접속해 셸이 열리는 대로 tail
+    assert w.stack.currentWidget() is s and s.conn is not None and s.shell is not None
+    assert next_command() == "tail -n 200 -F /var/log/app.log"
     s.disconnect()
 
 

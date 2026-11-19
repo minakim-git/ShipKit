@@ -771,6 +771,17 @@ def upload_command(profile: ServerProfile, remote_dir: str, password: Optional[b
     return as_runner(profile, f"mkdir -p {q} && tar xzf - -C {q}", password)
 
 
+LOG_TAIL_LINES = 200   # 로그 따라가기: 마지막 몇 줄부터 보여 줄지
+
+
+def tail_command(profile: ServerProfile) -> str:
+    """서버 연결에 적어 둔 로그 파일을 따라가는 명령 (서버 화면의 터미널에 친다). 마지막 줄들부터 보여 주고 새 줄을 기다린다.
+    리눅스는 tail -F (로그가 돌아가며 새 파일이 되어도 따라감), Windows 는 PowerShell 의 Get-Content -Wait."""
+    if profile.server_os == "windows":
+        return f"Get-Content -Path {_ps_quote(to_windows_path(profile.log_file))} -Tail {LOG_TAIL_LINES} -Wait"
+    return f"tail -n {LOG_TAIL_LINES} -F {shlex.quote(profile.log_file)}"
+
+
 def package_archive(local_dir: Path) -> Path:
     """패키지 폴더를 임시 tar.gz 로 묶는다 (실행 계정으로 바로 올릴 때 보내는 스트림). 다 쓴 뒤 지울 것.
     권한은 리눅스 기준으로 정한다: 파일 644, 서버 스크립트·hooks/*.sh 755 (Windows 의 권한 비트는 믿을 수 없다)."""

@@ -85,6 +85,7 @@ class ServerPage(QWidget):
         self._auto_connect = True                  # 화면에 들어오면 바로 붙는다 (끊거나 실패하면 False, 서버를 다시 고르면 True)
         self._picked: Optional[str] = None         # 선택 상자에 고른 서버 이름 (바뀌었는지 보려고)
         self._pending_path: Optional[str] = None  # 접속이 끝나면 열 폴더 (기록 화면에서 왔을 때)
+        self._pending_log = False                  # 셸이 열리면 로그 따라가기를 시작 (완료 화면의 [로그 보기]에서 왔을 때)
         # 터미널 따라가기: 셸에 심은 표식, 찾아낸 셸 PID, 마지막으로 본 셸의 폴더(None 이면 아직 기준이 없음)
         self._shell_tag = ""
         self._shell_pid = 0
@@ -162,6 +163,9 @@ class ServerPage(QWidget):
         self.upload_dir_act.triggered.connect(lambda: self.profile and self.navigate(self.profile.upload_dir))
         self.target_act = goto.addAction("서버 배포 경로 (파일이 반영되는 곳)")
         self.target_act.triggered.connect(lambda: self.navigate(self._target_path()))
+        self.log_dir_act = goto.addAction("로그 파일 폴더")
+        self.log_dir_act.triggered.connect(lambda: self.profile and self.profile.log_file
+                                           and self.navigate(self.profile.log_file.rsplit("/", 1)[0] or "/"))
         goto.addSeparator()
         self.follow_act = goto.addAction("터미널 따라가기 (터미널에서 cd 하면 목록도 이동)")
         self.follow_act.setCheckable(True)
@@ -172,6 +176,9 @@ class ServerPage(QWidget):
             tools.addWidget(w)
         tools.addWidget(self.path_edit, 1)
         tools.addWidget(self.goto_btn)
+        self.log_btn = button("로그 따라가기", "ghost")   # 서버 연결에 적어 둔 로그 파일을 터미널에서 tail -F
+        self.log_btn.clicked.connect(lambda: self.follow_log())
+        tools.addWidget(self.log_btn)
         self.card.body.addLayout(tools)
 
         filter_row = QHBoxLayout()
@@ -306,6 +313,7 @@ class ServerPage(QWidget):
     def _server_picked(self, *_args) -> None:
         profile = self.current_profile()
         self.prod_chip.setVisible(bool(profile and profile.is_production))
+        self._update_log_button()
         name = profile.name if profile else None
         if name != self._picked:
             self._picked = name
@@ -391,6 +399,7 @@ class ServerPage(QWidget):
                   self.upload_btn, self.mkdir_btn):
             w.setEnabled(connected and not self.busy)
         self._update_buttons()
+        self._update_log_button()
 
     # ------------------------------------------------------------------ 터미널
     def open_terminal(self) -> None:
@@ -412,6 +421,9 @@ class ServerPage(QWidget):
             self._shell_tag, self._shell_pid, self._shell_cwd, self._follow_misses = tag, 0, None, 0
             self._set_terminal(True)
             self.term.setFocus()
+            if self._pending_log:               # 완료 화면의 [로그 보기] 로 와서 접속했으면 셸이 열리는 대로 시작
+                self._pending_log = False
+                self._send_log_tail()
             if self._can_follow():
                 self._follow_timer.start()
                 self._check_cwd()           # 기준이 될 지금 폴더부터 (목록을 옮기지는 않는다)
@@ -534,6 +546,51 @@ class ServerPage(QWidget):
         if self.profile is None or p is None:
             return ""
         return self.profile.server_path or p.server_path or ""
+
+    # ------------------------------------------------------------------ 로그 따라가기
+    def _update_log_button(self) -> None:
+        """[로그 따라가기]: 접속한 서버(아직 안 붙었으면 고른 서버)에 로그 파일이 적혀 있고 접속돼 있을 때만."""
+        profile = self.profile if self.conn is not None else self.current_profile()
+        log_file = profile.log_file if profile else ""
+        self.log_btn.setEnabled(bool(log_file) and self.conn is not None)
+        self.log_btn.setToolTip(f"터미널에서 {log_file} 을 tail -F 로 따라갑니다 (마지막 {remote.LOG_TAIL_LINES}줄부터, 멈추려면 Ctrl+C)"
+                                if log_file else
+                                "프로젝트 설정의 [서버 연결]에서 이 서버의 로그 파일을 적어 두면 터미널에서 따라갈 수 있습니다.")
+        self.log_dir_act.setEnabled(bool(log_file))
+
+    def follow_log(self, server: Optional[str] = None) -> None:
+        """[로그 따라가기] / 완료 화면의 [로그 보기]: 서버 연결에 적어 둔 로그 파일을 터미널에서 tail -F 로 따라간다.
+        server 를 주면(완료 화면에서 왔을 때) 그 서버에 접속해(이미 접속돼 있으면 그대로) 셸이 열리는 대로 시작한다."""
+        if server is not None:
+            idx = self.server_combo.findData(server)
+            if idx < 0:
+                self.ctx.dialogs.toast(f"'{server}' 서버가 이 프로젝트의 서버 연결에 없습니다.", "warning")
+                return
+            self._pending_log = True                   # 서버를 고르면 바로 접속이 시작되므로 그 전에
+            self.server_combo.setCurrentIndex(idx)
+            if self.conn is None or self.profile is None or self.profile.name != server:
+                if not self._connecting:
+                    self.connect()
+                return
+            self._pending_log = False
+        profile = self.profile
+        if profile is None or self.conn is None:
+            return
+        if not profile.log_file:
+            self.ctx.dialogs.toast("프로젝트 설정의 [서버 연결]에서 이 서버의 로그 파일을 적어 두세요.", "warning")
+            return
+        if self.shell is None:                         # 셸이 끝나 있으면(exit) 새로 열고 나서
+            self._pending_log = True
+            self.open_terminal()
+            return
+        self._send_log_tail()
+
+    def _send_log_tail(self) -> None:
+        if self.shell is None or self.profile is None or not self.profile.log_file:
+            return
+        # 앞서 돌던 tail 이 있으면 끊고(Ctrl+C) 새로 시작한다
+        self.shell.send(b"\x03" + (remote.tail_command(self.profile) + "\r").encode("utf-8"))
+        self.term.setFocus()
 
     # ------------------------------------------------------------------ 백그라운드 작업
     def _run(self, what: str, fn: Callable[[], Any], done: Callable[[Any], None],

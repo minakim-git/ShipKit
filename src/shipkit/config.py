@@ -233,6 +233,7 @@ class ServerProfile:
     server_os: str = "linux"            # linux: bash 로 shipkit.sh / windows: OpenSSH 서버에서 PowerShell 로 shipkit.ps1
     notify: Optional[NotifyConfig] = None   # 반영·되돌리기가 끝나면 알릴 메신저 웹훅 (비우면 알리지 않음)
     branch: str = ""                    # 이 서버에 배포할 브랜치 (비우면 확인하지 않음). 점검 띠·서버 반영에서 다르면 경고
+    log_file: str = ""                  # 서버 로그 파일 (예: /opt/tomcat/logs/catalina.out). 완료 화면 [로그 보기]·서버 화면 [로그 따라가기]
 
     @property
     def address(self) -> str:
@@ -743,12 +744,19 @@ def parse_servers(raw: Any, where: str, server_os: str) -> List[ServerProfile]:
         branch = _opt_str(item.get("branch")) or ""
         if branch and not re.match(r"^[\w][\w./-]*$", branch):
             raise ConfigError(f"{at}.branch (배포 브랜치)가 올바르지 않습니다: {branch}")
+        log_file = (_opt_str(item.get("log_file")) or "").replace("\\", "/")
+        if log_file:
+            if server_os == "windows":
+                if _UNSAFE_PS_CHARS.search(log_file) or not (log_file.startswith("~/") or _WIN_ABS_PATH.match(log_file)):
+                    raise ConfigError(f"{at}.log_file (로그 파일)은 '~/' 또는 'D:/...' 같은 절대 경로여야 합니다: {log_file}")
+            elif _UNSAFE_SHELL_CHARS.search(log_file) or not (log_file.startswith("/") or log_file.startswith("~/")):
+                raise ConfigError(f"{at}.log_file (로그 파일)은 '/' 또는 '~/' 로 시작하는 경로여야 합니다: {log_file}")
         servers.append(ServerProfile(
             name=name, host=host, user=user, port=port, auth=auth, key_file=key_file, upload_dir=upload_dir,
             run_as=None if run_as == user else run_as, run_with=run_with,
             run_password=bool(item.get("run_password", False)), chown=bool(item.get("chown", False)),
             server_path=_parse_server_path(path, at, server_os) if path else None, server_os=server_os,
-            notify=_parse_notify(item.get("notify"), at), branch=branch,
+            notify=_parse_notify(item.get("notify"), at), branch=branch, log_file=log_file,
         ))
     return servers
 

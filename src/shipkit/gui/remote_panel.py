@@ -237,6 +237,7 @@ _STAGE_LINE = re.compile(r"^\$ (.+)$")   # remote.py 가 단계마다 찍는 "$ 
 class RemotePanel(Section):
     """배포 완료 화면의 '서버에 바로 반영' 구역 (접을 수 있다)."""
     settings_requested = Signal()  # 서버가 없을 때 [서버 등록하러 가기]
+    log_requested = Signal(str)    # [로그 보기]: 서버 화면에서 이 서버(이름)의 로그 파일을 따라간다
 
     def __init__(self, ctx: AppContext):
         self.server_combo = QComboBox()
@@ -291,12 +292,15 @@ class RemotePanel(Section):
         self.rollback_btn = button("되돌리기", "danger")
         self.rollback_btn.setToolTip("rollback: 백업 기준으로 반영 전 상태로 복구합니다")
         self.rollback_btn.clicked.connect(self.rollback)
+        self.log_btn = button("로그 보기", "ghost")   # 서버 연결에 로그 파일을 적어 둔 서버만 보인다
+        self.log_btn.clicked.connect(lambda: self.profile and self.log_requested.emit(self.profile.name))
+        self.log_btn.hide()
         self.state_chip = Chip("", "neutral")
         self.cancel_btn = button("취소", "ghost")   # 진행 중일 때만 보인다
         self.cancel_btn.setToolTip("올리기·실행을 중단합니다. 서버에서 이미 시작된 명령은 그대로 끝까지 돌 수 있습니다.")
         self.cancel_btn.clicked.connect(self.cancel)
         self.cancel_btn.hide()
-        for b in (self.check_btn, self.apply_btn, self.rollback_btn):
+        for b in (self.check_btn, self.apply_btn, self.rollback_btn, self.log_btn):
             buttons.addWidget(b)
         buttons.addStretch(1)
         col.addLayout(buttons)
@@ -382,6 +386,8 @@ class RemotePanel(Section):
             runner = f"{p.user} 계정으로 실행"
         self.target_label.setText(f"올릴 위치 {p.upload_dir}/{self.result.out_dir.name}  ·  반영 경로 {target}  ·  {runner}")
         self.prod_chip.setVisible(p.is_production)
+        self.log_btn.setVisible(bool(p.log_file))
+        self.log_btn.setToolTip(f"서버 화면으로 가서 터미널에서 {p.log_file} 을 tail -F 로 따라갑니다")
         mismatch = self._branch_mismatch(p)
         self.branch_chip.setVisible(bool(mismatch))
         self.branch_chip.setToolTip(mismatch)
@@ -644,7 +650,8 @@ class RemotePanel(Section):
         def done(res: remote.StepResult) -> None:
             self._record(p, res)
             if res.ok:
-                self._append("\n✓ 반영했습니다. 문제가 있으면 [되돌리기]를 누르세요.\n")
+                self._append("\n✓ 반영했습니다. 문제가 있으면 [되돌리기]를 누르세요."
+                             + (" 서버 로그는 [로그 보기].\n" if p.log_file else "\n"))
                 self._set_stage("applied")
             else:
                 self._append(f"\n✗ {res.action} 실패 (종료 코드 {res.code})\n")

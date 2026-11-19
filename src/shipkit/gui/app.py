@@ -69,6 +69,7 @@ class MainWindow(QMainWindow):
         self.wizard_factory = SetupWizard  # 테스트에서 바꿔 끼운다
         self.history_page.remake_requested.connect(self.remake)
         self.deploy_page.remote_panel.settings_requested.connect(self._open_server_settings)
+        self.deploy_page.remote_panel.log_requested.connect(self.follow_log)
         self.settings_page.setup_requested.connect(self.run_setup)
         self.settings_page.import_requested.connect(self._import_legacy)
         self.deploy_page.add_project_requested.connect(self.add_project)
@@ -385,6 +386,11 @@ class MainWindow(QMainWindow):
         """기록 화면의 [서버 폴더 열기]: 서버 화면으로 가서 그 서버의 그 폴더를 연다."""
         self.go(PAGE_SERVER)
         self.server_page.open_path(server, path)
+
+    def follow_log(self, server: str) -> None:
+        """완료 화면의 [로그 보기]: 서버 화면으로 가서 그 서버의 로그 파일을 터미널에서 따라간다."""
+        self.go(PAGE_SERVER)
+        self.server_page.follow_log(server)
 
     def remake(self, record) -> None:
         """기록의 [같은 내용으로 다시 만들기]: 배포 화면 ① 고르기에 같은 MR·파일을 채운다."""

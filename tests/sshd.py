@@ -226,6 +226,9 @@ class _Server(paramiko.ServerInterface):
                         else:
                             channel.sendall(f"bash: cd: {target}: No such file or directory\r\n".encode())
                         self.owner.commands.append(command)   # 폴더를 바꾼 뒤에 (테스트가 명령 수로 기다린다)
+                    elif command.startswith("tail "):   # tail -F 는 끝나지 않으므로 실행하지 않고 받은 것만 기록
+                        self.owner.commands.append(command)
+                        channel.sendall(b"(tail)\r\n")
                     elif command:
                         self.owner.commands.append(command)
                         result = subprocess.run([self.owner.bash, "-c", command], capture_output=True,
