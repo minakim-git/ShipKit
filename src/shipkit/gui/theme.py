@@ -15,8 +15,9 @@ from pathlib import Path
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple
 
-from PySide6.QtCore import QByteArray, QSettings, QSize, Qt
+from PySide6.QtCore import QByteArray, QEvent, QObject, QSettings, QSize, Qt
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QGuiApplication, QIcon, QPainter, QPalette, QPixmap
+from PySide6.QtWidgets import QWidget
 from PySide6.QtSvg import QSvgRenderer
 
 # ---------------------------------------------------------------------- 색 묶음
@@ -281,15 +282,47 @@ def app_font() -> QFont:
     font.setFamilies(["Pretendard", "Segoe UI Variable Text", "Segoe UI", "Malgun Gothic"])
     font.setPointSizeF(10 * FONT_SCALE)
     # 세로 힌팅을 끈다: Windows(DirectWrite) 에서 100% 배율일 때 Pretendard 의 가는 가로획이 힌팅에 눌려 사라져
-    # "그" 가 "ㄱ" 처럼 보였다. 스타일시트로 만든 글꼴도 이 설정을 물려받는다
-    font.setHintingPreference(QFont.HintingPreference.PreferNoHinting)
+    # "그" 가 "ㄱ" 처럼 보였다. 라벨·버튼은 이 설정을 물려받지만 표·목록은 잃으므로 _HintingKeeper 가 다시 입힌다
+    font.setHintingPreference(HINTING)
     return font
+
+
+HINTING = QFont.HintingPreference.PreferNoHinting
+
+
+class _HintingKeeper(QObject):
+    """스타일시트 규칙이 따로 있는 위젯(QTreeWidget·QListWidget·QTableWidget 등)은 스타일시트가 글꼴을 다시 만들면서
+    힌팅 설정을 잃고 기본 힌팅으로 돌아간다. 그러면 100% 배율 화면에서 Pretendard 의 1px 가로획이 사라져 "그" 가 "ㄱ" 처럼
+    보인다 (라벨은 멀쩡해서 표에서만 글자가 잘려 보였다). 위젯이 polish 되거나 스타일이 바뀔 때마다 앱 글꼴의 힌팅 설정을
+    다시 입힌다 (코드가 setFont 로 바꾼 글꼴도 FontChange 때 같이). hinting 속성이 "default" 인 위젯(터미널: 고정폭은
+    기본 힌팅이 또렷하다)은 건드리지 않는다."""
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802
+        if event.type() in (QEvent.Type.Polish, QEvent.Type.StyleChange, QEvent.Type.FontChange) and isinstance(obj, QWidget) \
+                and obj.property("hinting") != "default":
+            font = obj.font()
+            if font.hintingPreference() != HINTING:
+                font.setHintingPreference(HINTING)
+                obj.setFont(font)
+        return False
+
+
+_keeper: Optional[_HintingKeeper] = None
+
+
+def keep_hinting(app) -> None:
+    """앱에 _HintingKeeper 를 한 번 단다 (apply 가 부른다)."""
+    global _keeper
+    if _keeper is None:
+        _keeper = _HintingKeeper(app)
+        app.installEventFilter(_keeper)
 
 
 def apply(app, setting: str = "system") -> str:
     """설정(system 또는 테마 키)에 맞는 테마를 앱 전체에 적용하고, 등록해 둔 아이콘·화면을 다시 그린다. 반환: 테마 키."""
     use(resolve(setting))
     load_fonts()
+    keep_hinting(app)
     app.setFont(app_font())
     app.setPalette(_palette())
     app.setStyleSheet(stylesheet())

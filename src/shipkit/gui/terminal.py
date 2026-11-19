@@ -96,6 +96,7 @@ class TerminalView(QWidget):
         self._preedit = ""
         self.cell_w = self.cell_h = 1.0
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setProperty("hinting", "default")   # 테마의 _HintingKeeper 가 앱 글꼴 힌팅(끔)을 덮어쓰지 않게
         self.setAttribute(Qt.WidgetAttribute.WA_InputMethodEnabled, True)
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
         self.setCursor(Qt.CursorShape.IBeamCursor)
