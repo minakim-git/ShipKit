@@ -1395,6 +1395,44 @@ def test_server_page_files(qapp, tmp_path, maven_project, monkeypatch, sshd):
     assert dialogs.messages[-1][0] == "error" and "같은 이름이 이미" in dialogs.messages[-1][2]
     s.rename("d.txt")
     assert names() == ["local", "d.txt"]
+
+    s.tree.setCurrentItem(s.tree.topLevelItem(1))               # 파일 편집기: 더블클릭·[편집] 으로 열어 고치고 저장 (.bak 남김)
+    assert s.edit_btn.isEnabled()
+    s._activated(s.tree.topLevelItem(1), 0)
+    dlg = s.editor
+    assert dlg is not None and dlg.path == f"{home}/deploy/d.txt" and dlg.editor.toPlainText() == "CCC"
+    assert dlg.format_chip.text() == "UTF-8 · LF" and dlg.state_chip.text() == "저장됨" and not dlg.save_btn.isEnabled()
+    dlg.editor.setPlainText("CCC\nDDD\n")
+    assert dlg.dirty and dlg.state_chip.text() == "수정됨" and dlg.save_btn.isEnabled()
+    dlg.backup_check.setChecked(True)
+    dlg.save()
+    assert dlg.state_chip.text() == "저장됨" and (tmp_path / "home/deploy/d.txt").read_text(encoding="utf-8") == "CCC\nDDD\n"
+    assert (tmp_path / "home/deploy/d.txt.bak").read_text(encoding="utf-8") == "CCC" and "d.txt.bak" in names()
+    assert dialogs.messages[-1][0] == "toast" and "d.txt.bak" in dialogs.messages[-1][2]
+    write(tmp_path / "home/deploy/d.txt", "SERVER\r\nSIDE\r\n")                   # 서버에서 바뀐 것을 [다시 읽기]
+    dlg.reload()
+    assert dlg.editor.toPlainText() == "SERVER\nSIDE\n" and dlg.format_chip.text() == "UTF-8 · CRLF"
+    dlg.editor.setPlainText("SERVER\nSIDE\nMORE\n")
+    dlg.backup_check.setChecked(False)
+    dlg.save()                                                  # 줄 끝(CRLF)은 그대로 되돌린다
+    assert (tmp_path / "home/deploy/d.txt").read_bytes() == b"SERVER\r\nSIDE\r\nMORE\r\n"
+    (tmp_path / "home/deploy/k.conf").write_bytes("키=값\n".encode("cp949"))          # 프로젝트 인코딩 순서(utf-8, cp949)로 읽는다
+    s.refresh()
+    s.edit_file(next(e for e in s.entries if e.name == "k.conf"))
+    assert s.editor is not dlg and s.editor.editor.toPlainText() == "키=값\n" and s.editor.format_chip.text() == "CP949 · LF"
+    s.editor.close()
+    s.edit_file(next(e for e in s.entries if e.name == "d.txt"))  # 이미 열린 파일은 그 창을 다시 쓴다
+    assert s.editor is dlg and len(s.editors) == 1
+    dlg.close()
+    assert s.editors == []
+    (tmp_path / "home/deploy/bin.dat").write_bytes(b"\x00\x01")  # 이진 파일은 열지 않는다
+    s.refresh()
+    s.edit_file(next(e for e in s.entries if e.name == "bin.dat"))
+    assert dialogs.messages[-1][0] == "error" and "이진 파일" in dialogs.messages[-1][2]
+    for extra in ("d.txt.bak", "k.conf", "bin.dat"):
+        (tmp_path / "home/deploy" / extra).unlink()
+    s.refresh()
+    assert names() == ["local", "d.txt"]
     s.tree.setCurrentItem(s.tree.topLevelItem(0))               # 폴더 통째로 내려받기
     out = tmp_path / "down"
     s.download(target_dir=str(out))

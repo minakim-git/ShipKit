@@ -265,6 +265,39 @@ def test_missing_run_password_fails_fast(sshd, tmp_path, maven_project):
 
 
 # ---------------------------------------------------------------------- 실제 접속 (테스트용 서버)
+def test_read_write_file_and_text_codec(sshd, tmp_path):
+    """편집기용 파일 읽기·쓰기: 크기 한도·이진 파일 거부, 저장 전 .bak, 인코딩·줄 끝 알아내고 되돌리기."""
+    from sshd import LOGIN_PW
+    home = sshd.home
+    (home / "a.conf").write_bytes("key=값\r\nnext=1\r\n".encode("cp949"))
+    (home / "big.txt").write_bytes(b"x" * 20)
+    (home / "bin.dat").write_bytes(b"ab\x00cd")
+    p = _profile(sshd)
+    conn = _connect(sshd, tmp_path, p, remote.Secrets(login=LOGIN_PW))
+    try:
+        base = conn.home()
+        data = conn.read_file(f"{base}/a.conf", limit=1000)
+        text, enc, nl = remote.decode_text(data, ["utf-8", "cp949"])
+        assert (text, enc, nl) == ("key=값\nnext=1\n", "cp949", "\r\n")
+        with pytest.raises(remote.RemoteError, match="큽니다"):
+            conn.read_file(f"{base}/big.txt", limit=10)
+        with pytest.raises(remote.RemoteError, match="이진 파일"):
+            conn.read_file(f"{base}/bin.dat")
+        with pytest.raises(remote.RemoteError, match="그런 경로가 없습니다"):
+            conn.read_file(f"{base}/nope.txt")
+        new = remote.encode_text(text + "added=2\n", enc, nl)
+        assert conn.write_file(f"{base}/a.conf", new, backup=data) == f"{base}/a.conf.bak"
+        assert (home / "a.conf").read_bytes() == "key=값\r\nnext=1\r\nadded=2\r\n".encode("cp949")
+        assert (home / "a.conf.bak").read_bytes() == data
+        assert conn.write_file(f"{base}/a.conf", b"plain\n") == "" and (home / "a.conf").read_bytes() == b"plain\n"
+    finally:
+        conn.close()
+    assert remote.decode_text(b"\xef\xbb\xbfhi\n") == ("hi\n", "utf-8-sig", "\n")
+    assert remote.encode_text("hi\n", "utf-8-sig", "\n") == b"\xef\xbb\xbfhi\n"
+    assert remote.decode_text(b"\xff\xfe junk", ["utf-8"])[1] == "utf-8"            # 어느 것으로도 안 읽히면 깨진 글자로
+    assert remote.decode_text(b"a\nb", ["utf-8", "cp949"]) == ("a\nb", "utf-8", "\n")
+
+
 def test_diagnose(sshd, tmp_path):
     """연결 진단: 접속·실행 계정 전환·올릴 위치·배포 경로·명령·로그 파일을 확인하고, 설정으로 고칠 것은 추천한다."""
     from sshd import LOGIN_PW, SUDO_PW

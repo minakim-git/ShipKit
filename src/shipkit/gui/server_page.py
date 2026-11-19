@@ -86,6 +86,8 @@ class ServerPage(QWidget):
         self._picked: Optional[str] = None         # 선택 상자에 고른 서버 이름 (바뀌었는지 보려고)
         self._pending_path: Optional[str] = None  # 접속이 끝나면 열 폴더 (기록 화면에서 왔을 때)
         self._pending_log = False                  # 셸이 열리면 로그 따라가기를 시작 (완료 화면의 [로그 보기]에서 왔을 때)
+        self.editors: List[Any] = []               # 열려 있는 파일 편집기 창 (FileEditorDialog)
+        self.editor: Optional[Any] = None          # 마지막으로 연 편집기 (테스트용)
         # 터미널 따라가기: 셸에 심은 표식, 찾아낸 셸 PID, 마지막으로 본 셸의 폴더(None 이면 아직 기준이 없음)
         self._shell_tag = ""
         self._shell_pid = 0
@@ -222,13 +224,16 @@ class ServerPage(QWidget):
         self.upload_btn.clicked.connect(lambda: self.upload_dialog())
         self.download_btn = button("내려받기")
         self.download_btn.clicked.connect(lambda: self.download())
+        self.edit_btn = button("편집", "ghost")   # 텍스트 파일 하나를 열어 고치고 저장 (더블클릭도 같다)
+        self.edit_btn.setToolTip("텍스트 파일을 열어 고치고 저장합니다 (저장 전 원본을 .bak 으로 남김). 파일 하나를 골랐을 때")
+        self.edit_btn.clicked.connect(lambda: self.edit_file())
         self.mkdir_btn = button("새 폴더", "ghost")
         self.mkdir_btn.clicked.connect(lambda: self.make_dir())
         self.rename_btn = button("이름 바꾸기", "ghost")
         self.rename_btn.clicked.connect(lambda: self.rename())
         self.delete_btn = button("지우기", "danger")
         self.delete_btn.clicked.connect(self.delete)
-        for w in (self.upload_btn, self.download_btn, self.mkdir_btn, self.rename_btn, self.delete_btn):
+        for w in (self.upload_btn, self.download_btn, self.edit_btn, self.mkdir_btn, self.rename_btn, self.delete_btn):
             bar.addWidget(w)
         bar.addStretch(1)
         self.card.body.addLayout(bar)
@@ -707,7 +712,7 @@ class ServerPage(QWidget):
         if entry.is_dir:
             self.navigate(entry.path)
         else:
-            self.download([entry])
+            self.edit_file(entry)
 
     def _fill_tree(self, *_args) -> None:
         text = self.filter_edit.text().strip().lower()
@@ -739,6 +744,8 @@ class ServerPage(QWidget):
         menu = QMenu(self.tree)
         download = menu.addAction("내려받기")
         download.setEnabled(bool(picked))
+        edit_act = menu.addAction("편집")
+        edit_act.setEnabled(len(picked) == 1 and not picked[0].is_dir)
         rename = menu.addAction("이름 바꾸기")
         rename.setEnabled(len(picked) == 1)
         delete = menu.addAction("지우기")
@@ -756,6 +763,8 @@ class ServerPage(QWidget):
             self.open_in_terminal(folder)
         elif chosen is download:
             self.download()
+        elif chosen is edit_act:
+            self.edit_file()
         elif chosen is rename:
             self.rename()
         elif chosen is delete:
@@ -774,6 +783,7 @@ class ServerPage(QWidget):
         ready = self.conn is not None and not self.busy
         picked = self.selected() if ready else []
         self.download_btn.setEnabled(bool(picked))
+        self.edit_btn.setEnabled(len(picked) == 1 and not picked[0].is_dir)
         self.rename_btn.setEnabled(len(picked) == 1)
         self.delete_btn.setEnabled(bool(picked))
 
@@ -827,6 +837,60 @@ class ServerPage(QWidget):
             self.ctx.dialogs.toast(f"파일 {count}개를 {dest} 에 내려받았습니다.")
 
         self._run("내려받는", work, done, progress=True)
+
+    # ------------------------------------------------------------------ 파일 편집
+    def _encodings(self) -> List[str]:
+        p = self.ctx.project
+        return list(p.source_encodings) if p and p.source_encodings else ["utf-8", "cp949"]
+
+    def edit_file(self, entry: Optional[remote.RemoteEntry] = None) -> None:
+        """[편집] / 파일 더블클릭: 텍스트 파일을 읽어 편집기 창을 연다. 저장·다시 읽기는 창의 신호로 여기서 SFTP 를 돌린다."""
+        conn = self.conn
+        if entry is None:
+            picked = self.selected()
+            entry = picked[0] if len(picked) == 1 else None
+        if conn is None or entry is None or entry.is_dir:
+            return
+        for dlg in self.editors:                      # 이미 열려 있으면 그 창을 앞으로
+            if dlg.path == entry.path:
+                self.editor = dlg
+                dlg.show()
+                dlg.raise_()
+                dlg.activateWindow()
+                return
+        path = entry.path
+
+        def done(data: bytes) -> None:
+            from shipkit.gui.file_editor import FileEditorDialog
+            dlg = FileEditorDialog(self.ctx, path, data, self._encodings(), self.window())
+            dlg.save_requested.connect(lambda content, backup, d=dlg: self._save_file(d, content, backup))
+            dlg.reload_requested.connect(lambda d=dlg: self._reload_file(d))
+            dlg.finished.connect(lambda _r, d=dlg: self.editors.remove(d) if d in self.editors else None)
+            self.editors.append(dlg)
+            self.editor = dlg
+            dlg.show()
+
+        self._run("읽는", lambda: conn.read_file(path, remote.MAX_EDIT_BYTES), done)
+
+    def _save_file(self, dlg, content: bytes, backup: bool) -> None:
+        conn = self.conn
+        if conn is None:
+            dlg.save_failed("서버와 연결돼 있지 않습니다. 다시 연결한 뒤 저장하세요.")
+            return
+        original = dlg.original if backup else None
+
+        def done(backup_path: str) -> None:
+            dlg.saved(content, backup_path)
+            if posixpath.dirname(dlg.path) == self.path:
+                self.refresh()                        # 크기·수정 시각·.bak 이 목록에 보이게
+
+        self._run("저장하는", lambda: conn.write_file(dlg.path, content, original), done, dlg.save_failed)
+
+    def _reload_file(self, dlg) -> None:
+        conn = self.conn
+        if conn is None:
+            return
+        self._run("읽는", lambda: conn.read_file(dlg.path, remote.MAX_EDIT_BYTES), lambda data: dlg.reloaded(data, self._encodings()))
 
     def make_dir(self, name: Optional[str] = None) -> None:
         conn, folder = self.conn, self.path

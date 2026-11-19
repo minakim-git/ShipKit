@@ -285,6 +285,8 @@ class Connection(Protocol):
     def upload_stream(self, command: str, local_dir: Path, output: Output, progress: Optional[Progress] = None,
                       password: Optional[str] = None) -> int: ...   # local_dir 를 tar.gz 로 묶어 command 의 표준 입력으로
     def run(self, command: str, output: Output, password: Optional[str] = None, pty: bool = False) -> int: ...
+    def read_file(self, path: str, limit: int = 0) -> bytes: ...                       # 서버 파일 하나 (편집기)
+    def write_file(self, path: str, data: bytes, backup: Optional[bytes] = None) -> str: ...   # 쓰기, 반환: 백업 경로
     def cancel(self) -> None: ...   # 다른 스레드에서: 진행 중인 올리기·명령을 끊는다 (RemoteCancelled 로 끝남)
     def close(self) -> None: ...
 
@@ -594,6 +596,45 @@ class SSHConnection:
                 progress(i, len(items))
         return len(items)
 
+    def read_file(self, path: str, limit: int = 0) -> bytes:
+        """서버 파일 하나를 통째로 읽는다 (편집기). limit 보다 크거나 이진 파일(NUL 포함)이면 RemoteError."""
+        name = posixpath.basename(path)
+        attrs = self._sftp_call(f"파일 확인 ({name})", self.sftp.stat, path)
+        size = int(attrs.st_size or 0)
+        if limit and size > limit:
+            raise RemoteError(f"{name} 은 {size / 1_000_000:.1f} MB 로 편집기로 열기에는 큽니다 (한도 {limit // 1_000_000} MB). "
+                              "내려받아 고친 뒤 올리세요.")
+
+        def read() -> bytes:
+            with self.sftp.open(path, "rb") as f:
+                return f.read()
+
+        data = self._sftp_call(f"읽기 ({name})", read)
+        if b"\x00" in data:
+            raise RemoteError(f"{name} 은 이진 파일로 보여 편집기로 열지 않습니다. 내려받기를 쓰세요.")
+        return data
+
+    def write_file(self, path: str, data: bytes, backup: Optional[bytes] = None) -> str:
+        """서버 파일을 덮어쓴다 (편집기 저장). backup 이 있으면 먼저 같은 폴더의 '<이름>.bak' 에 그 내용을 남긴다.
+        파일은 제자리에서 내용만 바꾸므로 권한·소유자는 그대로다. 반환: 백업 경로 (없으면 빈 글)."""
+        name = posixpath.basename(path)
+        backup_path = ""
+        if backup is not None:
+            backup_path = path + ".bak"
+
+            def write_backup() -> None:
+                with self.sftp.open(backup_path, "wb") as f:
+                    f.write(backup)
+
+            self._sftp_call(f"백업 ({name}.bak)", write_backup)
+
+        def write() -> None:
+            with self.sftp.open(path, "wb") as f:
+                f.write(data)
+
+        self._sftp_call(f"저장 ({name})", write)
+        return backup_path
+
     def mkdir(self, path: str) -> None:
         self._sftp_call(f"새 폴더 ({path})", self.sftp.mkdir, path)
 
@@ -673,6 +714,32 @@ def _sudo_refused(output: str) -> bool:
         return True
     lines = [ln for ln in output.replace("\r", "").split("\n") if ln.strip()]
     return len(lines) == 1 and lines[0].startswith("sudo:")
+
+
+# ---------------------------------------------------------------------- 편집기의 글 ↔ 바이트
+MAX_EDIT_BYTES = 1_000_000   # 편집기로 여는 파일 크기 한도
+
+
+def decode_text(data: bytes, encodings=("utf-8", "cp949")) -> Tuple[str, str, str]:
+    """바이트를 (글, 인코딩, 줄 끝) 로. UTF-8 BOM 이 있으면 utf-8-sig. encodings 순서로 읽어 보고, 어느 것으로도
+    안 읽히면 utf-8 로 깨진 글자(�)를 두고 읽는다. 글의 줄 끝은 \n 으로 맞추고 원래 줄 끝(\r\n / \n)을 따로 돌려준다."""
+    order = (["utf-8-sig"] if data.startswith(b"\xef\xbb\xbf") else []) + [e for e in encodings if e]
+    text, used = None, "utf-8"
+    for enc in order:
+        try:
+            text, used = data.decode(enc), enc
+            break
+        except (UnicodeDecodeError, LookupError):
+            continue
+    if text is None:
+        text = data.decode("utf-8", "replace")
+    newline = "\r\n" if "\r\n" in text else "\n"
+    return text.replace("\r\n", "\n"), used, newline
+
+
+def encode_text(text: str, encoding: str, newline: str) -> bytes:
+    """편집기의 글을 읽을 때의 인코딩·줄 끝으로 되돌린다 (적을 수 없는 글자가 있으면 UnicodeEncodeError)."""
+    return text.replace("\n", newline).encode(encoding)
 
 
 # ---------------------------------------------------------------------- 명령 만들기
