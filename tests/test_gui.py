@@ -100,6 +100,13 @@ def test_config_store_save_validates_and_backs_up(tmp_path):
     assert "a2" in config_store.load_raw(path)["projects"]            # 실패한 저장은 파일을 건드리지 않음
     with pytest.raises(ConfigError, match="이미 있습니다"):
         config_store.set_project(data, "a2", {"root": "q"})
+    config_store.duplicate_project(data, "a2", "a3", {"root": "w", "output_dir": "", "server_path": "/u"})   # 복제: 화면 밖 값까지
+    assert data["projects"]["a3"] == {"root": "w", "server_path": "/u", "hooks": {"post_apply": ["r"]}}
+    data["projects"]["a3"]["hooks"]["post_apply"].append("x")                                                  # 깊은 복사
+    assert data["projects"]["a2"]["hooks"] == {"post_apply": ["r"]}
+    for source, name, msg in [("a2", "a3", "이미 있습니다"), ("nope", "a4", "복제할 프로젝트가 없습니다"), ("a2", " ", "이름")]:
+        with pytest.raises(ConfigError, match=msg):
+            config_store.duplicate_project(data, source, name, {})
 
 
 def test_config_store_merge_legacy(tmp_path):
@@ -237,9 +244,10 @@ def test_connections_and_app_settings_save_their_own_keys(qapp, tmp_path, maven_
 
 # ---------------------------------------------------------------------- 프로젝트 화면
 class FakeProjectDialog:
-    def __init__(self, parent, name, entry, defaults, *, plan):
+    def __init__(self, parent, name, entry, defaults, *, plan, copy_of=""):
         self._plan = list(plan)
         self.entry = entry
+        self.copy_of = copy_of
 
     def exec(self):
         return bool(self._plan)
@@ -297,6 +305,21 @@ def test_projects_add_edit_delete(qapp, tmp_path, maven_project):
     dialogs.answer = True
     page.delete_project()
     assert "web" not in w.ctx.cfg.projects and w.ctx.current == "erp2"
+
+    # 복제: 저장된 설정 전부(서버 명령·인코딩…)를 가진 새 프로젝트. 대화상자에는 원본 값이 채워져 오고, 같은 이름은 거부
+    copies = []
+    page.dialog_factory = lambda *a, **k: copies.append(FakeProjectDialog(*a, plan=[
+        ("erp2", {"root": maven_project.as_posix(), "server_path": "/app/COPY"}),        # 같은 이름 -> 오류 후 다시
+        ("erp3", {"root": maven_project.as_posix(), "server_path": "/app/COPY"}),
+    ], **k)) or copies[-1]
+    page.server_edit.setText("/app/DIRTY")                        # 저장하지 않은 변경: 먼저 저장할지 묻고 저장한 뒤 복제
+    page.duplicate_project()
+    assert copies[-1].copy_of == "erp2" and copies[-1].entry["server_path"] == "/app/DIRTY"
+    assert any(m[0] == "error" and "erp2" in m[2] for m in dialogs.messages)
+    raw = config_store.load_raw(path)["projects"]
+    assert raw["erp3"]["server_path"] == "/app/COPY" and raw["erp3"]["hooks"] == {"post_apply": ["restart"]}
+    assert raw["erp3"]["source_encoding"] == "cp949" and raw["erp2"]["server_path"] == "/app/DIRTY"
+    assert w.ctx.current == "erp3" and page.loaded_name == "erp3" and not page.dirty
 
 
 def test_project_rules_override_and_path_test(qapp, tmp_path, maven_project):

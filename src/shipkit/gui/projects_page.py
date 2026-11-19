@@ -77,11 +77,16 @@ class ProjectsPage(QWidget):
         bar = QHBoxLayout(actions)
         bar.setContentsMargins(0, 0, 0, 0)
         bar.setSpacing(8)
+        self.duplicate_btn = button("복제…", "ghost")   # 이 프로젝트의 설정을 그대로 가진 새 프로젝트
+        self.duplicate_btn.setToolTip("이 프로젝트의 서버 연결·반영 규칙·서버 명령·제외·알림 설정을 그대로 복사한 새 프로젝트를 만듭니다. "
+                                      "비슷한 프로젝트를 하나 더 등록할 때 이름과 경로만 바꾸면 됩니다.")
+        self.duplicate_btn.clicked.connect(self.duplicate_project)
         self.revert_btn = button("되돌리기")
         self.revert_btn.clicked.connect(self.revert)
         self.save_btn = button("저장", "primary")
         self.save_btn.setMinimumWidth(110)
         self.save_btn.clicked.connect(self.save)
+        bar.addWidget(self.duplicate_btn)
         bar.addWidget(self.revert_btn)
         bar.addWidget(self.save_btn)
         self.header = page_header("프로젝트 설정", "", actions)
@@ -775,6 +780,26 @@ class ProjectsPage(QWidget):
         dialog = self.dialog_factory(self, "", {}, data.get("defaults") or {})
         while dialog.exec():
             if self._save(lambda d: config_store.set_project(d, dialog.name(), dialog.values()), select=dialog.name()):
+                self.tabs.setCurrentIndex(TAB_BASIC)
+                return
+
+    def duplicate_project(self) -> None:
+        """[복제…]: 지금 프로젝트의 설정 전부를 복사한 새 프로젝트. 저장하지 않은 변경이 있으면 먼저 저장한다 (저장된 값을 복사하므로)."""
+        name = self.loaded_name
+        if not name:
+            return
+        if self.dirty:
+            if not self.ctx.dialogs.ask("저장하지 않은 변경", f"'{name}' 프로젝트 설정에 저장하지 않은 변경이 있습니다.\n"
+                                                      "저장된 설정을 복사하므로 먼저 저장해야 합니다. 저장할까요?"):
+                return
+            if not self.save():
+                return
+            name = self.loaded_name or name
+        data = config_store.load_raw(self.ctx.config_path)
+        entry = dict((data.get("projects") or {}).get(name) or {})
+        dialog = self.dialog_factory(self, "", entry, data.get("defaults") or {}, copy_of=name)
+        while dialog.exec():
+            if self._save(lambda d: config_store.duplicate_project(d, name, dialog.name(), dialog.values()), select=dialog.name()):
                 self.tabs.setCurrentIndex(TAB_BASIC)
                 return
 

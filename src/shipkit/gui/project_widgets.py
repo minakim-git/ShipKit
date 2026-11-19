@@ -189,19 +189,20 @@ class OverrideBox(QFrame):
 
 # ---------------------------------------------------------------------- 프로젝트 추가
 class ProjectDialog(QDialog):
-    """프로젝트 추가. 비운 칸은 저장하지 않아서 .shipkit.yml 이나 기본값을 따른다. 자세한 설정은 추가한 뒤 화면에서."""
+    """프로젝트 추가. 비운 칸은 저장하지 않아서 .shipkit.yml 이나 기본값을 따른다. 자세한 설정은 추가한 뒤 화면에서.
+    copy_of 를 주면 그 프로젝트의 복제: 칸이 원본 값으로 채워져 오고(entry), 나머지 설정은 그대로 복사된다."""
 
     def __init__(self, parent: Optional[QWidget], name: str = "", entry: Optional[Dict[str, Any]] = None,
-                 defaults: Optional[Dict[str, Any]] = None):
+                 defaults: Optional[Dict[str, Any]] = None, copy_of: str = ""):
         super().__init__(parent)
-        self.setWindowTitle("프로젝트 추가")
+        self.setWindowTitle("프로젝트 복제" if copy_of else "프로젝트 추가")
         self.setMinimumWidth(680)
         entry = entry or {}
         defaults = defaults or {}
 
         form = form_layout()
         self.name_edit = QLineEdit(name)
-        self.name_edit.setPlaceholderText("예: erp")
+        self.name_edit.setPlaceholderText(f"새 이름 (예: {copy_of}_2)" if copy_of else "예: erp")
         self.root_field = PathField(placeholder="로컬 git 저장소 최상위 폴더")
         self.root_field.setText(str(entry.get("root", "")))
         self.root_field.edit.textChanged.connect(self._show_project_file)
@@ -231,7 +232,9 @@ class ProjectDialog(QDialog):
             form.addRow(label(text, "fieldLabel", wrap=False), widget)
 
         self.project_file_label = label("", "muted")
-        card = Section("새 프로젝트", "반영 규칙·서버 명령 같은 자세한 설정은 추가한 뒤 프로젝트 화면에서 바꿉니다.")
+        card = Section(f"'{copy_of}' 프로젝트 복제",
+                       "서버 연결·반영 규칙·서버 명령·제외·알림 설정을 그대로 가져옵니다. 이름과 로컬 경로를 바꾸세요.") if copy_of else \
+            Section("새 프로젝트", "반영 규칙·서버 명령 같은 자세한 설정은 추가한 뒤 프로젝트 화면에서 바꿉니다.")
         card.body.addLayout(form)
         card.body.addWidget(self.project_file_label)
 
@@ -239,7 +242,7 @@ class ProjectDialog(QDialog):
         buttons.addStretch(1)
         cancel = button("취소")
         cancel.clicked.connect(self.reject)
-        save = button("추가", "primary")
+        save = button("복제" if copy_of else "추가", "primary")
         save.setDefault(True)
         save.clicked.connect(self.accept)
         buttons.addWidget(cancel)

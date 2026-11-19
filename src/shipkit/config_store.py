@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import copy
 import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -74,6 +75,27 @@ def set_project(data: Dict[str, Any], name: str, values: Dict[str, Any], old_nam
     if not old_name and name in projects:
         raise ConfigError(f"같은 이름의 프로젝트가 이미 있습니다: {name}")
     entry = dict(projects.pop(old_name, {}) or {}) if old_name else {}
+    for key in PROJECT_FIELDS:
+        value = values.get(key)
+        if value in (None, ""):
+            entry.pop(key, None)
+        else:
+            entry[key] = value
+    projects[name] = entry
+
+
+def duplicate_project(data: Dict[str, Any], source: str, name: str, values: Dict[str, Any]) -> None:
+    """source 프로젝트의 설정 전부(서버 연결·반영 규칙·서버 명령·제외·알림…)를 복사한 새 프로젝트 name.
+    GUI 에서 편집하는 칸(PROJECT_FIELDS)은 values 로 덮어쓰고, 빈 값은 키를 지운다."""
+    if not name.strip():
+        raise ConfigError("프로젝트 이름을 입력하세요.")
+    projects = data.setdefault("projects", {}) or {}
+    data["projects"] = projects
+    if source not in projects:
+        raise ConfigError(f"복제할 프로젝트가 없습니다: {source}")
+    if name in projects:
+        raise ConfigError(f"같은 이름의 프로젝트가 이미 있습니다: {name}")
+    entry = copy.deepcopy(projects[source] or {})
     for key in PROJECT_FIELDS:
         value = values.get(key)
         if value in (None, ""):
