@@ -742,6 +742,7 @@ def test_min_window_nothing_clipped(qapp, tmp_path, maven_project):
 def test_theme_switch(qapp, tmp_path, maven_project, monkeypatch):
     from shipkit.gui import theme
     from PySide6.QtGui import QFontDatabase
+    theme.apply(qapp, "system")                              # 실제 앱(main)처럼 창을 만들기 전에 테마·글꼴을 적용한다
     w = make_window(_config(tmp_path, maven_project))
     s = w.settings_page
     try:
