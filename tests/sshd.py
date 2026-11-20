@@ -38,8 +38,13 @@ class _SFTP(SFTPServerInterface):
 
     @staticmethod
     def _local(path: str) -> str:
-        """Windows OpenSSH 의 SFTP 처럼 '/C:/Users/x' 형식도 받아 로컬 경로로 쓴다."""
-        return path[1:] if len(path) > 2 and path[0] == "/" and path[2] == ":" else path
+        """Windows OpenSSH 의 SFTP 처럼 '/C:/Users/x' 형식도 받아 로컬 경로로 쓴다. Git Bash 식 '/c/Users/x'(bash_path) 도
+        같은 곳으로 (서버 배포 경로가 그 형식이라 차이 보기 등이 SFTP 로 읽을 때)."""
+        if len(path) > 2 and path[0] == "/" and path[2] == ":":
+            return path[1:]
+        if len(path) > 2 and path[0] == "/" and path[1].isalpha() and path[2] == "/":
+            return f"{path[1].upper()}:{path[2:]}"
+        return path
 
     def _err(self, e):
         return SFTPServer.convert_errno(e.errno)

@@ -1050,6 +1050,16 @@ def test_remote_panel_upload_apply_rollback(qapp, tmp_path, maven_project, monke
     chips = [panel.check_chips.itemAt(i).widget().text() for i in range(panel.check_chips.count())
              if panel.check_chips.itemAt(i).widget()]
     assert chips == ["변경 1"] and panel.state_chip.text() == "확인 끝 · apply 때 바뀌는 파일 1개"  # 상태와 한 줄
+    assert not panel.diff_btn.isEnabled()                        # 차이 보기: '변경' 파일을 고르면 서버(-)·패키지(+) 비교 창
+    tree.topLevelItem(0).child(0).setSelected(True)
+    assert panel.diff_btn.isEnabled()
+    panel.show_diff()
+    dlg = panel.diff_dialog
+    assert dlg is not None, (dialogs.messages[-2:], panel.log.toPlainText()[-400:])
+    assert dlg.isVisible() and dlg.stat_chip.text() == "+1 −1" and dlg.path == "WEB-INF/views/user/list.jsp"
+    assert dlg.lines[2].startswith("@@") and "-OLD" in dlg.lines and "+<%-- jsp --%>" in dlg.lines and not dlg.note_label.isVisibleTo(dlg)
+    assert "서버 파일 읽기 (차이 보기)" in panel.log.toPlainText() and panel.stage == "checked" and panel.diff_btn.isEnabled()
+    dlg.close()
     assert [m[1] for m in dialogs.messages if m[0] in ("ask", "secret")] == ["새 서버 확인", "비밀번호 입력"]
     assert keyring.store[("shipkit", f"ssh:login:deployer@127.0.0.1:{sshd.port}")] == LOGIN_PW
     notes = []
@@ -1385,7 +1395,7 @@ def test_server_page_files(qapp, tmp_path, maven_project, monkeypatch, sshd):
     server = tmp_path / "server"
     write(server / "WEB-INF/views/user/list.jsp", "OLD")
     home = (tmp_path / "home").as_posix()                       # 테스트 SSH 서버의 홈 (SFTP 가 'C:/…' 로 돌려준다)
-    path = _config(tmp_path, maven_project, server_path=bash_path(server),
+    path = _config(tmp_path, maven_project, server_path=bash_path(tmp_path / "nowhere"),   # 없는 배포 경로 -> 홈으로
                    servers=[{"name": "운영", "host": "127.0.0.1", "port": sshd.port, "user": "deployer",
                              "log_file": "/var/log/app.log"}])
     dialogs = FakeDialogs(password=LOGIN_PW)
@@ -1532,7 +1542,8 @@ def test_server_page_files(qapp, tmp_path, maven_project, monkeypatch, sshd):
         s.term.keyPressEvent(QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_A, Qt.KeyboardModifier.NoModifier, ch))
     s.term.keyPressEvent(QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_Return, Qt.KeyboardModifier.NoModifier, "\r"))
     assert wait_for("\nhi\n"), s.term.text()
-    assert sshd.commands[-1] == "echo hi" and sshd.pty_sizes[-1] == (s.term.cols, s.term.rows)   # 창이 보인 뒤 크기가 맞춰진다
+    assert "echo hi" in sshd.commands[-2:] and sshd.pty_sizes[-1] == (s.term.cols, s.term.rows)   # 창이 보인 뒤 크기가 맞춰진다
+    # (Enter 직후의 따라가기 확인 명령이 출력보다 먼저 올 수 있어 마지막 둘 중에서 찾는다)
     def next_command(timeout=5.0):
         """서버가 다음 명령을 받기까지 기다려 돌려준다."""
         n = len(sshd.commands)
@@ -1992,3 +2003,34 @@ def test_code_editor(qapp, tmp_path, maven_project):
     dlg.text = ed.toPlainText()
     dlg.close()
     w.close()
+
+
+def test_diff_dialog(qapp):
+    """차이 보기 창: unified diff 와 +/- 수, 같으면 '같음', 줄 색(+ 초록 · - 빨강 · @@ 파랑), 알림 줄."""
+    from shipkit.gui import theme
+    from shipkit.gui.diff_view import DiffDialog, unified_diff
+
+    lines, added, removed = unified_diff("a\nb\nc\n", "a\nB\nc\nd\n", "서버 x", "패키지 x")
+    assert (added, removed) == (2, 1) and lines[0] == "--- 서버 x" and lines[1] == "+++ 패키지 x" and lines[2].startswith("@@")
+    assert lines[3:] == [" a", "-b", "+B", " c", "+d"]
+    assert unified_diff("same", "same", "a", "b") == ([], 0, 0)
+
+    theme.apply(qapp, "light")
+    dlg = DiffDialog("conf/app.properties", "a\nb\n", "a\nB\n", note="줄 끝이 다릅니다")
+    dlg.show()
+    qapp.processEvents()
+    assert dlg.stat_chip.text() == "+1 −1" and dlg.note_label.isVisibleTo(dlg) and dlg.windowTitle() == "app.properties - 차이 보기"
+    doc = dlg.view.document()
+
+    def colors(line):
+        block = doc.findBlockByNumber(line)
+        return [(r.format.foreground().color().name().upper(), r.format.background().color().name().upper())
+                for r in block.layout().formats()]
+    tones = theme.TONES
+    assert colors(4) == [(tones["danger"][0].upper(), tones["danger"][1].upper())]       # -b
+    assert colors(5) == [(tones["success"][0].upper(), tones["success"][1].upper())]     # +B
+    assert colors(2)[0][0] == tones["info"][0].upper() and colors(3) == []               # @@ / 문맥 줄은 그대로
+    dlg.close()
+    same = DiffDialog("x", "k=v", "k=v")
+    assert same.stat_chip.text() == "같음" and "내용이 같습니다" in same.view.toPlainText()
+    theme.apply(qapp, "system")

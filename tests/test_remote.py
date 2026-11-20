@@ -332,6 +332,40 @@ def test_read_write_file_and_text_codec(sshd, tmp_path):
     assert remote.decode_text(b"a\nb", ["utf-8", "cp949"]) == ("a\nb", "utf-8", "\n")
 
 
+def test_read_server_file(sshd, tmp_path, monkeypatch):
+    """차이 보기용 서버 파일 읽기: 접속 계정으로 SFTP, 못 읽으면 실행 계정으로 base64. 크거나 이진이면 오류."""
+    from sshd import LOGIN_PW
+    home = tmp_path / "home"
+    (home / "app").mkdir(parents=True)
+    (home / "app/a.properties").write_bytes(b"k=v\n")
+    (home / "app/bin.dat").write_bytes(b"\x00\x01")
+    path = (home / "app/a.properties").as_posix()
+    profile = _profile(sshd)
+    secrets = remote.Secrets(login=LOGIN_PW)
+    conn = _connect(sshd, tmp_path, profile, secrets)
+    try:
+        assert remote.read_server_file(conn, profile, secrets, path) == b"k=v\n"
+        with pytest.raises(remote.RemoteError, match="이진 파일"):
+            remote.read_server_file(conn, profile, secrets, (home / "app/bin.dat").as_posix())
+        with pytest.raises(remote.RemoteError, match="큽니다"):
+            remote.read_server_file(conn, profile, secrets, path, limit=2)
+        with pytest.raises(remote.RemoteError):                                    # 실행 계정이 없으면 SFTP 오류 그대로
+            remote.read_server_file(conn, profile, secrets, (home / "app/none").as_posix())
+
+        real = conn.read_file
+        monkeypatch.setattr(conn, "read_file", lambda p, limit=0: (_ for _ in ()).throw(remote.RemoteError("권한 없음")))
+        sshd.sudo_nopasswd = True
+        runner = _profile(sshd, run_as="app")                                       # 접속 계정은 못 읽고 실행 계정이 읽는다
+        assert remote.read_server_file(conn, runner, secrets, path) == b"k=v\n" and sshd.ran_as[-1] == "sudo:app"
+        with pytest.raises(remote.RemoteError, match="실행 계정 app"):
+            remote.read_server_file(conn, runner, secrets, (home / "app/none").as_posix())
+        with pytest.raises(remote.RemoteError, match="이진 파일"):
+            remote.read_server_file(conn, runner, secrets, (home / "app/bin.dat").as_posix())
+        monkeypatch.setattr(conn, "read_file", real)
+    finally:
+        conn.close()
+
+
 def test_health_check():
     """반영 후 확인: URL(HTTP 2xx·3xx, 응답 글) 은 될 때까지 몇 초마다 다시 보고, 포트는 TCP 연결. 취소·설정 검사·알림 글."""
     import http.server

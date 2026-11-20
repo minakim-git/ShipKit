@@ -24,6 +24,7 @@ from shipkit import history, notify, remote
 from shipkit.config import ProjectConfig, ServerProfile
 from shipkit.gui import theme
 from shipkit.gui.context import AppContext
+from shipkit.gui.diff_view import DiffDialog
 from shipkit.gui.widgets import Chip, Section, button, label
 from shipkit.secrets import SecretError, delete_secret, get_secret, server_secret_key, set_secret
 
@@ -489,7 +490,19 @@ class RemotePanel(Section):
         self.check_tree.setRootIsDecorated(True)
         self.check_tree.setMaximumHeight(240)
         self.check_tree.header().setStretchLastSection(True)
+        self.check_tree.itemSelectionChanged.connect(self._update_diff_btn)
+        self.check_tree.itemDoubleClicked.connect(lambda _item, _col: self.show_diff())
         check_col.addWidget(self.check_tree)
+        diff_row = QHBoxLayout()
+        diff_row.setSpacing(8)
+        self.diff_btn = button("차이 보기", "ghost")
+        self.diff_btn.setToolTip("고른 파일의 지금 서버 내용과 패키지 내용을 줄 단위로 비교합니다 (변경·신규·삭제예정, 더블클릭도 됨)")
+        self.diff_btn.setEnabled(False)
+        self.diff_btn.clicked.connect(self.show_diff)
+        diff_row.addWidget(self.diff_btn)
+        diff_row.addWidget(label("표의 파일을 골라 반영하면 무엇이 바뀌는지 미리 볼 수 있습니다.", "muted"), 1)
+        check_col.addLayout(diff_row)
+        self.diff_dialog: Optional[DiffDialog] = None
         self.check_box.hide()
         col.addWidget(self.check_box)
         self.log = ServerLog()
@@ -616,6 +629,7 @@ class RemotePanel(Section):
         self.cancel_btn.setVisible(busy)
         self.cancel_btn.setEnabled(True)
         self.cancel_btn.setText("취소")
+        self._update_diff_btn()
 
     def cancel(self) -> None:
         """[취소]: 진행 중인 올리기·실행을 끊는다. 결과는 _run 의 취소 처리로 돌아온다. 반영 후 확인 중이면 확인만 멈춘다."""
@@ -661,13 +675,82 @@ class RemotePanel(Section):
             top.setForeground(0, theme.tone_color(tones[kind]))
             paths = result.paths(kind)
             for path in paths:
-                top.addChild(QTreeWidgetItem(["", path]))
+                child = QTreeWidgetItem(["", path])
+                child.setData(0, Qt.ItemDataRole.UserRole, (kind, path))
+                top.addChild(child)
             if count > len(paths):  # 파일이 많으면 서버 스크립트가 '동일' 은 개수만 찍는다
                 top.addChild(QTreeWidgetItem(["", f"(목록 생략: {count - len(paths)}개)"]))
             self.check_tree.addTopLevelItem(top)
             top.setExpanded(kind != "동일")
         self.check_tree.resizeColumnToContents(0)
         self.check_box.show()
+        self._update_diff_btn()
+
+    # ------------------------------------------------------------------ 차이 보기
+    DIFF_KINDS = ("변경", "신규", "삭제예정")
+
+    def _picked_check_file(self) -> Optional[Tuple[str, str]]:
+        items = self.check_tree.selectedItems()
+        data = items[0].data(0, Qt.ItemDataRole.UserRole) if items else None
+        return data if isinstance(data, tuple) and data[0] in self.DIFF_KINDS else None
+
+    def _update_diff_btn(self) -> None:
+        self.diff_btn.setEnabled(self._picked_check_file() is not None and self.result is not None and not self.busy)
+
+    @property
+    def busy(self) -> bool:
+        return self.cancel_btn.isVisibleTo(self)
+
+    def show_diff(self) -> None:
+        """[차이 보기] / 표의 파일 더블클릭: 서버 파일(-)과 패키지 파일(+)을 비교하는 창."""
+        picked, p = self._picked_check_file(), self.profile
+        if picked is None or p is None or self.result is None or self.busy:
+            return
+        kind, rel = picked
+        target = (p.server_path or self.project.server_path).rstrip("/")
+        server_path = f"{target}/{rel}"
+        encodings = list(self.project.source_encodings or ["utf-8", "cp949"])
+        package_file = self.result.out_dir / "files" / rel
+        package_data = b""
+        if kind != "삭제예정":
+            try:
+                package_data = package_file.read_bytes()
+            except OSError as e:
+                self.ctx.dialogs.error("차이 보기", f"패키지 파일을 읽지 못했습니다: {e}")
+                return
+            if b"\x00" in package_data:
+                self.ctx.dialogs.error("차이 보기", f"{rel} 은 이진 파일이라 비교하지 않습니다.")
+                return
+        if kind == "신규":
+            self._open_diff(rel, b"", package_data, encodings, kind)
+            return
+
+        prev = self.stage
+
+        def done(server_data: bytes) -> None:
+            self._set_stage(prev)            # 읽기는 단계를 바꾸지 않는다 (_run 의 '진행 중' 만 풀기)
+            self._open_diff(rel, server_data, package_data, encodings, kind)
+
+        self._append(f"\n$ 서버 파일 읽기 (차이 보기): {server_path}\n")
+        self._run(lambda secrets: lambda conn, output, progress: remote.read_server_file(conn, p, secrets, server_path), done)
+
+    def _open_diff(self, rel: str, server_data: bytes, package_data: bytes, encodings: List[str], kind: str) -> None:
+        old, old_enc, old_nl = remote.decode_text(server_data, encodings) if server_data else ("", "", "")
+        new, new_enc, new_nl = remote.decode_text(package_data, encodings) if package_data else ("", "", "")
+        notes = []
+        if kind == "신규":
+            notes.append("서버에 없는 새 파일입니다. 패키지 내용 전체가 생깁니다.")
+        elif kind == "삭제예정":
+            notes.append("반영하면 서버에서 지워지는 파일입니다. 지금 서버 내용 전체가 없어집니다.")
+        if old_nl and new_nl and old_nl != new_nl:
+            notes.append(f"줄 끝이 다릅니다: 서버 {'CRLF' if old_nl == chr(13) + chr(10) else 'LF'} · 패키지 "
+                         f"{'CRLF' if new_nl == chr(13) + chr(10) else 'LF'} (반영하면 패키지 쪽으로 바뀝니다. 아래 비교에서는 뺐습니다)")
+        if old_enc and new_enc and old_enc != new_enc:
+            notes.append(f"인코딩이 다릅니다: 서버 {old_enc} · 패키지 {new_enc}")
+        if self.diff_dialog is not None:
+            self.diff_dialog.close()
+        self.diff_dialog = DiffDialog(rel, old, new, note="  ".join(notes), parent=self.window())
+        self.diff_dialog.show()
 
     def _record(self, p: ServerProfile, res: remote.StepResult) -> None:
         """서버에서 한 일을 패키지 기록 파일에 남긴다 (기록 화면의 '서버 반영' 탭, 서버에서 되돌리기)."""

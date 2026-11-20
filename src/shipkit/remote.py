@@ -1152,6 +1152,33 @@ def diagnose(conn: Connection, profile: ServerProfile, secrets: Secrets, server_
     return d
 
 
+def read_server_file(conn: Connection, profile: ServerProfile, secrets: Secrets, path: str,
+                     limit: int = MAX_EDIT_BYTES) -> bytes:
+    """차이 보기용으로 서버 파일 하나를 읽는다. 접속 계정으로(SFTP) 읽고, 못 읽는데 실행 계정이 따로 있으면 그 계정으로
+    base64 로 받아 본다 (실행 계정만 읽을 수 있는 파일). 크거나 이진 파일이면 RemoteError."""
+    try:
+        return conn.read_file(path, limit)
+    except RemoteError as e:
+        if not profile.run_as or profile.server_os == "windows":
+            raise
+        first = e
+    opts = run_password(profile, secrets)
+    with_pw = opts["password"] is not None
+    code, out = _capture(conn, as_runner(profile, f"base64 -w0 {shlex.quote(path)}", with_pw), **opts)
+    if code != 0:
+        raise RemoteError(f"{path} 을 읽지 못했습니다 (접속 계정: {first}; 실행 계정 {profile.runner}: {_last_line(out) or '실패'})")
+    try:
+        data = base64.b64decode("".join(out.split()))
+    except (ValueError, TypeError) as e2:
+        raise RemoteError(f"{path} 을 실행 계정으로 읽었지만 내용을 풀지 못했습니다: {e2}") from e2
+    name = posixpath.basename(path)
+    if limit and len(data) > limit:
+        raise RemoteError(f"{name} 은 {len(data) / 1_000_000:.1f} MB 로 비교하기에는 큽니다 (한도 {limit // 1_000_000} MB).")
+    if b"\x00" in data:
+        raise RemoteError(f"{name} 은 이진 파일로 보여 비교하지 않습니다.")
+    return data
+
+
 # ---------------------------------------------------------------------- 반영 후 확인 (이 PC 에서 URL·포트)
 HEALTH_INTERVAL = 3.0     # 다시 보는 간격(초)
 HEALTH_TIMEOUT = 5.0      # 한 번 접속할 때 기다리는 시간(초)
