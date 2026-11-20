@@ -319,6 +319,7 @@ class ProjectConfig:
     source_encodings: List[str] = field(default_factory=lambda: ["utf-8", "cp949"])
     package_name: str = DEFAULT_PACKAGE_NAME
     build_command: str = ""              # 배포 화면 [빌드]·shipkit build 가 로컬 경로에서 실행할 명령 (비우면 프리셋 기본값)
+    build_mode: str = "command"          # ide: javac + WEB-INF/lib 로 직접 컴파일 (maven 기본) / command: 빌드 명령 실행
     hooks: Dict[str, List[Hook]] = field(default_factory=dict)
     server: ServerOptions = field(default_factory=ServerOptions)
     servers: List[ServerProfile] = field(default_factory=list)  # 패키지를 바로 올릴 서버 (SSH/SFTP)
@@ -649,6 +650,7 @@ def _parse_project(name: str, raw: Dict[str, Any], defaults: Dict[str, Any], bas
         source_encodings=[str(e) for e in encodings],
         package_name=_parse_package_name(str(get("package_name", DEFAULT_PACKAGE_NAME)), name, where),
         build_command=str(get("build_command", "") or "").strip(),
+        build_mode=_parse_build_mode(get("build_mode"), canonical, where),
         hooks=_parse_hooks(get("hooks"), where),
         server=_parse_server_options(get("server"), where, server_os),
         servers=parse_servers(get("servers"), where, server_os),
@@ -856,6 +858,19 @@ def _parse_server_path(value: Any, where: str, server_os: str = "linux") -> str:
     if _UNSAFE_SHELL_CHARS.search(server_path):
         raise ConfigError(f"{where}.server_path 에 사용할 수 없는 문자(\" ' $ ` \\)가 있습니다.")
     return server_path.rstrip("/") or "/"
+
+
+BUILD_MODES = ("ide", "command")
+
+
+def _parse_build_mode(raw: Any, preset: Optional[str], where: str) -> str:
+    """build_mode: ide(javac + WEB-INF/lib, maven 프리셋 기본) / command(빌드 명령 실행, 그 밖의 기본)."""
+    if raw in (None, ""):
+        return "ide" if preset == "maven" else "command"
+    mode = str(raw).strip().lower()
+    if mode not in BUILD_MODES:
+        raise ConfigError(f"{where}.build_mode 는 ide 또는 command 여야 합니다: {raw}")
+    return mode
 
 
 def _parse_package_name(package_name: str, name: str, where: str) -> str:

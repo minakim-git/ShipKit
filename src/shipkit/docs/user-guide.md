@@ -73,7 +73,7 @@ GitLab 조회나 패키지 생성, 서버 반영 중에도 창이 멈추지 않�
 | 커밋 안 된 수정 N개 | 테스트용 설정 등이 운영에 섞일 수 있습니다. 배포 파일에 포함되면 확인 단계에서 경고가 됩니다. |
 | 빌드 결과 없음 / 폴더 없음 | 먼저 빌드하세요. 오른쪽의 **빌드**(망치) 단추로 여기서 바로 할 수 있습니다. |
 
-**빌드**(망치 단추)를 누르면 빌드 창이 열려 프로젝트의 빌드 명령을 로컬 경로에서 돌리고 출력을 보여 줍니다. 빌드만 하려고 IDE 를 켜지 않아도 됩니다. 명령은 [프로젝트 → 기본]의 **빌드 명령**이고, 비우면 프리셋 기본값(maven `mvn -DskipTests compile`, gradle `gradlew classes`, vite·vue-cli `npm run build`)입니다. 끝나면 성공·실패와 걸린 시간이 보이고 점검을 다시 하며, 창이 뒤에 있으면 Windows 알림이 옵니다. **취소**는 빌드 프로세스를 자식까지 끝냅니다. IDE 로만 빌드하던 PC 처럼 `mvn` 이 PATH 에 없으면 프로젝트의 래퍼(`mvnw`), `MAVEN_HOME`, IntelliJ 에 딸린 Maven, 흔한 설치 폴더 순으로 찾아 쓰고(로그에 어느 것을 썼는지 보임), `JAVA_HOME` 이 없으면 설치된 JDK 를 찾아 넣습니다. 그래도 못 찾으면 무엇을 설치하거나 적어야 하는지 알려 줍니다.
+**빌드**(망치 단추)를 누르면 빌드 창이 열려 프로젝트를 빌드하고 출력을 보여 줍니다. 빌드만 하려고 IDE 를 켜지 않아도 됩니다. Maven 프로젝트는 기본이 **IDE 식 빌드**입니다: IntelliJ 처럼 `pom.xml` 에 없는 `src/main/webapp/WEB-INF/lib` 의 jar 까지 classpath 에 넣고 javac 로 직접 컴파일해 `target/classes` 에 넣고 `src/main/resources` 를 복사합니다(의존성 경로는 `mvn dependency:build-classpath` 로 받아 두고 `pom.xml` 이 바뀔 때만 다시 받음, 컴파일 옵션·인코딩은 `pom.xml` 에서). 그래서 `mvn compile` 로는 실패하는 회사 프로젝트도 IDE 에서 되던 그대로 됩니다(멀티모듈은 제외). [프로젝트 → 기본]의 **빌드 방식**을 **명령 실행**으로 바꾸거나 **빌드 명령**을 적으면 그 명령을 로컬 경로에서 돌립니다(비우면 프리셋 기본값: maven `mvn -DskipTests compile`, gradle `gradlew classes`, vite·vue-cli `npm run build`). 끝나면 성공·실패와 걸린 시간이 보이고 점검을 다시 하며, 창이 뒤에 있으면 Windows 알림이 옵니다. **취소**는 빌드 프로세스를 자식까지 끝냅니다. IDE 로만 빌드하던 PC 처럼 `mvn` 이 PATH 에 없으면 프로젝트의 래퍼(`mvnw`), `MAVEN_HOME`, IntelliJ 에 딸린 Maven, 흔한 설치 폴더 순으로 찾아 쓰고(로그에 어느 것을 썼는지 보임), `JAVA_HOME` 이 없으면 설치된 JDK 를 찾아 넣습니다. 그래도 못 찾으면 무엇을 설치하거나 적어야 하는지 알려 줍니다.
 | GitLab 토큰 없음 | [연결] 메뉴에서 토큰을 저장해야 MR 목록을 불러옵니다. GitHub 는 토큰 없이도 공개 저장소는 조회됩니다. |
 
 ### ① 고르기
@@ -199,6 +199,7 @@ GitLab 조회나 패키지 생성, 서버 반영 중에도 창이 멈추지 않�
 | 서버 배포 경로 | 서버에서 이 프로젝트가 있는 폴더. Java 웹이면 `WEB-INF` 바로 위(예: `/app/tomcat/webapps/ROOT`), Windows 는 `D:/tomcat/webapps/ROOT` 처럼 `/` 로. |
 | GitLab 프로젝트 | 프로젝트 ID 또는 `그룹/프로젝트` (예: `erp/web`) |
 | GitHub 저장소 | `owner/name` |
+| 빌드 방식 | **IDE 식**(Maven 프로젝트 기본): javac + `WEB-INF/lib` 의 jar, 의존성은 Maven 에서. **명령 실행**: 아래 빌드 명령(비우면 프리셋 기본값). 빌드 명령을 적으면 방식과 상관없이 그 명령을 실행합니다. 설정 키 `build_mode: ide | command`. |
 | 빌드 명령 | 배포 화면의 **빌드**와 `shipkit build` 가 로컬 경로에서 실행할 명령. 비우면 프리셋 기본값(maven `mvn -DskipTests compile`, gradle `gradlew classes`, vite·vue-cli `npm run build`), 기본값이 없는 프리셋(python·static)은 적어야 빌드할 수 있습니다. 예: `mvn -DskipTests package`, `npm run build:prod` |
 | 패키지 폴더 이름 | 날짜 형식. 비우면 [앱 설정]의 기본값. |
 

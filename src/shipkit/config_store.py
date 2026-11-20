@@ -62,7 +62,7 @@ def _clean(value: Any) -> Any:
 
 # ---------------------------------------------------------------------- 프로젝트 편집
 PROJECT_FIELDS = ("root", "output_dir", "preset", "server_os", "server_path", "gitlab_project", "github_repo",
-                  "build_command")
+                  "build_command", "build_mode")
 
 
 def set_project(data: Dict[str, Any], name: str, values: Dict[str, Any], old_name: Optional[str] = None) -> None:

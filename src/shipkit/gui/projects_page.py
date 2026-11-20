@@ -201,6 +201,11 @@ class ProjectsPage(QWidget):
         self.gitlab_edit = QLineEdit()
         self.github_edit = QLineEdit()
         self.package_name_edit = QLineEdit()
+        self.build_mode_combo = QComboBox()           # 빌드 방식: IDE 식(javac + WEB-INF/lib) / 명령 실행
+        self.build_mode_combo.addItem("IDE 식 — javac + WEB-INF/lib 의 jar (의존성은 Maven 에서)", "ide")
+        self.build_mode_combo.addItem("명령 실행 — 아래 빌드 명령 (비우면 프리셋 기본값)", "command")
+        self.build_mode_combo.setToolTip("IDE 식: IntelliJ 처럼 pom.xml 에 없는 WEB-INF/lib 의 jar 까지 classpath 에 넣고 javac 로 직접 컴파일합니다\n"
+                                         "(Maven 프로젝트만, 멀티모듈 제외). 빌드 명령을 적으면 방식과 상관없이 그 명령을 실행합니다.")
         self.build_edit = QLineEdit()                 # 배포 화면 [빌드] 가 로컬 경로에서 실행할 명령
         self.build_edit.setToolTip("배포 화면의 [빌드] 와 shipkit build 가 프로젝트 로컬 경로에서 셸로 실행합니다.\n"
                                    "비우면 프리셋 기본값 (maven: mvn -DskipTests compile, gradle: gradlew classes, vite·vue-cli: npm run build).")
@@ -208,14 +213,14 @@ class ProjectsPage(QWidget):
                              ("패키지 생성 경로", self.output_field), ("서버 OS", self.os_combo),
                              ("서버 배포 경로", self.server_edit), ("GitLab 프로젝트", self.gitlab_edit),
                              ("GitHub 저장소", self.github_edit), ("패키지 폴더 이름", self.package_name_edit),
-                             ("빌드 명령", self.build_edit)):
+                             ("빌드 방식", self.build_mode_combo), ("빌드 명령", self.build_edit)):
             form.addRow(label(text, "fieldLabel", wrap=False), widget)
         card.body.addLayout(form)
         self.basic_note = label("", "muted")
         card.body.addWidget(self.basic_note)
         col.addWidget(card)
         self._watch(self.name_edit, self.root_field, self.output_field, self.os_combo, self.server_edit,
-                    self.gitlab_edit, self.github_edit, self.package_name_edit, self.build_edit)
+                    self.gitlab_edit, self.github_edit, self.package_name_edit, self.build_edit, self.build_mode_combo)
 
         danger = Section("프로젝트 지우기", rule=True)
         delete = button("이 프로젝트 지우기", "danger")
@@ -457,6 +462,7 @@ class ProjectsPage(QWidget):
         self.package_name_edit.setText(str(e.get("package_name", "")))
         self.build_edit.setText(str(e.get("build_command", "")))
         self._select(self.preset_combo, e.get("preset"))
+        self._select(self.build_mode_combo, e.get("build_mode") or ("ide" if self.layers.preset_name(e) == "maven" else "command"))
         self._select(self.mode_combo, e.get("mode"))
         self.rules_override.set_overridden("rules" in e)
         self.rules_table.set_rows(self._display_rules(e.get("rules") or []))
@@ -511,6 +517,7 @@ class ProjectsPage(QWidget):
         put("github_repo", self.github_edit.text().strip())
         put("package_name", self.package_name_edit.text().strip())
         put("build_command", self.build_edit.text().strip())
+        put("build_mode", self.build_mode_combo.currentData())
         put("preset", self.preset_combo.currentData())
         put("mode", self.mode_combo.currentData())
         put("modules", _split(self.modules_edit.text()))
@@ -596,7 +603,8 @@ class ProjectsPage(QWidget):
         preset_value, preset_src = L.inherited("preset")
         effective = L.preset_name(entry)
         default_build = build.default_command(effective, Path(self.root_field.text().strip()) if self.root_field.text().strip() else None)
-        ph(self.build_edit, "build_command", f"기본값: {default_build}   (프리셋 {effective})" if default_build else
+        ph(self.build_edit, "build_command", f"비우면 {'IDE 식 빌드' if self.build_mode_combo.currentData() == 'ide' else '기본값: ' + default_build}"
+           f"   (프리셋 {effective}, 적으면 이 명령을 실행)" if default_build else
            "비우면 빌드하지 않음.  예: mvn -DskipTests compile  /  npm run build")
         combo_text(self.preset_combo, f"{preset_src} · {preset_value}" if preset_value else
                    (f"{effective} (기본)" if effective and not entry.get("rules") else ""))

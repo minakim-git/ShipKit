@@ -2073,14 +2073,15 @@ def test_build_dialog(qapp, tmp_path, maven_project, monkeypatch):
     checks_before = d.last_checks
     d.build()
     dlg = d.build_dialog
-    assert dlg is not None and dlg.command.startswith(f'"{py}"') and dlg.result is not None and dlg.result.ok and not dlg.running
+    assert dlg is not None and dlg.label.startswith(f'"{py}"') and dlg.result is not None and dlg.result.ok and not dlg.running
     text = dlg.log.toPlainText()
     assert "compiling" in text and "BUILD OK" in text and "✓ 빌드 성공" in text and dlg.state_chip.text().startswith("빌드 성공")
     assert notes[-1][0].startswith("erp 빌드 성공") and d.last_checks is not checks_before
     assert not dlg.cancel_btn.isVisibleTo(dlg) and dlg.close_btn.isEnabled()
     dlg.close()
 
-    monkeypatch.setattr(build, "command_for", lambda p: "")                       # 빌드 명령이 없으면 안내만
+    monkeypatch.setattr(build, "command_for", lambda p: "")                       # 명령 실행인데 빌드 명령이 없으면 안내만
+    monkeypatch.setattr(build, "uses_command", lambda p, command="": True)
     d.build()
     assert dialogs.messages[-1][:2] == ("error", "빌드") and "[빌드 명령]" in dialogs.messages[-1][2]
     w.close()

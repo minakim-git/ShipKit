@@ -641,12 +641,11 @@ class DeployPage(QWidget):
             self.build_dialog.show()
             self.build_dialog.raise_()
             return
-        command = build.command_for(p)
-        if not command:
+        if build.uses_command(p) and not build.command_for(p):
             self.ctx.dialogs.error("빌드", f"프리셋 '{p.preset or '-'}' 은 기본 빌드 명령이 없습니다. "
                                         "프로젝트 설정의 [빌드 명령]에 실행할 명령을 적으세요 (예: npm run build).")
             return
-        dialog = BuildDialog(self.ctx, p, self.window(), command)
+        dialog = BuildDialog(self.ctx, p, self.window())
         dialog.finished_build.connect(lambda _result: self.run_preflight())
         self.build_dialog = dialog
         dialog.show()

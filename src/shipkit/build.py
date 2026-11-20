@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
+from shipkit import idebuild
 from shipkit.config import ProjectConfig
 
 DEFAULTS = {"maven": "mvn -DskipTests compile", "gradle": "gradle classes", "vite": "npm run build", "vue-cli": "npm run build"}
@@ -195,25 +196,23 @@ def _kill(proc: subprocess.Popen) -> None:
             proc.terminate()
 
 
-def run_build(project: ProjectConfig, output: Callable[[str], None], is_cancelled: Optional[Callable[[], bool]] = None,
-              command: str = "") -> BuildResult:
-    """빌드 명령을 프로젝트 폴더에서 실행하고 출력을 output 으로 한 줄씩 넘긴다. 명령이 없으면 BuildError."""
-    cmd = (command or "").strip() or command_for(project)
-    if not cmd:
-        raise BuildError("빌드 명령이 없습니다. 프로젝트 설정의 [빌드 명령]에 적으세요 "
-                         "(maven·gradle·vite·vue-cli 프리셋은 기본값이 있습니다).")
-    if not project.root.is_dir():
-        raise BuildError(f"프로젝트 로컬 경로가 없습니다: {project.root}")
-    shown = cmd
-    cmd, notes = resolve_command(cmd, project.root)
-    env, env_notes = build_env()
-    output(f"$ {shown}\n")
-    output(f"  (폴더: {project.root})\n")
-    for note in notes + env_notes:
-        output(note + "\n")
-    start = time.monotonic()
+def uses_command(project: ProjectConfig, command: str = "") -> bool:
+    """명령 실행인지 (빌드 명령이 적혀 있거나 빌드 방식이 command 이거나 이번 명령을 받았으면). 아니면 IDE 식 빌드."""
+    return bool((command or "").strip() or (project.build_command or "").strip() or project.build_mode != "ide")
+
+
+def describe(project: ProjectConfig, command: str = "") -> str:
+    """빌드 창 제목에 보일 글: 실행할 명령 또는 'IDE 식 빌드'."""
+    if uses_command(project, command):
+        return (command or "").strip() or command_for(project) or "(빌드 명령 없음)"
+    return "IDE 식 빌드: javac + WEB-INF/lib (의존성은 Maven 에서)"
+
+
+def _stream(args, shell: bool, cwd: Path, env: Dict[str, str], output: Callable[[str], None],
+            is_cancelled: Optional[Callable[[], bool]]) -> Tuple[int, bool]:
+    """프로세스를 돌리며 출력을 한 줄씩 넘긴다. 취소되면 프로세스 나무를 끝낸다. 반환: (종료 코드, 취소됐는지)."""
     try:
-        proc = subprocess.Popen(cmd, cwd=str(project.root), shell=True, stdin=subprocess.DEVNULL, env=env,
+        proc = subprocess.Popen(args, cwd=str(cwd), shell=shell, stdin=subprocess.DEVNULL, env=env,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 **({"start_new_session": True} if os.name != "nt" else {}))
     except OSError as e:
@@ -241,5 +240,57 @@ def run_build(project: ProjectConfig, output: Callable[[str], None], is_cancelle
         if item is None:
             break
         output(_decode(item, fallback))
-    code = proc.wait()
-    return BuildResult(cmd, code, time.monotonic() - start, cancelled)
+    return proc.wait(), cancelled
+
+
+def maven_classpath(project: ProjectConfig, output: Callable[[str], None], env: Dict[str, str],
+                    is_cancelled: Optional[Callable[[], bool]] = None) -> List[str]:
+    """mvn dependency:build-classpath 로 의존성 jar 경로 목록을 받는다 (IDE 식 빌드용)."""
+    target = project.root / "target"
+    target.mkdir(parents=True, exist_ok=True)
+    out_file = target / "shipkit-mdep.txt"
+    cmd, notes = resolve_command(f'mvn -q dependency:build-classpath "-Dmdep.outputFile={out_file}"', project.root)
+    output("$ mvn -q dependency:build-classpath\n")
+    for note in notes:
+        output(note + "\n")
+    code, cancelled = _stream(cmd, True, project.root, env, output, is_cancelled)
+    if cancelled:
+        raise BuildError("취소했습니다.")
+    if code != 0 or not out_file.is_file():
+        raise BuildError("의존성 경로를 가져오지 못했습니다 (mvn dependency:build-classpath 실패). 위 Maven 출력을 보세요. "
+                         "저장소(repository)에 접속할 수 없거나 pom.xml 의 의존성을 못 받는 경우가 많습니다.")
+    raw = out_file.read_text(encoding="utf-8", errors="replace").strip()
+    return [e for e in raw.split(os.pathsep) if e.strip()]
+
+
+def run_build(project: ProjectConfig, output: Callable[[str], None], is_cancelled: Optional[Callable[[], bool]] = None,
+              command: str = "") -> BuildResult:
+    """빌드. 빌드 명령이 있으면(설정·이번 명령) 그것을 프로젝트 폴더에서 실행하고, 없고 빌드 방식이 IDE 식이면 javac 로
+    직접 컴파일한다 (idebuild). 출력은 output 으로 한 줄씩. 명령도 없고 IDE 식도 아니면 BuildError."""
+    if not project.root.is_dir():
+        raise BuildError(f"프로젝트 로컬 경로가 없습니다: {project.root}")
+    env, env_notes = build_env()
+    start = time.monotonic()
+    if not uses_command(project, command):
+        java_home = Path(env["JAVA_HOME"]) if env.get("JAVA_HOME") else None
+        try:
+            code, cancelled, label = idebuild.run(
+                project, output, lambda args, cwd: _stream(args, False, cwd, env, output, is_cancelled),
+                lambda: maven_classpath(project, output, env, is_cancelled), java_home, is_cancelled)
+        except idebuild.IdeBuildError as e:
+            raise BuildError(str(e)) from e
+        for note in env_notes:
+            output(note + "\n")
+        return BuildResult(label, code, time.monotonic() - start, cancelled)
+    cmd = (command or "").strip() or command_for(project)
+    if not cmd:
+        raise BuildError("빌드 명령이 없습니다. 프로젝트 설정의 [빌드 명령]에 적으세요 "
+                         "(maven·gradle·vite·vue-cli 프리셋은 기본값이 있습니다).")
+    shown = cmd
+    cmd, notes = resolve_command(cmd, project.root)
+    output(f"$ {shown}\n")
+    output(f"  (폴더: {project.root})\n")
+    for note in notes + env_notes:
+        output(note + "\n")
+    code, cancelled = _stream(cmd, True, project.root, env, output, is_cancelled)
+    return BuildResult(shown, code, time.monotonic() - start, cancelled)

@@ -124,3 +124,72 @@ def test_find_tools_when_not_on_path(tmp_path, monkeypatch):
     assert env["JAVA_HOME"] == str(jdk.parent) and env["PATH"].startswith(str(jdk)) and notes == [f"  (JAVA_HOME 이 없어 {jdk.parent} 를 씁니다)"]
     monkeypatch.setenv("JAVA_HOME", str(jdk.parent))
     assert build.build_env()[1] == []                                                  # JAVA_HOME 이 있으면 그대로
+
+
+def _jdk():
+    from shipkit import idebuild
+    home = build.find_java_home()
+    return idebuild.javac_path(home)
+
+
+@pytest.mark.skipif(_jdk() is None, reason="javac 없음")
+def test_ide_build(tmp_path, monkeypatch):
+    """IDE 식 빌드: pom 의 인코딩·출력 폴더를 읽고, Maven 의존성(캐시) + WEB-INF/lib 의 jar 를 classpath 로 javac,
+    리소스 복사. pom.xml 이 바뀌면 의존성 경로를 다시 받는다. 멀티모듈·pom 없음은 안내."""
+    import subprocess
+    import zipfile
+    from shipkit import idebuild
+    root = tmp_path / "gw"
+    (root / "src/main/java/kr/co/x").mkdir(parents=True)
+    (root / "src/main/resources/conf").mkdir(parents=True)
+    (root / "src/main/webapp/WEB-INF/lib").mkdir(parents=True)
+    (root / "pom.xml").write_text("""<project xmlns="http://maven.apache.org/POM/4.0.0"><modelVersion>4.0.0</modelVersion>
+<groupId>kr.co</groupId><artifactId>gw</artifactId><version>1</version><packaging>war</packaging>
+<properties><project.build.sourceEncoding>UTF-8</project.build.sourceEncoding><jdk>1.8</jdk></properties>
+<build><plugins><plugin><artifactId>maven-compiler-plugin</artifactId><configuration><source>${jdk}</source><target>${jdk}</target></configuration></plugin></plugins></build>
+</project>""", encoding="utf-8")
+    info = idebuild.read_pom(root / "pom.xml")
+    assert (info.source, info.target, info.encoding, info.output_dir, info.packaging) == ("1.8", "1.8", "UTF-8", "target/classes", "war")
+    # pom 에 없는 jar: WEB-INF/lib 에만 있다 (IntelliJ 라이브러리) -> javac 로 Lib 를 만들어 jar 로
+    (tmp_path / "libsrc").mkdir()
+    (tmp_path / "libsrc/Lib.java").write_text("package lib;\npublic class Lib { public static String hi() { return \"hi\"; } }", encoding="utf-8")
+    subprocess.run([str(_jdk()), "-d", str(tmp_path / "libsrc"), str(tmp_path / "libsrc/Lib.java")], check=True, capture_output=True)
+    with zipfile.ZipFile(root / "src/main/webapp/WEB-INF/lib/lib.jar", "w") as z:
+        z.write(tmp_path / "libsrc/lib/Lib.class", "lib/Lib.class")
+    (root / "src/main/java/kr/co/x/Hello.java").write_text("package kr.co.x;\nimport lib.Lib;\npublic class Hello { String s = Lib.hi(); }\n",
+                                                           encoding="utf-8")
+    (root / "src/main/resources/conf/app.properties").write_text("k=v\n", encoding="utf-8")
+    p = _project(tmp_path, preset="maven")
+    p.root = root
+    assert p.build_mode == "ide" and not build.uses_command(p) and build.describe(p).startswith("IDE 식 빌드")
+    calls = []
+    monkeypatch.setattr(build, "maven_classpath", lambda project, output, env, is_cancelled=None: (calls.append(1), [])[1])
+    lines = []
+    r = build.run_build(p, lines.append)
+    text = "".join(lines)
+    assert r.ok and r.command.startswith("javac (소스 1개, WEB-INF/lib jar 1개)"), text
+    assert (root / "target/classes/kr/co/x/Hello.class").is_file() and (root / "target/classes/conf/app.properties").read_text() == "k=v\n"
+    assert calls == [1] and "의존성 경로를 Maven 에서 가져옵니다" in text and "리소스 1개를" in text and "-encoding UTF-8" in text
+    assert "-source 1.8 -target 1.8" in text and (root / "target" / idebuild.CLASSPATH_CACHE).is_file()
+    lines.clear()
+    r = build.run_build(p, lines.append)                                            # pom 그대로 -> 의존성 경로는 지난번 것
+    assert r.ok and calls == [1] and "의존성 경로 0개 (지난번 것" in "".join(lines)
+    (root / "src/main/java/kr/co/x/Hello.java").write_text("package kr.co.x;\npublic class Hello { String s = Nope.hi(); }\n", encoding="utf-8")
+    lines.clear()
+    r = build.run_build(p, lines.append)                                            # 컴파일 오류 -> 실패, javac 메시지 그대로
+    assert not r.ok and r.code == 1 and "Nope" in "".join(lines)
+    (root / "pom.xml").write_text((root / "pom.xml").read_text(encoding="utf-8") + "\n", encoding="utf-8")
+    (root / "src/main/java/kr/co/x/Hello.java").write_text("package kr.co.x;\npublic class Hello {}\n", encoding="utf-8")
+    assert build.run_build(p, lines.append).ok and calls == [1, 1]                  # pom 이 바뀌면 다시 받는다
+    (root / "pom.xml").write_text("<project><modules><module>a</module></modules></project>", encoding="utf-8")
+    with pytest.raises(build.BuildError, match="멀티모듈"):
+        build.run_build(p, lines.append)
+    (root / "pom.xml").unlink()
+    with pytest.raises(build.BuildError, match="pom.xml 이 있는 Maven"):
+        build.run_build(p, lines.append)
+    cmd_mode = _project(tmp_path, preset="maven", build_mode="command")
+    assert cmd_mode.build_mode == "command" and build.uses_command(cmd_mode) and build.describe(cmd_mode) == "mvn -DskipTests compile"
+    assert _project(tmp_path, preset="vite").build_mode == "command"
+    assert build.uses_command(_project(tmp_path, preset="maven", build_command="mvn package"))
+    with pytest.raises(Exception, match="build_mode"):
+        _project(tmp_path, preset="maven", build_mode="javac")

@@ -20,7 +20,8 @@ class BuildDialog(QDialog):
         super().__init__(parent)
         self.ctx = ctx
         self.project = project
-        self.command = command or build.command_for(project)
+        self.command = command                      # 비우면 설정대로 (빌드 명령 또는 IDE 식)
+        self.label = build.describe(project, command)
         self.result: Optional[build.BuildResult] = None
         self.running = False
         self._cancel = False
@@ -33,9 +34,9 @@ class BuildDialog(QDialog):
         layout.setSpacing(10)
         head = QHBoxLayout()
         head.setSpacing(8)
-        self.title = label(self.command, "sectionTitle")
+        self.title = label(self.label, "sectionTitle")
         self.title.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.title.setToolTip(f"폴더: {project.root}\n프로젝트 설정의 [빌드 명령]에서 바꿀 수 있습니다.")
+        self.title.setToolTip(f"폴더: {project.root}\n프로젝트 설정의 [빌드 방식]·[빌드 명령]에서 바꿀 수 있습니다.")
         head.addWidget(self.title, 1)
         self.state_chip = Chip("준비", "neutral")
         head.addWidget(self.state_chip)
@@ -82,7 +83,7 @@ class BuildDialog(QDialog):
 
         def failed(message: str) -> None:
             self.log.append(f"\n[오류] {message}\n")
-            self._finish(build.BuildResult(command, 1, float(self._seconds)))
+            self._finish(build.BuildResult(self.label, 1, float(self._seconds)))
             self.ctx.dialogs.error("빌드", message)
 
         self.ctx.runner.run_stream(lambda emit: build.run_build(project, emit, lambda: self._cancel, command),
@@ -103,7 +104,7 @@ class BuildDialog(QDialog):
         self.cancel_btn.hide()
         self.close_btn.setEnabled(True)
         if not result.cancelled:
-            self.ctx.notify(f"{self.project.name} {result.summary()}", self.command)
+            self.ctx.notify(f"{self.project.name} {result.summary()}", self.label)
         self.finished_build.emit(result)
 
     def cancel(self) -> None:
