@@ -318,6 +318,7 @@ class ProjectConfig:
     allow: List[str] = field(default_factory=lambda: list(DEFAULT_ALLOW))
     source_encodings: List[str] = field(default_factory=lambda: ["utf-8", "cp949"])
     package_name: str = DEFAULT_PACKAGE_NAME
+    build_command: str = ""              # 배포 화면 [빌드]·shipkit build 가 로컬 경로에서 실행할 명령 (비우면 프리셋 기본값)
     hooks: Dict[str, List[Hook]] = field(default_factory=dict)
     server: ServerOptions = field(default_factory=ServerOptions)
     servers: List[ServerProfile] = field(default_factory=list)  # 패키지를 바로 올릴 서버 (SSH/SFTP)
@@ -647,6 +648,7 @@ def _parse_project(name: str, raw: Dict[str, Any], defaults: Dict[str, Any], bas
         allow=list(dict.fromkeys(list(DEFAULT_ALLOW) + [str(x) for x in get_list("allow")])),
         source_encodings=[str(e) for e in encodings],
         package_name=_parse_package_name(str(get("package_name", DEFAULT_PACKAGE_NAME)), name, where),
+        build_command=str(get("build_command", "") or "").strip(),
         hooks=_parse_hooks(get("hooks"), where),
         server=_parse_server_options(get("server"), where, server_os),
         servers=parse_servers(get("servers"), where, server_os),

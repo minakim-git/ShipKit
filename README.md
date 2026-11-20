@@ -27,6 +27,7 @@ Java, Vue/React, Python, PHP, 정적 사이트 등 언어와 상관없이 쓸 �
 - **화면(GUI) 프로그램 `ShipKit.exe`**: 고르기 → 확인 → 완료 세 단계로 패키지를 만들고, 만든 패키지 기록을 찾아보거나 같은 내용으로 다시 만듭니다. 처음 실행 안내, 프로젝트 설정(반영 규칙 경로 시험 포함), GitLab·GitHub 연결과 토큰 저장도 화면에서 합니다.
 - **여러 서버에 차례로 반영**: 서버가 둘 이상이면 완료 화면의 **여러 서버에 차례로…** 로 같은 패키지를 고른 서버들에 순서대로 올리고 확인 → 백업 후 반영(→ 되돌리기)합니다. 서버마다 결과가 한 줄로 보이고, 반영은 한 서버라도 실패하면 멈춥니다.
 - **서버 화면(파일 + 터미널)**: 서버 연결로 접속해 서버 폴더를 보고, 탐색기에서 끌어다 놓아 올리고, 내려받고, 새 폴더·이름 바꾸기·지우기를 하며, 텍스트 파일은 **편집**으로 열어 고치고 저장하고(인코딩·줄 끝 유지, 저장 전 .bak, 줄 번호·찾기/바꾸기·설정/XML/셸 구문 강조), 옆의 터미널(pty, 색·화면형 명령 지원, 탭으로 셸을 여러 개)에서 명령을 치며, 터미널에서 cd 하면 목록이 따라갑니다. 반영 뒤 로그를 받거나 설정 파일 하나를 고쳐 올리고 서비스를 재시작하는 일을 WinSCP·PuTTY 없이 합니다(기록 화면의 반영 이력에서 그때의 서버 패키지 폴더를 바로 열 수 있음).
+- **빌드**: 배포 화면의 **빌드**(망치) 단추와 `shipkit build` 가 프로젝트의 빌드 명령(설정 `build_command`, 비우면 프리셋 기본값)을 로컬 경로에서 돌려 출력을 보여 줍니다. 빌드만 하려고 IDE 를 켜지 않아도 됩니다. `mvn` 이 PATH 에 없으면 래퍼(mvnw)·MAVEN_HOME·IntelliJ 에 딸린 Maven·설치 폴더에서 찾고, JAVA_HOME 이 없으면 JDK 도 찾아 넣습니다.
 - **명령어(CLI)·대화형 모드**: Jenkins 같은 자동화나 명령어에 익숙한 사람을 위해 같은 기능을 명령어로도 제공합니다.
 - **보고서 `report.md`**: MR 정보, 파일별 처리 결과, 알림, 서버 반영 절차
 - **보안**: 토큰은 환경변수나 OS 키링(Windows 자격 증명 관리자)에만 둡니다. 설정 파일에 넣으면 거부합니다. SSL 검증은 기본으로 켜져 있고, 모든 요청에 타임아웃이 있습니다.
@@ -214,6 +215,7 @@ gitlab:
 
 defaults:
   package_name: "%Y-%m-%d-%H%M"     # 날짜 폴더 이름 -> 2026-10-27-1530
+  build_command: mvn -DskipTests compile   # [빌드]·shipkit build 가 로컬 경로에서 실행 (비우면 프리셋 기본값)
 
 projects:
   erp:                                      # Java 웹
@@ -394,6 +396,7 @@ GUI 테스트는 화면 없이(`QT_QPA_PLATFORM=offscreen`) 실제 위젯을 조
   shipkit deploy -p erp --server 개발 --rollback            # 올려 둔 패키지 폴더에서 rollback
   shipkit deploy -p erp --server 개발 --apply --no-hooks --no-notify   # 메신저 알림 없이 (설정돼 있어도)
   shipkit deploy -p erp --server 개발 --apply --no-hooks --no-health   # 반영 후 서비스 확인 없이 (설정돼 있어도)
+  shipkit build -p erp                                                 # 프로젝트 빌드 (설정의 build_command, 비우면 프리셋 기본값)
   shipkit deploy -p erp --server 개발 --package D:/deploy/erp/2026-10-30-1523   # 특정 패키지
   shipkit server-status -p erp --server 개발               # 지금 반영된 패키지와 최근 이력
   ```

@@ -2056,3 +2056,31 @@ def test_diff_dialog(qapp):
     same = DiffDialog("x", "k=v", "k=v")
     assert same.stat_chip.text() == "같음" and "내용이 같습니다" in same.view.toPlainText()
     theme.apply(qapp, "system")
+
+
+def test_build_dialog(qapp, tmp_path, maven_project, monkeypatch):
+    """배포 화면의 [빌드]: 빌드 창이 명령을 돌려 출력을 보여 주고, 끝나면 점검을 다시 한다. 명령이 없는 프리셋은 안내."""
+    import sys
+    from shipkit import build
+    py = sys.executable.replace("\\", "/")
+    path = _config(tmp_path, maven_project, build_command=f'"{py}" -c "print(\'compiling\'); print(\'BUILD OK\')"')
+    dialogs = FakeDialogs()
+    w = make_window(path, dialogs)
+    d = w.deploy_page
+    assert d.build_btn.isVisibleTo(d) and d.build_btn.text() == "빌드"
+    notes = []
+    w.ctx.notify = lambda title, text: notes.append((title, text))
+    checks_before = d.last_checks
+    d.build()
+    dlg = d.build_dialog
+    assert dlg is not None and dlg.command.startswith(f'"{py}"') and dlg.result is not None and dlg.result.ok and not dlg.running
+    text = dlg.log.toPlainText()
+    assert "compiling" in text and "BUILD OK" in text and "✓ 빌드 성공" in text and dlg.state_chip.text().startswith("빌드 성공")
+    assert notes[-1][0].startswith("erp 빌드 성공") and d.last_checks is not checks_before
+    assert not dlg.cancel_btn.isVisibleTo(dlg) and dlg.close_btn.isEnabled()
+    dlg.close()
+
+    monkeypatch.setattr(build, "command_for", lambda p: "")                       # 빌드 명령이 없으면 안내만
+    d.build()
+    assert dialogs.messages[-1][:2] == ("error", "빌드") and "[빌드 명령]" in dialogs.messages[-1][2]
+    w.close()

@@ -17,7 +17,9 @@ from PySide6.QtWidgets import (
     QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
-from shipkit import PROJECT_FILE, config_store, legacy, mapper, project_edit, workflow
+from pathlib import Path
+
+from shipkit import PROJECT_FILE, build, config_store, legacy, mapper, project_edit, workflow
 from shipkit.config import (
     _COMMON_EXCLUDE, DEFAULT_ALLOW, DEFAULT_DENY, DEFAULT_HISTORY_FILE, DEFAULT_PACKAGE_NAME, PRESETS, ConfigError,
     ProjectConfig,
@@ -199,17 +201,21 @@ class ProjectsPage(QWidget):
         self.gitlab_edit = QLineEdit()
         self.github_edit = QLineEdit()
         self.package_name_edit = QLineEdit()
+        self.build_edit = QLineEdit()                 # 배포 화면 [빌드] 가 로컬 경로에서 실행할 명령
+        self.build_edit.setToolTip("배포 화면의 [빌드] 와 shipkit build 가 프로젝트 로컬 경로에서 셸로 실행합니다.\n"
+                                   "비우면 프리셋 기본값 (maven: mvn -DskipTests compile, gradle: gradlew classes, vite·vue-cli: npm run build).")
         for text, widget in (("이름", self.name_edit), ("로컬 경로", self.root_field),
                              ("패키지 생성 경로", self.output_field), ("서버 OS", self.os_combo),
                              ("서버 배포 경로", self.server_edit), ("GitLab 프로젝트", self.gitlab_edit),
-                             ("GitHub 저장소", self.github_edit), ("패키지 폴더 이름", self.package_name_edit)):
+                             ("GitHub 저장소", self.github_edit), ("패키지 폴더 이름", self.package_name_edit),
+                             ("빌드 명령", self.build_edit)):
             form.addRow(label(text, "fieldLabel", wrap=False), widget)
         card.body.addLayout(form)
         self.basic_note = label("", "muted")
         card.body.addWidget(self.basic_note)
         col.addWidget(card)
         self._watch(self.name_edit, self.root_field, self.output_field, self.os_combo, self.server_edit,
-                    self.gitlab_edit, self.github_edit, self.package_name_edit)
+                    self.gitlab_edit, self.github_edit, self.package_name_edit, self.build_edit)
 
         danger = Section("프로젝트 지우기", rule=True)
         delete = button("이 프로젝트 지우기", "danger")
@@ -449,6 +455,7 @@ class ProjectsPage(QWidget):
         self.gitlab_edit.setText(str(e.get("gitlab_project", "")))
         self.github_edit.setText(str(e.get("github_repo", "")))
         self.package_name_edit.setText(str(e.get("package_name", "")))
+        self.build_edit.setText(str(e.get("build_command", "")))
         self._select(self.preset_combo, e.get("preset"))
         self._select(self.mode_combo, e.get("mode"))
         self.rules_override.set_overridden("rules" in e)
@@ -503,6 +510,7 @@ class ProjectsPage(QWidget):
         put("gitlab_project", self.gitlab_edit.text().strip())
         put("github_repo", self.github_edit.text().strip())
         put("package_name", self.package_name_edit.text().strip())
+        put("build_command", self.build_edit.text().strip())
         put("preset", self.preset_combo.currentData())
         put("mode", self.mode_combo.currentData())
         put("modules", _split(self.modules_edit.text()))
@@ -587,6 +595,9 @@ class ProjectsPage(QWidget):
         ph(self.package_name_edit, "package_name", f"기본값: {DEFAULT_PACKAGE_NAME}   (예: 2026-10-26-1133)")
         preset_value, preset_src = L.inherited("preset")
         effective = L.preset_name(entry)
+        default_build = build.default_command(effective, Path(self.root_field.text().strip()) if self.root_field.text().strip() else None)
+        ph(self.build_edit, "build_command", f"기본값: {default_build}   (프리셋 {effective})" if default_build else
+           "비우면 빌드하지 않음.  예: mvn -DskipTests compile  /  npm run build")
         combo_text(self.preset_combo, f"{preset_src} · {preset_value}" if preset_value else
                    (f"{effective} (기본)" if effective and not entry.get("rules") else ""))
         mode = self._effective_mode(entry)

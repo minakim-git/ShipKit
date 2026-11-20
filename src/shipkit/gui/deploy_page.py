@@ -17,10 +17,11 @@ from PySide6.QtWidgets import (
     QTableWidgetItem, QTabWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
-from shipkit import history, packager, preflight, report, workflow
+from shipkit import build, history, packager, preflight, report, workflow
 from shipkit.config import ProjectConfig
 from shipkit.gui import theme
 from shipkit.gui.context import AppContext
+from shipkit.gui.build_dialog import BuildDialog
 from shipkit.gui.remote_panel import RemotePanel
 from shipkit.gui.report_view import show_report
 from shipkit.gui.widgets import (
@@ -166,6 +167,12 @@ class DeployPage(QWidget):
         self.branch_btn.setToolTip("다른 브랜치로 바꿉니다 (git checkout). 합치기(merge)·stash 는 하지 않습니다.")
         self.branch_btn.clicked.connect(self.show_branch_menu)
         self.branch_btn.hide()
+        self.build_btn = button("빌드", "ghost")     # 빌드만 하려고 IDE 를 켜지 않게: 설정의 빌드 명령을 여기서 돌린다
+        theme.bind_icon(self.build_btn, "hammer.svg", "PRIMARY", 16)
+        self.build_btn.setToolTip("프로젝트를 빌드합니다 (프로젝트 설정의 빌드 명령, 비우면 프리셋 기본값)")
+        self.build_btn.clicked.connect(self.build)
+        self.build_dialog: Optional[BuildDialog] = None
+        row.addWidget(self.build_btn)
         self.recheck_btn = button("다시 점검", "ghost")
         theme.bind_icon(self.recheck_btn, "refresh.svg", "PRIMARY", 16)
         self.recheck_btn.clicked.connect(self.run_preflight)
@@ -624,6 +631,26 @@ class DeployPage(QWidget):
                 self.check_row.addWidget(self.branch_btn, 0, Qt.AlignmentFlag.AlignVCenter)
                 self.branch_btn.show()
         self.last_checks = checks
+
+    def build(self) -> None:
+        """점검 띠의 [빌드]: 빌드 창을 열어 프로젝트의 빌드 명령을 돌린다. 끝나면 점검을 다시 한다."""
+        p = self.project
+        if p is None:
+            return
+        if self.build_dialog is not None and self.build_dialog.running:
+            self.build_dialog.show()
+            self.build_dialog.raise_()
+            return
+        command = build.command_for(p)
+        if not command:
+            self.ctx.dialogs.error("빌드", f"프리셋 '{p.preset or '-'}' 은 기본 빌드 명령이 없습니다. "
+                                        "프로젝트 설정의 [빌드 명령]에 실행할 명령을 적으세요 (예: npm run build).")
+            return
+        dialog = BuildDialog(self.ctx, p, self.window(), command)
+        dialog.finished_build.connect(lambda _result: self.run_preflight())
+        self.build_dialog = dialog
+        dialog.show()
+        dialog.start()
 
     def pull(self) -> None:
         """점검 띠의 [pull 받기]: 원격 최신 커밋을 fast-forward 로만 받는다."""

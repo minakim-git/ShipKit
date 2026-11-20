@@ -9,6 +9,7 @@
   shipkit pr      [-p 프로젝트]      GitHub PR 목록
   shipkit package [-p 프로젝트] --mr 12 15 | --pr 7 | --git A..B | --commits SHA... | --since-last | --files 목록.txt | 경로...
                                     (sync 모드 프로젝트는 변경 출처 없이도 실행 가능)
+  shipkit build   [-p 프로젝트] [--command "…"]   프로젝트를 빌드 (설정의 build_command, 비우면 프리셋 기본값)
   shipkit presets                   사용 가능한 프리셋 목록
   shipkit token   set | delete | status  [gitlab | github]
   shipkit deploy  [-p 프로젝트] --server 이름 [--package 폴더] [--apply --hooks|--no-hooks | --rollback] [--no-notify] [--no-health]
@@ -406,6 +407,20 @@ def cmd_start(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------- presets
+def cmd_build(args: argparse.Namespace) -> int:
+    """프로젝트 로컬 경로에서 빌드 명령을 실행한다 (출력은 그대로 보여 주고, 종료 코드가 0 이 아니면 실패)."""
+    from shipkit import build
+    cfg = load_config(args.config)
+    project = cfg.project(args.project)
+    try:
+        result = build.run_build(project, lambda text: (sys.stdout.write(text), sys.stdout.flush()),
+                                 command=args.build_cmd or "")
+    except build.BuildError as e:
+        raise UsageError(str(e)) from e
+    print(result.summary())
+    return EXIT_OK if result.ok else EXIT_FAIL
+
+
 def cmd_presets(args: argparse.Namespace) -> int:
     print(f"{'프리셋':<10} {'방식':<8} 설명")
     for name, preset in PRESETS.items():
@@ -526,6 +541,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--name", help="프로젝트 이름 (기본: 폴더 이름)")
     p.add_argument("--force", action="store_true", help="이미 있으면 덮어쓰기")
     p.set_defaults(func=cmd_init_project)
+
+    p = sub.add_parser("build", parents=[common], help="프로젝트 빌드 (설정의 build_command, 비우면 프리셋 기본값)")
+    p.add_argument("-p", "--project", help="프로젝트 이름")
+    p.add_argument("--command", dest="build_cmd", metavar="CMD", help="이번만 쓸 빌드 명령 (설정 대신)")   # dest: 하위 명령 이름(command)과 겹치지 않게
+    p.set_defaults(func=cmd_build)
 
     p = sub.add_parser("start", parents=[common], help="대화형 모드 (인자 없이 실행한 것과 같음)")
     p.add_argument("-p", "--project", help="프로젝트 이름")
