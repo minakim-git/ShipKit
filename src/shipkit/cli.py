@@ -11,7 +11,7 @@
                                     (sync 모드 프로젝트는 변경 출처 없이도 실행 가능)
   shipkit presets                   사용 가능한 프리셋 목록
   shipkit token   set | delete | status  [gitlab | github]
-  shipkit deploy  [-p 프로젝트] --server 이름 [--package 폴더] [--apply --hooks|--no-hooks | --rollback] [--no-notify]
+  shipkit deploy  [-p 프로젝트] --server 이름 [--package 폴더] [--apply --hooks|--no-hooks | --rollback] [--no-notify] [--no-health]
                                     설정한 서버에 패키지를 올리고 check (--apply: backup·apply 까지, 끝나면 메신저 알림)
   shipkit server-status [-p 프로젝트] --server 이름   서버의 배포 이력과 지금 반영된 패키지
 
@@ -475,7 +475,8 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         package = remote_cli.find_package(project, args.package)
         print(f"패키지 {package.name}  ->  {profile.name} ({profile.address})  [{action}]")
         return EXIT_OK if remote_cli.deploy(project, profile, package, action, secrets, run_hooks,
-                                            notify_enabled=not args.no_notify) == 0 else EXIT_FAIL
+                                            notify_enabled=not args.no_notify, health_enabled=not args.no_health) == 0 \
+            else EXIT_FAIL
     except remote_cli.DeployError as e:
         raise UsageError(str(e)) from e
     except remote.RemoteError as e:
@@ -582,6 +583,7 @@ def build_parser() -> argparse.ArgumentParser:
             p.add_argument("--hooks", action="store_true", help="서버 명령(hooks)을 묻지 않고 함께 실행")
             p.add_argument("--no-hooks", action="store_true", help="서버 명령(hooks)을 실행하지 않음")
             p.add_argument("--no-notify", action="store_true", help="반영·되돌리기 결과를 메신저 웹훅으로 알리지 않음 (설정돼 있어도)")
+            p.add_argument("--no-health", action="store_true", help="반영 뒤 서비스 확인(URL·포트)을 하지 않음 (설정돼 있어도)")
         else:
             p.add_argument("--limit", type=int, default=20, help="보여 줄 최근 이력 수")
         p.set_defaults(func=func)

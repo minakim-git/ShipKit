@@ -13,7 +13,7 @@ from PySide6.QtCore import QTimer, Signal
 from PySide6.QtWidgets import QCheckBox, QComboBox, QHBoxLayout, QLineEdit, QListWidget, QSpinBox, QVBoxLayout, QWidget
 
 from shipkit import notify, remote
-from shipkit.config import NOTIFY_DETAILS, NOTIFY_LABELS, ConfigError, ServerProfile, parse_servers
+from shipkit.config import HEALTH_WAIT, HEALTH_WAIT_MAX, NOTIFY_DETAILS, NOTIFY_LABELS, ConfigError, ServerProfile, parse_servers
 from shipkit.gui.context import AppContext
 from shipkit.gui.project_widgets import form_layout as _form
 from shipkit.gui.remote_panel import RemoteClient
@@ -118,6 +118,27 @@ class ServersTab(QWidget):
         self.srv_log = QLineEdit()                    # 서버 로그 파일: 완료 화면 [로그 보기]·서버 화면 [로그 따라가기]가 tail -F
         self.srv_log.setToolTip("반영한 뒤 완료 화면의 [로그 보기]나 서버 화면의 [로그 따라가기]를 누르면 터미널에서 이 파일을 "
                                 "tail -F 로 따라갑니다 (마지막 200줄부터, 멈추려면 Ctrl+C).")
+        self.srv_health = QLineEdit()                 # 반영 후 확인: 이 PC 에서 URL(HTTP) 또는 포트(TCP)에 접속해 본다
+        self.srv_health.setPlaceholderText("비우면 확인하지 않음.  예: http://10.0.0.5:8080/health  또는 포트 번호 8080")
+        self.srv_health.setToolTip("반영이 끝나면 이 PC 에서 여기에 접속해 서비스가 살아 있는지 확인합니다. URL 은 HTTP 2xx·3xx 응답,\n"
+                                   "포트 번호만 적으면 TCP 연결이 되는지 봅니다. 실패하면 되돌릴지 묻습니다 (명령어는 종료 코드 1).")
+        self.srv_health_wait = QSpinBox()
+        self.srv_health_wait.setRange(0, HEALTH_WAIT_MAX)
+        self.srv_health_wait.setValue(HEALTH_WAIT)
+        self.srv_health_wait.setSuffix("초")
+        self.srv_health_wait.setToolTip("서비스가 재시작되는 동안 이 시간까지 몇 초마다 다시 봅니다. 0 이면 한 번만.")
+        self.srv_health_text = QLineEdit()
+        self.srv_health_text.setPlaceholderText("응답에 있어야 할 글 (선택, URL 일 때만. 예: UP)")
+        self.srv_health_text.setToolTip("적으면 HTTP 응답 본문에 이 글이 있어야 성공으로 봅니다 (예: Spring Actuator 의 UP).")
+        self.srv_health_opts = QWidget()
+        opts = QHBoxLayout(self.srv_health_opts)
+        opts.setContentsMargins(0, 0, 0, 0)
+        opts.setSpacing(8)
+        opts.addWidget(label("최대", "muted", wrap=False))
+        opts.addWidget(self.srv_health_wait)
+        opts.addWidget(label("기다림", "muted", wrap=False))
+        opts.addSpacing(8)
+        opts.addWidget(self.srv_health_text, 1)
         self.srv_notify = QComboBox()                 # 메신저 알림: 반영·되돌리기가 끝나면 웹훅으로 한 줄
         self.srv_notify.addItem("알리지 않음", "")
         for fmt, text in NOTIFY_LABELS.items():
@@ -140,6 +161,7 @@ class ServersTab(QWidget):
                              ("올릴 위치", self.srv_upload), ("실행 계정", self.srv_mode), ("계정 이름", self.srv_run_as),
                              ("전환 방법", self.srv_run_with), ("", self.srv_run_password), ("", self.srv_chown),
                              ("서버 배포 경로", self.srv_path), ("배포 브랜치", self.srv_branch), ("로그 파일", self.srv_log),
+                             ("반영 후 확인", self.srv_health), ("확인 조건", self.srv_health_opts),
                              ("메신저 알림", self.srv_notify), ("웹훅 URL", self.srv_webhook),
                              ("JSON 키", self.srv_notify_key), ("알림 내용", self.srv_notify_detail)):
             form.addRow(label(text, "fieldLabel", wrap=False), widget)
@@ -154,6 +176,9 @@ class ServersTab(QWidget):
         self.notify_test_btn = button("알림 시험", "ghost")
         self.notify_test_btn.setToolTip("웹훅 주소로 시험 메시지를 하나 보내 채널에 잘 도착하는지 확인합니다.")
         self.notify_test_btn.clicked.connect(self.test_notify)
+        self.health_test_btn = button("확인 시험", "ghost")
+        self.health_test_btn.setToolTip("반영 후 확인에 적은 URL·포트에 지금 이 PC 에서 한 번 접속해 봅니다.")
+        self.health_test_btn.clicked.connect(self.test_health)
         forget = button("저장된 비밀번호 지우기", "ghost")
         forget.clicked.connect(self.forget_server_secrets)
         forget_key = button("서버 지문 잊기", "ghost")
@@ -162,6 +187,7 @@ class ServersTab(QWidget):
         buttons.addWidget(self.server_test_btn)
         buttons.addWidget(self.test_cancel_btn)
         buttons.addWidget(self.notify_test_btn)
+        buttons.addWidget(self.health_test_btn)
         buttons.addWidget(forget)
         buttons.addWidget(forget_key)
         buttons.addStretch(1)
@@ -175,8 +201,9 @@ class ServersTab(QWidget):
         col.addStretch(1)
 
         for edit in (self.srv_name, self.srv_host, self.srv_user, self.srv_upload, self.srv_run_as, self.srv_path, self.srv_branch,
-                     self.srv_log, self.srv_key.edit, self.srv_webhook, self.srv_notify_key):
+                     self.srv_log, self.srv_key.edit, self.srv_webhook, self.srv_notify_key, self.srv_health, self.srv_health_text):
             edit.textChanged.connect(self._server_edited)
+        self.srv_health_wait.valueChanged.connect(self._server_edited)
         for combo in (self.srv_auth, self.srv_mode, self.srv_run_with, self.srv_notify, self.srv_notify_detail):
             combo.currentIndexChanged.connect(self._server_edited)
         self.srv_port.valueChanged.connect(self._server_edited)
@@ -221,6 +248,18 @@ class ServersTab(QWidget):
         self.srv_path.setText(str(s.get("server_path", "")))
         self.srv_branch.setText(str(s.get("branch", "")))
         self.srv_log.setText(str(s.get("log_file", "")))
+        health = s.get("health")
+        if isinstance(health, dict):
+            self.srv_health.setText(str(health.get("url") or health.get("port") or ""))
+            try:
+                self.srv_health_wait.setValue(int(health.get("wait", HEALTH_WAIT)))
+            except (TypeError, ValueError):
+                self.srv_health_wait.setValue(HEALTH_WAIT)
+            self.srv_health_text.setText(str(health.get("text") or ""))
+        else:
+            self.srv_health.setText(str(health or ""))
+            self.srv_health_wait.setValue(HEALTH_WAIT)
+            self.srv_health_text.setText("")
         notify_cfg = s.get("notify") if isinstance(s.get("notify"), dict) else {}
         self._select(self.srv_notify, (notify_cfg.get("format") or "slack") if notify_cfg else "")
         self.srv_webhook.setText(str(notify_cfg.get("url", "")))
@@ -248,6 +287,10 @@ class ServersTab(QWidget):
                                         "비우면 없음.  예: /opt/tomcat/logs/catalina.out  (반영 뒤 [로그 보기]로 따라갑니다)")
         project_path = self.project_path()
         self.srv_path.setPlaceholderText(f"비우면 프로젝트 값: {project_path}" if project_path else "")
+        has_health = bool(self.srv_health.text().strip())
+        form.setRowVisible(self.srv_health_opts, has_health)
+        self.srv_health_text.setVisible(not self.srv_health.text().strip().isdigit())   # 포트만 적으면 '있어야 할 글' 은 없다
+        self.health_test_btn.setVisible(has_health)
         fmt = self.srv_notify.currentData()
         form.setRowVisible(self.srv_webhook, bool(fmt))
         form.setRowVisible(self.srv_notify_key, fmt == "custom")
@@ -278,6 +321,13 @@ class ServersTab(QWidget):
             d["branch"] = self.srv_branch.text().strip()
         if self.srv_log.text().strip():
             d["log_file"] = self.srv_log.text().strip()
+        health = self.srv_health.text().strip()
+        if health:
+            d["health"] = {"port": int(health)} if health.isdigit() else {"url": health}
+            if self.srv_health_wait.value() != HEALTH_WAIT:
+                d["health"]["wait"] = self.srv_health_wait.value()
+            if self.srv_health_text.text().strip() and not health.isdigit():
+                d["health"]["text"] = self.srv_health_text.text().strip()
         fmt = self.srv_notify.currentData()
         if fmt:
             d["notify"] = {"url": self.srv_webhook.text().strip(), "format": fmt}
@@ -303,7 +353,7 @@ class ServersTab(QWidget):
         fields = (("host", self.srv_host), ("user", self.srv_user), ("name", self.srv_name), ("port", self.srv_port),
                   ("upload_dir", self.srv_upload), ("key_file", self.srv_key), ("server_path", self.srv_path),
                   ("run_as", self.srv_run_as), ("branch", self.srv_branch), ("log_file", self.srv_log),
-                  ("notify.key", self.srv_notify_key), ("notify", self.srv_webhook),
+                  ("notify.key", self.srv_notify_key), ("notify", self.srv_webhook), ("health", self.srv_health),
                   ("이름", self.srv_name), ("호스트", self.srv_host), ("계정", self.srv_user))
         message = ""
         try:
@@ -412,6 +462,37 @@ class ServersTab(QWidget):
         self._finish_test()
         self.client.cancel()
         self.ctx.dialogs.toast("연결 시험을 취소했습니다.", "info")
+
+    def test_health(self) -> None:
+        """[확인 시험]: 반영 후 확인의 URL·포트에 이 PC 에서 지금 한 번 접속해 본다."""
+        profile = self._current_profile()
+        if profile is None:
+            return
+        if profile.health is None:
+            self.ctx.dialogs.error("확인 시험", "반영 후 확인에 URL 이나 포트 번호를 먼저 적으세요.")
+            return
+        cfg = profile.health
+        self.health_test_btn.setEnabled(False)
+        self.health_test_btn.setText("접속 중…")
+
+        def finish() -> None:
+            self.health_test_btn.setEnabled(True)
+            self.health_test_btn.setText("확인 시험")
+
+        def done(result) -> None:
+            finish()
+            ok, detail = result
+            if ok:
+                self.ctx.dialogs.info("확인 시험", f"{cfg.target} 에 접속됐습니다: {detail}\n\n반영 뒤에도 이렇게 확인합니다.")
+            else:
+                self.ctx.dialogs.info("확인 시험", f"{cfg.target} 에 지금 접속되지 않습니다: {detail}\n\n"
+                                      "서비스가 내려가 있으면 정상입니다. 주소·포트와 이 PC 에서 그 포트로 갈 수 있는지(방화벽)를 확인하세요.")
+
+        def failed(message: str) -> None:
+            finish()
+            self.ctx.dialogs.error("확인 시험", message)
+
+        self.ctx.runner.run(lambda: remote.health_probe(cfg, profile.host), done, failed, quiet=True)
 
     def test_notify(self) -> None:
         """[알림 시험]: 웹훅으로 시험 메시지를 하나 보낸다 (서버 접속은 하지 않는다)."""

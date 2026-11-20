@@ -23,6 +23,7 @@ import shlex
 import socket
 import stat
 import tarfile
+import time
 import tempfile
 import threading
 from dataclasses import dataclass, field, replace
@@ -30,7 +31,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Protocol, Sequence, Tuple
 
 from shipkit import SCRIPT_NAME, SCRIPT_NAME_PS
-from shipkit.config import ServerProfile, user_config_path
+from shipkit.config import HealthConfig, ServerProfile, user_config_path
 
 Output = Callable[[str], None]
 Progress = Callable[[int, int], None]     # (보낸 바이트, 전체 바이트)
@@ -1138,7 +1139,84 @@ def diagnose(conn: Connection, profile: ServerProfile, secrets: Secrets, server_
         else:
             d.checks.append(Check("로그 파일", "warn", f"{profile.log_file} 을 읽을 수 없습니다 (없거나 권한 없음).",
                                   "서버 연결의 로그 파일 경로를 확인하세요."))
+
+    # 반영 후 확인: 이 PC 에서 URL·포트에 한 번 접속해 본다 (서비스가 내려가 있으면 응답이 없는 것이 정상)
+    if profile.health:
+        ok, detail = health_probe(profile.health, profile.host)
+        if ok:
+            d.checks.append(Check("반영 후 확인", "ok", f"{profile.health.target} 응답 {detail}  (이 PC 에서 접속)"))
+        else:
+            d.checks.append(Check("반영 후 확인", "warn", f"{profile.health.target} 에 지금 응답이 없습니다 ({detail}).",
+                                  "서비스가 내려가 있으면 정상입니다. 주소·포트가 맞는지, 이 PC 에서 서버의 그 포트로 접속할 수 "
+                                  "있는지(방화벽) 확인하세요."))
     return d
+
+
+# ---------------------------------------------------------------------- 반영 후 확인 (이 PC 에서 URL·포트)
+HEALTH_INTERVAL = 3.0     # 다시 보는 간격(초)
+HEALTH_TIMEOUT = 5.0      # 한 번 접속할 때 기다리는 시간(초)
+
+
+@dataclass
+class HealthResult:
+    ok: bool
+    detail: str       # 마지막 응답: 'HTTP 200' / '포트 열림' / '연결 거부' …
+    elapsed: float    # 걸린 시간(초)
+    attempts: int
+    target: str       # URL 또는 '포트 8080'
+    cancelled: bool = False
+
+    def summary(self) -> str:
+        secs = f"{self.elapsed:.0f}초"
+        if self.ok:
+            return f"✓ {self.target} 응답 {self.detail} ({secs}" + (f", {self.attempts}번째" if self.attempts > 1 else "") + ")"
+        if self.cancelled:
+            return f"확인을 취소했습니다 ({secs}, 마지막: {self.detail})"
+        return f"✗ {secs} 동안 {self.target} 확인 실패 (마지막: {self.detail})"
+
+
+def health_probe(cfg: "HealthConfig", host: str) -> Tuple[bool, str]:
+    """한 번 접속해 본다. URL 은 HTTP 2xx·3xx(그리고 text 가 있으면 본문에 그 글), 포트는 TCP 연결. 반환: (됐는지, 응답 설명)."""
+    if cfg.url:
+        import requests
+        try:
+            r = requests.get(cfg.url, timeout=HEALTH_TIMEOUT, allow_redirects=True)
+        except requests.RequestException as e:
+            reason = str(getattr(e, "args", [""])[0] if e.args else e)
+            reason = re.sub(r"\(Caused by .*", "", reason).strip() or type(e).__name__
+            return False, f"연결 실패: {reason[:80]}"
+        detail = f"HTTP {r.status_code}"
+        if not 200 <= r.status_code < 400:
+            return False, detail
+        if cfg.text and cfg.text not in (r.text or ""):
+            return False, f"{detail} (응답에 '{cfg.text}' 없음)"
+        return True, detail
+    try:
+        with socket.create_connection((host, cfg.port), timeout=HEALTH_TIMEOUT):
+            return True, "포트 열림"
+    except OSError as e:
+        return False, f"연결 실패: {getattr(e, 'strerror', None) or e}"
+
+
+def health_check(cfg: "HealthConfig", host: str, output: Optional[Output] = None,
+                 is_cancelled: Optional[Callable[[], bool]] = None, sleep: Callable[[float], None] = time.sleep,
+                 clock: Callable[[], float] = time.monotonic) -> HealthResult:
+    """반영 뒤 서비스가 살아날 때까지 cfg.wait 초 동안 몇 초마다 확인한다 (0 이면 한 번만). 되면 바로 끝."""
+    start, attempts = clock(), 0
+    while True:
+        attempts += 1
+        ok, detail = health_probe(cfg, host)
+        elapsed = clock() - start
+        if ok:
+            return HealthResult(True, detail, elapsed, attempts, cfg.target)
+        if is_cancelled is not None and is_cancelled():
+            return HealthResult(False, detail, elapsed, attempts, cfg.target, cancelled=True)
+        remaining = cfg.wait - elapsed
+        if remaining <= 0:
+            return HealthResult(False, detail, elapsed, attempts, cfg.target)
+        if output is not None:
+            output(f"  {detail} … {elapsed:.0f}초 지남, {cfg.wait}초까지 다시 봅니다\n")
+        sleep(min(HEALTH_INTERVAL, remaining))
 
 
 # ---------------------------------------------------------------------- 배포 단계

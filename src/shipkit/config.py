@@ -200,6 +200,23 @@ NOTIFY_DETAILS = {"none": "한 줄만", "requests": "MR·PR 제목 붙이기", "
 _JSON_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
+HEALTH_WAIT = 60          # 반영 후 확인: 기본으로 기다리는 시간(초)
+HEALTH_WAIT_MAX = 3600
+
+
+@dataclass(frozen=True)
+class HealthConfig:
+    """반영 뒤 서비스가 살아 있는지 이 PC 에서 확인하는 설정. URL(HTTP 응답) 또는 포트(TCP 연결) 하나."""
+    url: str = ""
+    port: int = 0
+    wait: int = HEALTH_WAIT   # 최대 기다리는 시간(초). 서비스가 재시작되는 동안 몇 초마다 다시 본다 (0 이면 한 번만)
+    text: str = ""            # 응답 본문에 있어야 할 글 (URL 일 때만, 예: UP)
+
+    @property
+    def target(self) -> str:
+        return self.url or f"포트 {self.port}"
+
+
 @dataclass(frozen=True)
 class NotifyConfig:
     """반영·되돌리기가 끝나면 메신저(웹훅)로 알리는 설정. URL 로 JSON 하나를 POST 한다."""
@@ -236,6 +253,7 @@ class ServerProfile:
     notify: Optional[NotifyConfig] = None   # 반영·되돌리기가 끝나면 알릴 메신저 웹훅 (비우면 알리지 않음)
     branch: str = ""                    # 이 서버에 배포할 브랜치 (비우면 확인하지 않음). 점검 띠·서버 반영에서 다르면 경고
     log_file: str = ""                  # 서버 로그 파일 (예: /opt/tomcat/logs/catalina.out). 완료 화면 [로그 보기]·서버 화면 [로그 따라가기]
+    health: Optional[HealthConfig] = None   # 반영 뒤 이 PC 에서 URL·포트로 서비스가 살아 있는지 확인 (비우면 하지 않음)
 
     @property
     def address(self) -> str:
@@ -759,6 +777,7 @@ def parse_servers(raw: Any, where: str, server_os: str) -> List[ServerProfile]:
             run_password=bool(item.get("run_password", False)), chown=bool(item.get("chown", False)),
             server_path=_parse_server_path(path, at, server_os) if path else None, server_os=server_os,
             notify=_parse_notify(item.get("notify"), at), branch=branch, log_file=log_file,
+            health=_parse_health(item.get("health"), at),
         ))
     return servers
 
@@ -783,6 +802,40 @@ def _parse_notify(raw: Any, where: str) -> Optional[NotifyConfig]:
     if detail not in NOTIFY_DETAILS:
         raise ConfigError(f"{where}.notify.detail 은 {', '.join(NOTIFY_DETAILS)} 중 하나여야 합니다: {detail}")
     return NotifyConfig(url=url, format=fmt, key=key if fmt == "custom" else "", detail=detail)
+
+
+def _parse_health(raw: Any, where: str) -> Optional[HealthConfig]:
+    """servers[].health: {url | port, wait, text} 또는 글 하나('http://…' 나 포트 번호). 없으면 확인하지 않는다."""
+    if raw is None or raw == "" or raw == {}:
+        return None
+    if isinstance(raw, (str, int)):
+        raw = {"port": raw} if str(raw).strip().isdigit() else {"url": raw}
+    raw = _require_dict(raw, f"{where}.health")
+    url = str(raw.get("url") or "").strip()
+    port_raw = raw.get("port")
+    if url and port_raw not in (None, "", 0):
+        raise ConfigError(f"{where}.health 는 url 과 port 중 하나만 적습니다.")
+    if url:
+        if not re.match(r"^https?://[^\s\"'<>]+$", url):
+            raise ConfigError(f"{where}.health.url 은 http:// 또는 https:// 로 시작하는 주소여야 합니다: {url}")
+        port = 0
+    else:
+        try:
+            port = int(str(port_raw).strip())
+        except (TypeError, ValueError):
+            raise ConfigError(f"{where}.health 에 확인할 url 또는 port 를 적으세요 (예: http://10.0.0.5:8080/health 또는 8080).") from None
+        if not 1 <= port <= 65535:
+            raise ConfigError(f"{where}.health.port 는 1~65535 사이여야 합니다: {port}")
+    try:
+        wait = int(raw.get("wait", HEALTH_WAIT))
+    except (TypeError, ValueError):
+        raise ConfigError(f"{where}.health.wait (기다리는 시간, 초)는 숫자여야 합니다: {raw.get('wait')}") from None
+    if not 0 <= wait <= HEALTH_WAIT_MAX:
+        raise ConfigError(f"{where}.health.wait (기다리는 시간, 초)는 0~{HEALTH_WAIT_MAX} 사이여야 합니다: {wait}")
+    text = str(raw.get("text") or "").strip()
+    if text and not url:
+        raise ConfigError(f"{where}.health.text (응답에 있어야 할 글)는 url 로 확인할 때만 쓸 수 있습니다.")
+    return HealthConfig(url=url, port=port, wait=wait, text=text)
 
 
 def _parse_server_path(value: Any, where: str, server_os: str = "linux") -> str:

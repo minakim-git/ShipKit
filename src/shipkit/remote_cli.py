@@ -131,7 +131,7 @@ def _record(package: Path, profile: ServerProfile, project: ProjectConfig, res: 
 
 
 def _notify(project: ProjectConfig, profile: ServerProfile, package: Path, res: remote.StepResult,
-            enabled: bool = True) -> None:
+            enabled: bool = True, health: Optional[remote.HealthResult] = None) -> None:
     """반영·되돌리기가 끝나면 서버 연결의 메신저 웹훅으로 한 줄 알린다 (--no-notify 로 끔). 실패해도 경고만."""
     cfg = profile.notify
     if cfg is None or not enabled:
@@ -142,7 +142,8 @@ def _notify(project: ProjectConfig, profile: ServerProfile, package: Path, res: 
         if record is not None:
             files = len(record.applied) + len(record.deletes)
             details = notify.detail_lines(record, cfg.detail)
-    text = notify.compose(project.name, profile.name, res.action, package.name, res.ok, res.code, files, details=details)
+    text = notify.compose(project.name, profile.name, res.action, package.name, res.ok, res.code, files, details=details,
+                          health=health)
     try:
         notify.send(cfg, text)
     except notify.NotifyError as e:
@@ -160,9 +161,10 @@ def connect(profile: ServerProfile, secrets: remote.Secrets) -> remote.Connectio
 
 
 def deploy(project: ProjectConfig, profile: ServerProfile, package: Path, action: str, secrets: remote.Secrets,
-           run_hooks: Optional[bool], notify_enabled: bool = True) -> int:
+           run_hooks: Optional[bool], notify_enabled: bool = True, health_enabled: bool = True) -> int:
     """check: 올리고 확인 / apply: 올리고 확인 뒤 backup·apply / rollback: 올려 둔 패키지 폴더에서 rollback. 반환: 종료 코드.
-    notify_enabled: 반영·되돌리기가 끝나면 서버 연결의 메신저 웹훅으로 알린다 (설정돼 있을 때)."""
+    notify_enabled: 반영·되돌리기가 끝나면 서버 연결의 메신저 웹훅으로 알린다 (설정돼 있을 때).
+    health_enabled: 반영 뒤 서버 연결의 반영 후 확인(URL·포트)을 한다 (설정돼 있을 때). 확인 실패면 종료 코드 2 (반영은 됨)."""
     conn = connect(profile, secrets)
     try:
         if action == "rollback":
@@ -201,8 +203,15 @@ def deploy(project: ProjectConfig, profile: ServerProfile, package: Path, action
         res = remote.backup_and_apply(conn, profile, secrets, res.remote_dir, _out, run_hooks)
         _record(package, profile, project, res)
         _out("\n반영했습니다.\n" if res.ok else f"\n{res.action} 실패 (종료 코드 {res.code})\n")
-        _notify(project, profile, package, res, notify_enabled)
-        return 0 if res.ok else 1
+        health = None
+        if res.ok and profile.health and health_enabled:
+            _out(f"\n반영 후 확인: {profile.health.target} (최대 {profile.health.wait}초)\n")
+            health = remote.health_check(profile.health, profile.host, _out)
+            _out(health.summary() + ("\n" if health.ok else "  → 문제가 있으면 --rollback 으로 되돌리세요.\n"))
+        _notify(project, profile, package, res, notify_enabled, health)
+        if not res.ok:
+            return 1
+        return 2 if health is not None and not health.ok else 0
     finally:
         conn.close()
 

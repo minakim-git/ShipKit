@@ -1008,7 +1008,7 @@ def _wrap_stream(client, step):
     return stream
 
 
-def test_remote_panel_upload_apply_rollback(qapp, tmp_path, maven_project, monkeypatch, sshd):
+def test_remote_panel_upload_apply_rollback(qapp, tmp_path, maven_project, monkeypatch, sshd, open_port):
     from sshd import LOGIN_PW
     from test_remote import bash_path
     keyring = FakeKeyring()
@@ -1020,7 +1020,8 @@ def test_remote_panel_upload_apply_rollback(qapp, tmp_path, maven_project, monke
                    server={"history_file": bash_path(tmp_path / "home/.shipkit/history.log")},  # 진짜 홈을 안 건드리게
                    servers=[{"name": "개발", "host": "127.0.0.1", "port": sshd.port, "user": "deployer",
                              "log_file": "/var/log/app.log",
-                             "notify": {"url": "https://hooks.slack.com/services/T/B/x", "format": "slack", "detail": "files"}}])
+                             "notify": {"url": "https://hooks.slack.com/services/T/B/x", "format": "slack", "detail": "files"},
+                             "health": {"port": open_port}}])
     posts = []                                                  # 메신저 알림(웹훅)은 가짜 requests.post 로 받는다
     monkeypatch.setattr("requests.post", lambda url, json=None, timeout=None: (posts.append(json), FakeResponse(200, "ok"))[1])
     dialogs = FakeDialogs(password=LOGIN_PW)
@@ -1061,15 +1062,37 @@ def test_remote_panel_upload_apply_rollback(qapp, tmp_path, maven_project, monke
     assert notes and notes[-1][0] == "erp → 개발 반영 완료" and notes[-1][1].startswith("패키지 ")
     assert len(posts) == 1 and posts[0]["text"].startswith(f"✅ erp 개발에 {d.last_result.out_dir.name} 반영, 파일 1개")
     assert posts[0]["text"].splitlines()[-1] == "파일: WEB-INF/views/user/list.jsp"   # 알림 내용: 변경 내역이 아래 줄로
-    assert "📣 Slack 알림을 보냈습니다: ✅ erp 개발에" in panel.log.toPlainText() and "(+2줄)" in panel.log.toPlainText()
+    assert "📣 Slack 알림을 보냈습니다: ✅ erp 개발에" in panel.log.toPlainText() and "(+3줄)" in panel.log.toPlainText()
+    text = panel.log.toPlainText()                              # 반영 후 확인: 이 PC 에서 포트에 접속, 결과는 로그·상태·알림에
+    assert f"반영 후 확인: 포트 {open_port} (최대 60초" in text and f"✓ 포트 {open_port} 응답 포트 열림" in text
+    assert panel.state_chip.text() == "반영 완료 · 확인 ✓" and panel.health_result.ok and panel.stage == "applied"
+    assert posts[0]["text"].splitlines()[1].startswith("확인: ✓ 포트") and not panel.cancel_btn.isVisibleTo(panel)
+
+    import socket                                               # 확인 실패: ⚠️ 알림, 상태 '확인 실패', 되돌릴지 묻고 [예]면 바로 되돌림
+    from dataclasses import replace
+    from shipkit import remote
+    from shipkit.config import HealthConfig
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    closed = s.getsockname()[1]
+    s.close()
+    rolled = []
+    panel.rollback = lambda confirm=True: rolled.append(confirm)
+    panel._health_check(replace(panel.profile, health=HealthConfig(port=closed, wait=0)), remote.StepResult("apply", 0, panel.remote_dir))
+    del panel.rollback
+    assert dialogs.messages[-1][:2] == ("ask", "반영 후 확인 실패") and "지금 바로 이번 반영 전으로 되돌릴까요?" in dialogs.messages[-1][2]
+    assert rolled == [False] and panel.state_chip.text() == "반영 완료 · 확인 실패" and not panel.health_result.ok
+    second = posts[-1]["text"].splitlines()[1]
+    assert posts[-1]["text"].startswith("⚠️ erp 개발에") and second.startswith("확인: ✗ ") and f"포트 {closed} 확인 실패" in second
+    assert notes[-1][0] == "erp → 개발 반영 후 확인 실패" and f"포트 {closed} 확인 실패 (마지막: 연결 실패" in panel.log.toPlainText()
     assert dialogs.messages[-1][1] == "반영하기" or any(m[1] == "반영하기" for m in dialogs.messages)
     assert f"지금 개발 서버에는 {d.last_result.out_dir.name} 패키지가 반영돼 있습니다" in panel.current_label.text()
     asked = len([m for m in dialogs.messages if m[0] == "secret"])
     panel.rollback()                                            # 저장한 비밀번호를 써서 다시 묻지 않음
     assert panel.stage == "rolled_back" and (server / "WEB-INF/views/user/list.jsp").read_text(encoding="utf-8") == "OLD"
     assert "반영한 기록이 이 PC 에는 없습니다" in panel.current_label.text()   # 되돌렸으니 지금 반영된 패키지가 아니다
-    assert len(posts) == 2 and posts[1]["text"].startswith(f"↩️ erp 개발 되돌리기: {d.last_result.out_dir.name} (반영 전 상태로)")
-    assert "\n" not in posts[1]["text"]                           # 되돌리기에는 변경 내역이 붙지 않는다
+    assert len(posts) == 3 and posts[-1]["text"].startswith(f"↩️ erp 개발 되돌리기: {d.last_result.out_dir.name} (반영 전 상태로)")
+    assert "\n" not in posts[-1]["text"]                          # 되돌리기에는 변경 내역이 붙지 않는다
     text = panel.log.toPlainText()
     assert text.count("──") >= 5 and "✓ 되돌렸습니다." in text and text.count("⏱") >= 5, text   # backup·apply·rollback 까지
     assert len([m for m in dialogs.messages if m[0] == "secret"]) == asked
@@ -1138,6 +1161,20 @@ def test_remote_panel_upload_apply_rollback(qapp, tmp_path, maven_project, monke
     assert tab.srv_notify.currentData() == "slack" and tab.srv_webhook.text() == "https://hooks.slack.com/services/T/B/x"
     assert tab.server_form.isRowVisible(tab.srv_webhook) and not tab.server_form.isRowVisible(tab.srv_notify_key)
     assert tab.server_form.isRowVisible(tab.srv_notify_detail) and tab.srv_notify_detail.currentData() == "files"
+    assert tab.srv_health.text() == str(open_port) and tab.server_form.isRowVisible(tab.srv_health_opts)   # 반영 후 확인 (포트)
+    assert not tab.srv_health_text.isVisibleTo(tab) and tab.health_test_btn.isVisibleTo(tab)
+    tab.test_health()                                                       # [확인 시험]: 지금 이 PC 에서 한 번 접속
+    assert dialogs.messages[-1][0] == "info" and "접속됐습니다: 포트 열림" in dialogs.messages[-1][2]
+    tab.srv_health.setText("http://127.0.0.1:1/health")
+    tab.srv_health_wait.setValue(10)
+    tab.srv_health_text.setText("UP")
+    assert tab.servers[0]["health"] == {"url": "http://127.0.0.1:1/health", "wait": 10, "text": "UP"} and tab.srv_health_text.isVisibleTo(tab)
+    tab.test_health()
+    assert dialogs.messages[-1][0] == "info" and "지금 접속되지 않습니다" in dialogs.messages[-1][2]
+    tab.srv_health.setText("ftp://x")
+    assert tab.srv_health.property("invalid") and "health.url" in tab.srv_error.text()
+    tab.srv_health.setText("")
+    assert "health" not in tab.servers[0] and not tab.server_form.isRowVisible(tab.srv_health_opts) and not tab.health_test_btn.isVisibleTo(tab)
     sent = len(posts)
     tab.test_notify()
     assert len(posts) == sent + 1 and posts[-1]["text"].startswith("🔔 ShipKit 알림 시험: erp 개발 서버의")
@@ -1774,7 +1811,7 @@ def test_deploy_switch_branch(qapp, tmp_path, maven_project):
     assert git_local.current_branch(maven_project) == "feature"
 
 
-def test_batch_deploy_dialog(qapp, tmp_path, maven_project, monkeypatch, sshd):
+def test_batch_deploy_dialog(qapp, tmp_path, maven_project, monkeypatch, sshd, open_port):
     """여러 서버에 차례로: 고른 서버마다 올리고 확인 → 백업 후 반영 → 되돌리기. 확인은 실패해도 다음 서버로, 체크 끈 서버는 건너뛴다."""
     from shipkit import history
     from sshd import LOGIN_PW
@@ -1789,7 +1826,7 @@ def test_batch_deploy_dialog(qapp, tmp_path, maven_project, monkeypatch, sshd):
     path = _config(tmp_path, maven_project, server_path=bash_path(servers[0]),
                    server={"history_file": bash_path(home / ".shipkit/history.log")},
                    servers=[{"name": "WAS1", "host": "127.0.0.1", "port": sshd.port, "user": "deployer",
-                             "upload_dir": "~/deploy1"},
+                             "upload_dir": "~/deploy1", "health": {"port": open_port}},
                             {"name": "WAS2", "host": "127.0.0.1", "port": sshd.port, "user": "deployer",
                              "upload_dir": "~/deploy2", "server_path": bash_path(servers[1])},
                             {"name": "운영", "host": "127.0.0.1", "port": sshd.port, "user": "deployer",
@@ -1821,6 +1858,8 @@ def test_batch_deploy_dialog(qapp, tmp_path, maven_project, monkeypatch, sshd):
     dlg.apply()                                                 # 운영은 확인 실패라 대상이 아님 -> WAS1 만
     assert dialogs.messages[-1][1] == "여러 서버에 반영하기" and "1개 서버" in dialogs.messages[-1][2]
     assert dlg.summary()["WAS1"][0] == "applied" and dlg.summary()["WAS2"][0] == "checked"
+    assert dlg.summary()["WAS1"][1].endswith("· 확인 ✓ (0초)") and dlg.health_results["WAS1"].ok   # 반영 뒤 포트 확인
+    assert f"✓ 포트 {open_port} 응답 포트 열림" in dlg.log.toPlainText() and not dlg._health_running
     assert (servers[0] / "WEB-INF/views/user/list.jsp").read_text(encoding="utf-8") == "<%-- jsp --%>"
     assert (servers[1] / "WEB-INF/views/user/list.jsp").read_text(encoding="utf-8") == "OLD"
     record = history.read_record(d.last_result.out_dir)

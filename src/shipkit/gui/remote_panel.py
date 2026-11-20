@@ -34,7 +34,8 @@ _secret_slots = remote.secret_slots   # 어떤 비밀번호가 필요한지는 �
 
 
 def notify_messenger(ctx: AppContext, profile: ServerProfile, project: str, package: str, res: remote.StepResult,
-                     append: Callable[[str], None], files: Optional[int] = None, package_dir: Optional[Path] = None) -> None:
+                     append: Callable[[str], None], files: Optional[int] = None, package_dir: Optional[Path] = None,
+                     health: Optional[remote.HealthResult] = None) -> None:
     """반영·되돌리기가 끝났을 때 서버 연결에 메신저 웹훅이 있으면 결과를 보낸다 (한 줄, 설정에 따라 변경 내역을 아래에).
 
     package_dir 을 주면 그 패키지 기록(MR·PR 제목, 파일 목록)으로 변경 내역을 만든다 (되돌리기에는 붙이지 않는다).
@@ -48,17 +49,35 @@ def notify_messenger(ctx: AppContext, profile: ServerProfile, project: str, pack
             details = notify.detail_lines(history.read_record(package_dir), cfg.detail)
         except OSError:
             details = []
-    text = notify.compose(project, profile.name, res.action, package, res.ok, res.code, files, details=details)
+    text = notify.compose(project, profile.name, res.action, package, res.ok, res.code, files, details=details, health=health)
 
     def done(_result) -> None:
-        append(f"📣 {cfg.label} 알림을 보냈습니다: {text.splitlines()[0]}"
-               + (f" (+{len(details)}줄)" if details else "") + "\n")
+        extra = len(text.splitlines()) - 1
+        append(f"📣 {cfg.label} 알림을 보냈습니다: {text.splitlines()[0]}" + (f" (+{extra}줄)" if extra else "") + "\n")
 
     def failed(message: str) -> None:
         append(f"[경고] {message}\n")
         ctx.dialogs.toast(message, "warning")
 
     ctx.runner.run(lambda: notify.send(cfg, text), done, failed, quiet=True)
+
+
+def run_health_check(ctx: AppContext, profile: ServerProfile, append: Callable[[str], None],
+                     on_done: Callable[[remote.HealthResult], None], is_cancelled: Callable[[], bool]) -> None:
+    """반영 뒤 서버 연결의 확인 URL·포트에 이 PC 에서 접속해 본다 (백그라운드, 진행은 로그에). 끝나면 on_done(결과)."""
+    cfg = profile.health
+    assert cfg is not None
+    append(f"\n$ 반영 후 확인: {cfg.target} (최대 {cfg.wait}초, 이 PC 에서 접속)\n")
+
+    def done(result: remote.HealthResult) -> None:
+        append(("✓ " if result.ok else "[경고] " if result.cancelled else "✗ ") + result.summary() + "\n")
+        on_done(result)
+
+    def failed(message: str) -> None:
+        append(f"[경고] 반영 후 확인을 하지 못했습니다: {message}\n")
+        on_done(remote.HealthResult(False, message, 0.0, 0, cfg.target))
+
+    ctx.runner.run_stream(lambda emit: remote.health_check(cfg, profile.host, emit, is_cancelled), done, failed, append)
 
 
 class RemoteClient:
@@ -378,7 +397,10 @@ class RemotePanel(Section):
         super().__init__("서버에 바로 반영", right=self.server_combo, rule=True, collapsible=True)
         self.ctx = ctx
         self.client = RemoteClient(ctx)
+        self._health_running = False       # 반영 후 확인 중 ([취소]는 이것을 멈춘다)
+        self._health_cancel = False
         self.result = None                 # 방금 만든 패키지 (PackageResult)
+        self.health_result = None          # 마지막 반영 후 확인 결과 (remote.HealthResult)
         self.remote_dir: Optional[str] = None
         self.stage = "ready"               # ready / checked / applied
         self.batch: Optional[Any] = None   # [여러 서버에 차례로…] 창 (BatchDeployDialog). 패키지를 새로 만들면 버린다
@@ -596,9 +618,12 @@ class RemotePanel(Section):
         self.cancel_btn.setText("취소")
 
     def cancel(self) -> None:
-        """[취소]: 진행 중인 올리기·실행을 끊는다. 결과는 _run 의 취소 처리로 돌아온다."""
+        """[취소]: 진행 중인 올리기·실행을 끊는다. 결과는 _run 의 취소 처리로 돌아온다. 반영 후 확인 중이면 확인만 멈춘다."""
         self.cancel_btn.setEnabled(False)
         self.cancel_btn.setText("중단 중…")
+        if self._health_running:
+            self._health_cancel = True
+            return
         if not self.client.cancel():   # 비밀번호 입력 등 연결 전 단계면 끊을 것이 없다
             self.cancel_btn.setEnabled(True)
             self.cancel_btn.setText("취소")
@@ -738,19 +763,52 @@ class RemotePanel(Section):
                 self._set_stage("apply_failed" if res.action == "apply" else "checked")
             self._notify_background(f"{self.project.name} → {p.name} 반영 " + ("완료" if res.ok else f"실패 ({res.action})"),
                                     f"패키지 {self.result.out_dir.name}")
-            notify_messenger(self.ctx, p, self.project.name, self.result.out_dir.name, res, self._append,
-                             files=len(self.result.manifest) + len(self.result.deletes), package_dir=self.result.out_dir)
+            if res.ok and p.health:
+                self._health_check(p, res)          # 확인이 끝난 뒤 결과와 함께 알린다
+            else:
+                self._notify_apply(p, res)
 
         self._run(lambda secrets: lambda conn, output, progress: remote.backup_and_apply(
             conn, p, secrets, remote_dir, output, run_hooks), done)
 
-    def rollback(self) -> None:
+    def _notify_apply(self, p: ServerProfile, res: remote.StepResult, health: Optional[remote.HealthResult] = None) -> None:
+        notify_messenger(self.ctx, p, self.project.name, self.result.out_dir.name, res, self._append,
+                         files=len(self.result.manifest) + len(self.result.deletes), package_dir=self.result.out_dir,
+                         health=health)
+
+    def _health_check(self, p: ServerProfile, res: remote.StepResult) -> None:
+        """반영 뒤 서비스 확인 (서버 연결의 URL·포트). 실패하면 되돌릴지 묻는다."""
+        self._health_running, self._health_cancel = True, False
+        self._set_stage("applied", busy=True)
+        self.state_chip.set("반영 완료 · 확인 중…", "info")
+
+        def done(result: remote.HealthResult) -> None:
+            self._health_running = False
+            self._close_stage()
+            self._set_stage("applied")
+            self.health_result = result
+            self._notify_apply(p, res, result)
+            if result.ok:
+                self.state_chip.set("반영 완료 · 확인 ✓", "success")
+                return
+            if result.cancelled:
+                return
+            self.state_chip.set("반영 완료 · 확인 실패", "danger")
+            self._notify_background(f"{self.project.name} → {p.name} 반영 후 확인 실패", result.summary())
+            if self.ctx.dialogs.ask("반영 후 확인 실패",
+                                    f"{p.name} 서버에 반영은 됐지만 서비스 확인이 실패했습니다.\n\n{result.summary()}\n\n"
+                                    "서버 로그를 보고 판단하세요. 지금 바로 이번 반영 전으로 되돌릴까요?"):
+                self.rollback(confirm=False)
+
+        run_health_check(self.ctx, p, self._append, done, lambda: self._health_cancel)
+
+    def rollback(self, confirm: bool = True) -> None:
         p = self.profile
         if p is None or not self.remote_dir:
             return
         warn = "⚠ 운영 서버입니다.\n\n" if p.is_production else ""
-        if not self.ctx.dialogs.ask("운영 서버 되돌리기" if p.is_production else "되돌리기",
-                                    f"{warn}{p.name} 서버({p.address})를 이번 반영 전으로 되돌릴까요?"):
+        if confirm and not self.ctx.dialogs.ask("운영 서버 되돌리기" if p.is_production else "되돌리기",
+                                                f"{warn}{p.name} 서버({p.address})를 이번 반영 전으로 되돌릴까요?"):
             return
         run_hooks = self._hooks_answer(("post_rollback",))
         remote_dir = self.remote_dir

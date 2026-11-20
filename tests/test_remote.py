@@ -332,6 +332,96 @@ def test_read_write_file_and_text_codec(sshd, tmp_path):
     assert remote.decode_text(b"a\nb", ["utf-8", "cp949"]) == ("a\nb", "utf-8", "\n")
 
 
+def test_health_check():
+    """반영 후 확인: URL(HTTP 2xx·3xx, 응답 글) 은 될 때까지 몇 초마다 다시 보고, 포트는 TCP 연결. 취소·설정 검사·알림 글."""
+    import http.server
+    import socket
+    import threading
+    from shipkit import notify
+    from shipkit.config import HealthConfig
+
+    hits = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            hits.append(self.path)
+            code = 503 if len(hits) < 3 else 200
+            body = b'{"status":"UP"}' if code == 200 else b"down"
+            self.send_response(code)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_a):
+            pass
+
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    port = srv.server_address[1]
+    url = f"http://127.0.0.1:{port}/health"
+    clock, sleeps = [0.0], []
+
+    def sleep(s):
+        sleeps.append(s)
+        clock[0] += s
+
+    def check(cfg, **kw):
+        return remote.health_check(cfg, "127.0.0.1", sleep=sleep, clock=lambda: clock[0], **kw)
+
+    try:
+        lines = []
+        r = check(HealthConfig(url=url, wait=30, text="UP"), output=lines.append)        # 503, 503, 200
+        assert r.ok and r.detail == "HTTP 200" and r.attempts == 3 and sleeps == [3.0, 3.0]
+        assert len(lines) == 2 and lines[0].startswith("  HTTP 503 … 0초 지남, 30초까지")
+        assert r.summary() == f"✓ {url} 응답 HTTP 200 (6초, 3번째)"
+        hits.clear()
+        r = check(HealthConfig(url=url, wait=0))                                            # 한 번만
+        assert not r.ok and r.detail == "HTTP 503" and r.attempts == 1 and r.summary() == f"✗ 0초 동안 {url} 확인 실패 (마지막: HTTP 503)"
+        hits.extend(["x", "x"])
+        r = check(HealthConfig(url=url, wait=0, text="DOWN"))                               # 200 이지만 글이 없음
+        assert not r.ok and r.detail == "HTTP 200 (응답에 'DOWN' 없음)"
+        r = check(HealthConfig(port=port, wait=0))
+        assert r.ok and r.detail == "포트 열림" and r.summary() == f"✓ 포트 {port} 응답 포트 열림 (0초)"
+    finally:
+        srv.shutdown()
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    closed = s.getsockname()[1]
+    s.close()
+    r = check(HealthConfig(port=closed, wait=0))
+    assert not r.ok and r.detail.startswith("연결 실패") and r.target == f"포트 {closed}"
+    r = check(HealthConfig(url=f"http://127.0.0.1:{closed}/", wait=0))
+    assert not r.ok and r.detail.startswith("연결 실패") and len(r.detail) <= 90
+    r = check(HealthConfig(port=closed, wait=30), is_cancelled=lambda: True)
+    assert not r.ok and r.cancelled and r.summary().startswith("확인을 취소했습니다")
+
+    base = {"root": "x", "output_dir": "y", "server_path": "/srv/app"}
+
+    def server(health):
+        item = {"name": "운영", "host": "h", "user": "u"}
+        if health is not None:
+            item["health"] = health
+        return parse_config({"projects": {"a": dict(base, servers=[item])}}).project("a").servers[0].health
+
+    assert server(None) is None and server("") is None and server({}) is None
+    assert server("8080") == HealthConfig(port=8080) and server(8080) == HealthConfig(port=8080)
+    assert server("http://h:8080/x") == HealthConfig(url="http://h:8080/x") and server("http://h/x").target == "http://h/x"
+    assert server({"url": "https://h/ok", "wait": "5", "text": "UP"}) == HealthConfig(url="https://h/ok", wait=5, text="UP")
+    for bad, msg in [({"url": "h/ok"}, "health.url"), ({"port": 70000}, "health.port"), ({"port": "abc"}, "health"),
+                     ({"url": "http://h", "port": 80}, "하나만"), ({"url": "http://h", "wait": 9999}, "health.wait"),
+                     ({"port": 80, "text": "x"}, "health.text")]:
+        with pytest.raises(ConfigError, match=msg):
+            server(bad)
+
+    good = remote.HealthResult(True, "HTTP 200", 2.0, 1, "http://h/x")
+    assert notify.compose("erp", "운영", "apply", "p", True, files=1, sender="", health=good) == \
+        "✅ erp 운영에 p 반영, 파일 1개\n확인: ✓ http://h/x 응답 HTTP 200 (2초)"
+    failed = remote.HealthResult(False, "HTTP 503", 60.0, 20, "http://h/x")
+    assert notify.compose("erp", "운영", "apply", "p", True, files=1, sender="", details=["• x"], health=failed) == \
+        "⚠️ erp 운영에 p 반영했지만 확인 실패, 파일 1개\n확인: ✗ 60초 동안 http://h/x 확인 실패 (마지막: HTTP 503)\n• x"
+    assert notify.compose("erp", "운영", "rollback", "p", True, sender="", health=failed) == "↩️ erp 운영 되돌리기: p (반영 전 상태로)"
+
+
 def test_diagnose(sshd, tmp_path):
     """연결 진단: 접속·실행 계정 전환·올릴 위치·배포 경로·명령·로그 파일을 확인하고, 설정으로 고칠 것은 추천한다."""
     from sshd import LOGIN_PW, SUDO_PW
@@ -348,6 +438,19 @@ def test_diagnose(sshd, tmp_path):
 
     d = run(_profile(sshd))
     assert d.ok and [c.state for c in d.checks] == ["ok"] * 5 and d.suggestions == {}
+
+    import socket                                                               # 반영 후 확인: 이 PC 에서 한 번 접속해 본다
+    from shipkit.config import HealthConfig
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    try:
+        dh = run(_profile(sshd, health=HealthConfig(port=listener.getsockname()[1])))
+    finally:
+        listener.close()
+    assert dh.ok and len(dh.checks) == 6 and (dh.checks[-1].name, dh.checks[-1].state) == ("반영 후 확인", "ok")
+    dh = run(_profile(sshd, health=HealthConfig(url="http://127.0.0.1:1/health")))
+    assert len(dh.checks) == 6 and dh.checks[-1].state == "warn" and "지금 응답이 없습니다" in dh.checks[-1].text and "방화벽" in dh.checks[-1].fix
     assert d.summary().startswith(f"접속 성공: deployer@127.0.0.1:{sshd.port}\n✓ 접속: ")
     assert [c.name for c in d.checks] == ["접속", "실행 계정", "올릴 위치", "배포 경로", "필요한 명령"] and "deploy" in d.checks[2].text
     d = run(_profile(sshd), server_path=bash_path(tmp_path / "nope"))          # 배포 경로 없음

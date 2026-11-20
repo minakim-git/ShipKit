@@ -21,7 +21,7 @@ Java, Vue/React, Python, PHP, 정적 사이트 등 언어와 상관없이 쓸 �
 - **알림**: 의존성 파일(`pom.xml`, `requirements.txt`, `package.json` 등), DB 마이그레이션, SQL 파일이 바뀌면 "패키지 외에 따로 할 일"로 알려줍니다.
 - **서버 스크립트 `shipkit.sh`**: `check` → `backup` → `apply` → `rollback`, `history`. 줄바꿈은 항상 LF이고, 한 번 만든 백업은 덮어쓰지 않으며, 서버와 같은 파일은 건드리지 않습니다.
 - **반영 전·후 명령(hooks)**: WAS 재시작, `pip install` 같은 명령을 설정해 두면 apply·rollback 때 확인을 받고 실행합니다. 특정 파일이 바뀐 경우에만 넣을 수도 있습니다(`when`).
-- **서버 안전장치**: 체크섬으로 업로드 중 손상 검증, 같은 대상에 대한 동시 배포 잠금, 서버별 배포 이력, 새로 만든 파일·폴더의 소유자·권한 지정
+- **서버 안전장치**: 체크섬으로 업로드 중 손상 검증, 같은 대상에 대한 동시 배포 잠금, 서버별 배포 이력, 새로 만든 파일·폴더의 소유자·권한 지정, 반영 후 서비스 자동 확인(URL·포트, 실패하면 되돌리기 안내)
 - **팀 공유 설정 `.shipkit.yml`**: 프로젝트 저장소에 커밋해 두면 팀원은 clone 만 해도 프리셋·서버 경로·hooks 가 맞춰집니다. 개인 설정에는 로컬 경로와 토큰만 남습니다.
 - **프로젝트 자동 인식**: 프로젝트 폴더 안에서 실행하면 `-p` 없이 그 프로젝트를 고릅니다.
 - **화면(GUI) 프로그램 `ShipKit.exe`**: 고르기 → 확인 → 완료 세 단계로 패키지를 만들고, 만든 패키지 기록을 찾아보거나 같은 내용으로 다시 만듭니다. 처음 실행 안내, 프로젝트 설정(반영 규칙 경로 시험 포함), GitLab·GitHub 연결과 토큰 저장도 화면에서 합니다.
@@ -382,6 +382,7 @@ GUI 테스트는 화면 없이(`QT_QPA_PLATFORM=offscreen`) 실제 위젯을 조
 - 처음 접속하는 서버는 지문(host key)을 보여 주고 확인을 받은 뒤 `%APPDATA%\shipkit\known_hosts` 에 기억합니다. 지문이 바뀌면 접속하지 않습니다. 서버를 다시 설치했다면 서버 연결 탭의 **서버 지문 잊기**(명령어는 `--forget-host-key`)로 지운 뒤 다시 확인합니다.
 - 올리고 확인(check)이 끝나면 로그 위에 결과가 표로 정리됩니다: apply 때 바뀌는 파일 수와, 신규·변경·동일·삭제예정·이미없음·정리예정별 파일 목록.
 - 반영·되돌리기 전에 항상 확인을 받고, 서버 명령(hooks)이 있으면 함께 실행할지 묻습니다.
+- 서버 연결에 **반영 후 확인** URL·포트를 적어 두면 반영 뒤 이 PC 에서 접속해 서비스가 살아 있는지 봅니다(재시작되는 동안 최대 기다림까지 3초마다, URL 은 HTTP 2xx·3xx 와 응답 글, 포트는 TCP 연결). 안 되면 되돌릴지 묻고, 명령어는 종료 코드 1 로 끝납니다(`--no-health` 로 끔). 결과는 메신저 알림에도 붙습니다.
 - 서버 연결에 웹훅을 적어 두면 반영·되돌리기가 끝났을 때(실패도) 메신저 채널에 한 줄 보냅니다: `✅ erp 운영에 2026-11-06-1430_에디터_호환성_추가 반영, 파일 12개 (minakim)`. 메신저가 받지 못해도 반영 결과는 바뀌지 않고 경고만 남습니다. 기록 화면의 **서버에서 되돌리기**도 알립니다(명령어는 `--no-notify` 로 끌 수 있음). **알림 내용**을 바꾸면 반영 알림 아래에 MR·PR 제목(`• !612 제목 (작성자)`)과 파일 목록이 줄로 붙어 채널만 봐도 무엇이 올라갔는지 알 수 있습니다.
 - 진행 중에는 **취소** 버튼으로 올리기·실행을 끊을 수 있습니다(서버에서 이미 시작된 명령은 끝까지 돌 수 있습니다). 서버 출력이 10분 동안 없으면 네트워크가 끊긴 것으로 보고 저절로 중단합니다.
 - 명령어로도 같은 일을 할 수 있습니다(Jenkins 등). 처음 접속하는 서버는 `--accept-host-key`로 지문을 기억하고, 비밀번호는 환경변수 `SHIPKIT_SSH_PASSWORD`(접속)·`SHIPKIT_RUN_PASSWORD`(sudo/su)나 화면에서 저장한 키링 값을 씁니다. 터미널에서는 없으면 물어봅니다.
@@ -391,6 +392,7 @@ GUI 테스트는 화면 없이(`QT_QPA_PLATFORM=offscreen`) 실제 위젯을 조
   shipkit deploy -p erp --server 개발 --apply --no-hooks    # check 뒤 backup → apply (--hooks: 서버 명령도 실행)
   shipkit deploy -p erp --server 개발 --rollback            # 올려 둔 패키지 폴더에서 rollback
   shipkit deploy -p erp --server 개발 --apply --no-hooks --no-notify   # 메신저 알림 없이 (설정돼 있어도)
+  shipkit deploy -p erp --server 개발 --apply --no-hooks --no-health   # 반영 후 서비스 확인 없이 (설정돼 있어도)
   shipkit deploy -p erp --server 개발 --package D:/deploy/erp/2026-10-30-1523   # 특정 패키지
   shipkit server-status -p erp --server 개발               # 지금 반영된 패키지와 최근 이력
   ```
@@ -416,6 +418,10 @@ projects:
         upload_dir: /home/app/deploy   # sudo 로 실행하면 실행 계정으로 바로 올리므로 실행 계정만 쓸 수 있으면 된다
         branch: master         # 이 서버에 배포할 브랜치 (비우면 확인하지 않음). 점검 띠·서버 반영에서 다르면 경고
         log_file: /opt/tomcat/logs/catalina.out   # 적어 두면 완료 화면 [로그 보기]·서버 화면 [로그 따라가기]가 터미널에서 tail -F
+        health:                # 반영 뒤 이 PC 에서 서비스 확인 (비우면 하지 않음). 포트만 보려면 health: 8080
+          url: http://10.0.0.5:8080/health   # HTTP 2xx·3xx 면 성공
+          wait: 60             # 재시작되는 동안 이 시간(초)까지 3초마다 다시 봄 (0 이면 한 번만)
+          # text: UP           # 응답 본문에 있어야 할 글 (선택)
         notify:                # 반영·되돌리기가 끝나면 메신저로 한 줄 (비우면 알리지 않음)
           url: https://hooks.slack.com/services/T000/B000/xxxx
           format: slack        # slack | mattermost | teams ({"text"}) / jandi ({"body"}) / discord ({"content"}) / custom (key 지정)

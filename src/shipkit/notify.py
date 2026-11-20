@@ -30,24 +30,32 @@ def who() -> str:
 
 
 def compose(project: str, server: str, action: str, package: str, ok: bool, code: int = 0,
-            files: Optional[int] = None, sender: Optional[str] = None, details: Sequence[str] = ()) -> str:
+            files: Optional[int] = None, sender: Optional[str] = None, details: Sequence[str] = (),
+            health=None) -> str:
     """메신저에 보낼 글. 첫 줄 예: '✅ erp 운영에 2026-11-04-1430 반영, 파일 12개 (minakim)'.
 
     action 은 마지막으로 실행한 단계(apply / rollback, 실패했을 때는 backup 일 수도). details(detail_lines) 가 있으면
-    반영(되돌리기 말고) 알림의 아래 줄로 붙는다."""
+    반영(되돌리기 말고) 알림의 아래 줄로 붙는다. health(remote.HealthResult) 는 반영 후 확인 결과: 실패면 첫 줄이
+    ⚠️ '반영했지만 확인 실패' 가 되고 둘째 줄에 요약이 붙는다."""
     sender = who() if sender is None else sender
     suffix = f" ({sender})" if sender else ""
     if action == "rollback":
         if ok:
             return f"↩️ {project} {server} 되돌리기: {package} (반영 전 상태로){suffix}"
         return f"❌ {project} {server} 되돌리기 실패 (종료 코드 {code}): {package}{suffix}"
+    lines: List[str] = []
     if ok:
         count = f", 파일 {files}개" if files is not None else ""
-        head = f"✅ {project} {server}에 {package} 반영{count}{suffix}"
+        if health is not None and not health.ok:
+            lines.append(f"⚠️ {project} {server}에 {package} 반영했지만 확인 실패{count}{suffix}")
+        else:
+            lines.append(f"✅ {project} {server}에 {package} 반영{count}{suffix}")
+        if health is not None:
+            lines.append(f"확인: {health.summary()}")
     else:
         step = ACTION_TEXT.get(action, action)
-        head = f"❌ {project} {server} 반영 실패 ({step}, 종료 코드 {code}): {package}{suffix}"
-    return "\n".join([head] + list(details))
+        lines.append(f"❌ {project} {server} 반영 실패 ({step}, 종료 코드 {code}): {package}{suffix}")
+    return "\n".join(lines + list(details))
 
 
 def detail_lines(record, detail: str) -> List[str]:

@@ -16,7 +16,7 @@ from test_remote import bash_path, needs_bash, sshd  # noqa: E402,F401
 from test_gui import FakeKeyring  # noqa: E402
 
 
-def _setup(tmp_path, maven_project, sshd, monkeypatch, notify=None):
+def _setup(tmp_path, maven_project, sshd, monkeypatch, notify=None, health=None):
     keyring = FakeKeyring()
     monkeypatch.setattr("shipkit.secrets._keyring", lambda: keyring)
     monkeypatch.setattr("shipkit.remote.known_hosts_path", lambda: tmp_path / "known_hosts")
@@ -28,7 +28,8 @@ def _setup(tmp_path, maven_project, sshd, monkeypatch, notify=None):
         "root": maven_project.as_posix(), "output_dir": (tmp_path / "out").as_posix(),
         "server_path": bash_path(server), "server": {"history_file": bash_path(tmp_path / "home/.shipkit/history.log")},
         "servers": [dict({"name": "개발", "host": "127.0.0.1", "port": sshd.port, "user": "deployer"},
-                         **({"notify": notify} if notify else {}))]}}}), encoding="utf-8")
+                         **({"notify": notify} if notify else {}), **({"health": health} if health else {}))]}}}),
+                   encoding="utf-8")
     return cfg, server, keyring
 
 
@@ -67,10 +68,11 @@ def test_deploy_changed_host_key_and_forget(tmp_path, maven_project, sshd, monke
 
 
 @needs_bash
-def test_deploy_check_apply_rollback_and_status(tmp_path, maven_project, sshd, monkeypatch, capsys):
+def test_deploy_check_apply_rollback_and_status(tmp_path, maven_project, sshd, monkeypatch, capsys, open_port):
     from conftest import FakeResponse
     cfg, server, keyring = _setup(tmp_path, maven_project, sshd, monkeypatch,
-                                  notify={"url": "https://hooks.example/jandi", "format": "jandi", "detail": "requests"})
+                                  notify={"url": "https://hooks.example/jandi", "format": "jandi", "detail": "requests"},
+                                  health={"port": open_port})
     posts, responses = [], []                                   # 메신저 알림(웹훅)은 가짜 requests.post 로 받는다
     monkeypatch.setattr("requests.post", lambda url, json=None, timeout=None: (posts.append(json), responses.pop(0))[1])
     jsp = "src/main/webapp/WEB-INF/views/user/list.jsp"
@@ -93,8 +95,10 @@ def test_deploy_check_apply_rollback_and_status(tmp_path, maven_project, sshd, m
     assert cli.main(["deploy", "-c", str(cfg), "-p", "erp", "--apply", "--no-hooks"]) == 0
     out = capsys.readouterr().out
     assert "반영했습니다" in out and "[알림] 잔디 채널에 알렸습니다" in out
+    assert f"반영 후 확인: 포트 {open_port} (최대 60초)" in out and f"✓ 포트 {open_port} 응답 포트 열림" in out   # 반영 뒤 이 PC 에서 확인
     assert len(posts) == 1 and posts[0]["body"].startswith("✅ erp 개발에 ") and ", 파일 1개" in posts[0]["body"]
-    assert posts[0]["body"].count("\n") == 1 and posts[0]["body"].splitlines()[1].startswith("• ")   # 변경 내역(패키지 설명) 한 줄
+    lines = posts[0]["body"].splitlines()
+    assert len(lines) == 3 and lines[1].startswith("확인: ✓ 포트") and lines[2].startswith("• ")   # 확인 결과 + 변경 내역(패키지 설명)
     assert (server / "WEB-INF/views/user/list.jsp").read_text(encoding="utf-8") == "<%-- jsp --%>"
 
     assert cli.main(["server-status", "-c", str(cfg), "-p", "erp"]) == 0

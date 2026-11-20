@@ -77,3 +77,16 @@ class FakeSession:
             page = int((params or {}).get("page", 1))
             return route[page - 1]
         return route
+
+
+@pytest.fixture
+def open_port():
+    """반영 후 확인(포트) 시험용: 연결만 받는 TCP 포트 하나."""
+    import socket
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    s.listen(5)
+    try:
+        yield s.getsockname()[1]
+    finally:
+        s.close()

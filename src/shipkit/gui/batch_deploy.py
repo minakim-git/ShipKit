@@ -18,7 +18,7 @@ from shipkit.config import ProjectConfig, ServerProfile
 from shipkit.gui import theme
 from shipkit.gui.context import AppContext
 from shipkit.gui.remote_panel import (
-    RemoteClient, ServerLog, ask_hooks, branch_mismatch, notify_messenger, record_deployment,
+    RemoteClient, ServerLog, ask_hooks, branch_mismatch, notify_messenger, record_deployment, run_health_check,
 )
 from shipkit.gui.widgets import Chip, button, label
 
@@ -26,6 +26,7 @@ STATE_TEXT = {
     "ready": ("아직 안 올림", "neutral"), "checking": ("확인 중…", "info"), "checked": ("확인 끝", "success"),
     "check_failed": ("확인 실패", "danger"), "applying": ("반영 중…", "info"), "applied": ("반영 완료", "success"),
     "apply_failed": ("반영 실패", "danger"), "rolling": ("되돌리는 중…", "info"), "rolled_back": ("되돌림", "warning"),
+    "health": ("반영 완료 · 확인 중…", "info"), "health_failed": ("반영됨 · 확인 실패", "danger"),
     "skipped": ("중단", "neutral"), "cancelled": ("취소함", "neutral"),
 }
 RUNNING = {"check": "checking", "apply": "applying", "rollback": "rolling"}
@@ -51,6 +52,9 @@ class BatchDeployDialog(QDialog):
         self._action = ""
         self._run_hooks = True
         self._busy = False
+        self._health_running = False
+        self._health_cancel = False
+        self.health_results: Dict[str, remote.HealthResult] = {}
         self._buffer: List[str] = []               # 지금 서버의 출력 (check 결과를 읽으려고)
         self.setWindowTitle(f"여러 서버에 차례로 반영 - {result.out_dir.name}")
         self.resize(900, 620)
@@ -142,7 +146,8 @@ class BatchDeployDialog(QDialog):
         picked = [s.name for s in self.selected()]
         self.check_btn.setEnabled(not self._busy and bool(picked))
         self.apply_btn.setEnabled(not self._busy and any(self.states[n] == "checked" for n in picked))
-        self.rollback_btn.setEnabled(not self._busy and any(self.states[n] in ("applied", "apply_failed") for n in picked))
+        self.rollback_btn.setEnabled(not self._busy and any(self.states[n] in ("applied", "apply_failed", "health_failed")
+                                                            for n in picked))
         self.tree.setEnabled(not self._busy)
         self.cancel_btn.setVisible(self._busy)
         self.close_btn.setEnabled(not self._busy)
@@ -185,6 +190,9 @@ class BatchDeployDialog(QDialog):
     def cancel(self) -> None:
         self.cancel_btn.setEnabled(False)
         self.cancel_btn.setText("중단 중…")
+        if self._health_running:       # 반영 후 확인 중이면 확인만 멈추고 다음 서버로 가지 않는다
+            self._health_cancel = True
+            return
         if not self.client.cancel():   # 비밀번호 입력 등 연결 전 단계면 끊을 것이 없다
             self.cancel_btn.setEnabled(True)
             self.cancel_btn.setText("취소")
@@ -251,6 +259,9 @@ class BatchDeployDialog(QDialog):
                 self._set_state(p.name, "rolled_back" if res.ok else "apply_failed",
                                 f"되돌림 {when}" if res.ok else f"rollback 실패 (종료 코드 {res.code})")
             files = len(self.result.manifest) + len(self.result.deletes) if action == "apply" else None
+            if action == "apply" and res.ok and p.health:
+                self._health(p, res, files)                     # 확인이 끝난 뒤 알리고 다음 서버로
+                return
             notify_messenger(self.ctx, p, self.project.name, self.result.out_dir.name, res, self.log.append, files=files,
                              package_dir=self.result.out_dir)
             if res.ok:
@@ -280,6 +291,33 @@ class BatchDeployDialog(QDialog):
         self._buffer.append(text)
         self.log.append(text)
 
+    def _health(self, p: ServerProfile, res: remote.StepResult, files: Optional[int]) -> None:
+        """반영 뒤 서비스 확인. 되면 다음 서버로, 안 되면 거기서 멈춘다 (되돌리기는 [되돌리기]로)."""
+        self._health_running, self._health_cancel = True, False
+        self._set_state(p.name, "health", "")
+        self.cancel_btn.setEnabled(True)
+        self.cancel_btn.setText("취소")
+
+        def done(result: remote.HealthResult) -> None:
+            self._health_running = False
+            self.log.close_stage()
+            self.health_results[p.name] = result
+            when = f"{datetime.now():%H:%M}"
+            notify_messenger(self.ctx, p, self.project.name, self.result.out_dir.name, res, self.log.append, files=files,
+                             package_dir=self.result.out_dir, health=result)
+            if result.ok:
+                self._set_state(p.name, "applied", f"반영 완료 {when} · 확인 ✓ ({result.elapsed:.0f}초)")
+                self._next()
+            elif result.cancelled:
+                self._set_state(p.name, "applied", f"반영 완료 {when} · 확인 취소함")
+                self._abort("skipped")
+            else:
+                self._set_state(p.name, "health_failed", f"반영 완료 {when} · {result.summary()}")
+                self.ctx.notify(f"{self.project.name} → {p.name} 반영 후 확인 실패", result.summary())
+                self._abort("skipped")
+
+        run_health_check(self.ctx, p, self.log.append, done, lambda: self._health_cancel)
+
     def _abort(self, state: str) -> None:
         for p in self._queue:
             self._set_state(p.name, state, "앞 서버에서 멈춤")
@@ -293,7 +331,7 @@ class BatchDeployDialog(QDialog):
         for n in picked:
             counts[self.states[n]] = counts.get(self.states[n], 0) + 1
         parts = [f"{STATE_TEXT[s][0]} {c}" for s, c in counts.items()]
-        failed = any(self.states[n] in ("check_failed", "apply_failed", "skipped", "cancelled") for n in picked)
+        failed = any(self.states[n] in ("check_failed", "apply_failed", "health_failed", "skipped", "cancelled") for n in picked)
         self.state_chip.set("  ·  ".join(parts) or "끝", "danger" if failed else "success")
         self._update_buttons()
         if self.on_finished:
