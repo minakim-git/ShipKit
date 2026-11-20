@@ -12,6 +12,7 @@ import posixpath
 import secrets
 import shlex
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 from typing import Any, Callable, List, Optional
 
@@ -19,7 +20,7 @@ from PySide6.QtCore import QSettings, Qt, QTimer, Signal
 from PySide6.QtGui import QFontDatabase
 from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QFileDialog, QHBoxLayout, QHeaderView, QInputDialog, QLineEdit, QMenu, QProgressBar,
-    QSplitter, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QSplitter, QTabWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from shipkit import remote
@@ -80,20 +81,16 @@ class ServerPage(QWidget):
         self.entries: List[remote.RemoteEntry] = []
         self.busy = False
         self._split_done = False                   # 처음 보일 때 분할선을 반반으로 (그 뒤로는 사용자가 끈 대로)
-        self.shell: Optional[Any] = None           # 터미널의 셸 채널 (remote.Shell)
-        self._opening = False                      # 셸을 여는 중 (두 번 열지 않게)
+        self.tabs: List[TermTab] = []              # 터미널 탭들 (셸·따라가기 상태는 탭마다). 지금 탭의 것은 term / shell 속성으로
+        self._tab_seq = 0
         self._connecting = False                   # 지문·비밀번호 확인 중 (두 번 붙지 않게)
         self._auto_connect = True                  # 화면에 들어오면 바로 붙는다 (끊거나 실패하면 False, 서버를 다시 고르면 True)
         self._picked: Optional[str] = None         # 선택 상자에 고른 서버 이름 (바뀌었는지 보려고)
         self._pending_path: Optional[str] = None  # 접속이 끝나면 열 폴더 (기록 화면에서 왔을 때)
-        self._pending_log = False                  # 셸이 열리면 로그 따라가기를 시작 (완료 화면의 [로그 보기]에서 왔을 때)
+        self._pending_log = False                  # 접속이 끝나면 로그 따라가기를 시작 (완료 화면의 [로그 보기]에서 왔을 때)
         self.editors: List[Any] = []               # 열려 있는 파일 편집기 창 (FileEditorDialog)
         self.editor: Optional[Any] = None          # 마지막으로 연 편집기 (테스트용)
-        # 터미널 따라가기: 셸에 심은 표식, 찾아낸 셸 PID, 마지막으로 본 셸의 폴더(None 이면 아직 기준이 없음)
-        self._shell_tag = ""
-        self._shell_pid = 0
-        self._shell_cwd: Optional[str] = None
-        self._follow_misses = 0
+        # 터미널 따라가기: 지금 탭의 셸을 본다 (표식·PID·마지막 폴더는 탭에 있다)
         self._checking_cwd = False
         self._follow_timer = QTimer(self)
         self._follow_timer.setInterval(FOLLOW_IDLE_MS)
@@ -248,13 +245,20 @@ class ServerPage(QWidget):
         self.term_card.body = QVBoxLayout(self.term_card)
         self.term_card.body.setContentsMargins(0, 0, 0, 0)
         self.term_card.body.setSpacing(8)
-        self.term = TerminalView()
-        self.term.input_bytes.connect(self._term_input)
-        self.term.resized.connect(self._term_resized)
-        self.term.closed.connect(self._term_closed)
-        self.term_card.body.addWidget(self.term, 1)
-        self.term_hint = label("접속하면 서버의 셸이 열립니다. 이 화면에서 한 일은 배포의 백업·되돌리기 대상이 아닙니다.", "muted")
-        self.term_card.body.addWidget(self.term_hint)
+        self.term_tabs = QTabWidget()              # 탭마다 셸 하나. 로그 따라가기는 '로그' 탭에서 돌아 명령 탭을 막지 않는다
+        self.term_tabs.setObjectName("termTabs")
+        self.term_tabs.setDocumentMode(True)
+        self.term_tabs.setTabsClosable(True)
+        self.term_tabs.setMovable(True)
+        self.term_tabs.tabCloseRequested.connect(self.close_tab)
+        self.term_tabs.currentChanged.connect(self._tab_changed)
+        self.new_tab_btn = button("+", "ghost")
+        self.new_tab_btn.setFixedSize(28, 24)
+        self.new_tab_btn.setToolTip("터미널 탭 더 열기 (셸 하나 더). 로그를 따라가면서 명령을 칠 때")
+        self.new_tab_btn.clicked.connect(lambda: self.new_tab())
+        self.term_tabs.setCornerWidget(self.new_tab_btn, Qt.Corner.TopRightCorner)
+        self.term_card.body.addWidget(self.term_tabs, 1)
+        self._add_tab()
 
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
         self.splitter.setChildrenCollapsible(False)
@@ -265,7 +269,7 @@ class ServerPage(QWidget):
         self.splitter.setSizes([520, 520])
         layout.addWidget(self.splitter, 1)
         theme.on_change(self._refresh_icons)
-        theme.on_change(self.term.apply_font)
+        theme.on_change(self._apply_term_fonts)
         self._refresh_icons()
         self._set_connected(False)
         self._set_terminal(False)
@@ -411,48 +415,165 @@ class ServerPage(QWidget):
         self._update_buttons()
         self._update_log_button()
 
-    # ------------------------------------------------------------------ 터미널
-    def open_terminal(self) -> None:
+    # ------------------------------------------------------------------ 터미널 (탭)
+    @property
+    def tab(self) -> "TermTab":
+        """지금 보이는 터미널 탭."""
+        return self.tabs[max(0, self.term_tabs.currentIndex())]
+
+    @property
+    def term(self) -> TerminalView:
+        return self.tab.term
+
+    @property
+    def term_hint(self):
+        return self.tab.hint
+
+    @property
+    def shell(self) -> Optional[Any]:
+        return self.tab.shell
+
+    @shell.setter
+    def shell(self, value: Optional[Any]) -> None:
+        self.tab.shell = value
+
+    @property
+    def _shell_tag(self) -> str:
+        return self.tab.tag
+
+    @property
+    def _shell_pid(self) -> int:
+        return self.tab.pid
+
+    @_shell_pid.setter
+    def _shell_pid(self, value: int) -> None:
+        self.tab.pid = value
+
+    @property
+    def _shell_cwd(self) -> Optional[str]:
+        return self.tab.cwd
+
+    @_shell_cwd.setter
+    def _shell_cwd(self, value: Optional[str]) -> None:
+        self.tab.cwd = value
+
+    @property
+    def _follow_misses(self) -> int:
+        return self.tab.misses
+
+    @_follow_misses.setter
+    def _follow_misses(self, value: int) -> None:
+        self.tab.misses = value
+
+    def _add_tab(self, kind: str = "shell", title: str = "") -> "TermTab":
+        if kind == "shell":
+            self._tab_seq += 1
+        tab = TermTab(kind, title or f"터미널 {self._tab_seq}")
+        tab.term.input_bytes.connect(partial(self._term_input, tab))
+        tab.term.resized.connect(partial(self._term_resized, tab))
+        tab.term.closed.connect(partial(self._term_closed, tab))
+        self.tabs.append(tab)
+        self.term_tabs.addTab(tab, tab.title)
+        self._set_terminal(False, tab=tab)
+        return tab
+
+    def new_tab(self, kind: str = "shell", title: str = "") -> "TermTab":
+        """[+]: 탭을 하나 더 열고 (접속돼 있으면) 셸을 연다."""
+        tab = self._add_tab(kind, title)
+        self.term_tabs.setCurrentWidget(tab)
+        if self.conn is not None:
+            self.open_terminal(tab)
+        return tab
+
+    def close_tab(self, index: int) -> None:
+        """탭 닫기: 셸을 끝낸다. 마지막 하나는 남겨 두고 셸만 닫는다 (키를 치면 다시 연다)."""
+        if not (0 <= index < len(self.tabs)):
+            return
+        tab = self.tabs[index]
+        self._close_shell(tab)
+        if len(self.tabs) == 1:
+            self._set_terminal(False, "셸을 닫았습니다. 아무 키나 누르면 다시 엽니다." if self.conn is not None else "", tab=tab)
+            return
+        self.tabs.pop(index)
+        self.term_tabs.removeTab(index)
+        tab.deleteLater()
+        self._tab_changed(self.term_tabs.currentIndex())
+
+    def _tab_changed(self, index: int) -> None:
+        if not self.tabs or not (0 <= index < len(self.tabs)):
+            return
+        tab = self.tabs[index]
+        self.term_open_btn.setEnabled(tab.shell is not None)
+        self._update_buttons()
+        tab.cwd, tab.misses = None, 0        # 따라가기는 지금 탭의 셸을 본다: 이 탭의 폴더를 새 기준으로
+        if tab.shell is not None and self._can_follow():
+            self._follow_timer.start()
+            self._check_cwd()
+        tab.term.setFocus()
+
+    def _log_tab(self) -> Optional["TermTab"]:
+        return next((t for t in self.tabs if t.kind == "log"), None)
+
+    def _apply_term_fonts(self) -> None:
+        for tab in self.tabs:
+            tab.term.apply_font()
+
+    def open_terminal(self, tab: Optional["TermTab"] = None) -> None:
         """접속한 연결로 셸(pty)을 연다. SFTP 작업과 별개 채널이라 파일 작업 중에도 된다."""
         conn = self.conn
-        if conn is None or self.shell is not None or self._opening:
+        tab = tab or self.tab
+        if conn is None or tab.shell is not None or tab.opening:
             return
-        self._opening = True
-        self._set_terminal(False, "셸을 여는 중…")
+        tab.opening = True
+        self._set_terminal(False, "셸을 여는 중…", tab=tab)
 
         tag = secrets.token_hex(6)
 
         def done(shell) -> None:
-            self._opening = False
-            if self.conn is not conn:       # 그 사이 끊었으면
+            tab.opening = False
+            if self.conn is not conn or tab not in self.tabs:   # 그 사이 끊었거나 탭을 닫았으면
                 shell.close()
                 return
-            self.shell = shell
-            self._shell_tag, self._shell_pid, self._shell_cwd, self._follow_misses = tag, 0, None, 0
-            self._set_terminal(True)
-            self.term.setFocus()
+            tab.shell = shell
+            tab.tag, tab.pid, tab.cwd, tab.misses = tag, 0, None, 0
+            self._set_terminal(True, tab=tab)
+            if tab is self.tab:
+                tab.term.setFocus()
+            if tab.pending_log:                 # 로그 탭: 셸이 열리는 대로 tail
+                tab.pending_log = False
+                self._send_log_tail(tab)
             if self._pending_log:               # 완료 화면의 [로그 보기] 로 와서 접속했으면 셸이 열리는 대로 시작
                 self._pending_log = False
-                self._send_log_tail()
-            if self._can_follow():
+                self.follow_log()
+            if tab is self.tab and self._can_follow():
                 self._follow_timer.start()
-                self._check_cwd()           # 기준이 될 지금 폴더부터 (목록을 옮기지는 않는다)
+                self._check_cwd()               # 기준이 될 지금 폴더부터 (목록을 옮기지는 않는다)
 
         def failed(message: str) -> None:
-            self._opening = False
-            self._set_terminal(False, "셸을 열지 못했습니다. 아무 키나 누르면 다시 시도합니다.")
+            tab.opening = False
+            self._set_terminal(False, "셸을 열지 못했습니다. 아무 키나 누르면 다시 시도합니다.", tab=tab)
             self.ctx.dialogs.toast(message, "warning")
 
-        cols, rows = self.term.cols, self.term.rows
-        self.ctx.runner.run(lambda: conn.open_shell(self.term.data_in.emit, self.term.closed.emit, cols, rows, tag=tag),
+        cols, rows = tab.term.cols, tab.term.rows
+        self.ctx.runner.run(lambda: conn.open_shell(tab.term.data_in.emit, tab.term.closed.emit, cols, rows, tag=tag),
                             done, failed, quiet=True)
 
-    def close_terminal(self) -> None:
-        shell, self.shell = self.shell, None
-        self._follow_timer.stop()
-        self._follow_soon.stop()
+    def _close_shell(self, tab: "TermTab") -> None:
+        shell, tab.shell = tab.shell, None
+        if tab is self.tab:
+            self._follow_timer.stop()
+            self._follow_soon.stop()
         if shell is not None:
             shell.close()
+
+    def close_terminal(self) -> None:
+        """모든 탭의 셸을 닫고 첫 탭만 남긴다 (끊을 때)."""
+        for tab in list(self.tabs):
+            self._close_shell(tab)
+        while len(self.tabs) > 1:
+            tab = self.tabs.pop()
+            self.term_tabs.removeTab(len(self.tabs))
+            tab.deleteLater()
         self._set_terminal(False)
 
     # ------------------------------------------------------------------ 터미널 따라가기
@@ -507,37 +628,41 @@ class ServerPage(QWidget):
 
         self.ctx.runner.run(lambda: conn.shell_cwd(tag, pid), done, failed, quiet=True)
 
-    def _set_terminal(self, open_: bool, hint: str = "") -> None:
+    def _set_terminal(self, open_: bool, hint: str = "", tab: Optional["TermTab"] = None) -> None:
         """터미널 상태. 접속 중에는 셸이 없어도 키를 받아(다시 열게) 켜 두고, 끊겼으면 잠근다."""
-        self.term.setEnabled(self.conn is not None)
-        self.term_open_btn.setEnabled(open_)
+        tab = tab or self.tab
+        tab.term.setEnabled(self.conn is not None)
+        if tab is self.tab:
+            self.term_open_btn.setEnabled(open_)
         if open_:
-            self.term_hint.setText("")
+            tab.hint.setText("")
         elif self.conn is None:
-            self.term_hint.setText("접속하면 서버의 셸이 열립니다. 이 화면에서 한 일은 배포의 백업·되돌리기 대상이 아닙니다.")
+            tab.hint.setText("접속하면 서버의 셸이 열립니다. 이 화면에서 한 일은 배포의 백업·되돌리기 대상이 아닙니다.")
         else:
-            self.term_hint.setText(hint)
-        self.term_hint.setVisible(not open_)
+            tab.hint.setText(hint)
+        tab.hint.setVisible(not open_)
+        self.new_tab_btn.setEnabled(self.conn is not None)
 
-    def _term_input(self, data: bytes) -> None:
-        if self.shell is not None:
-            self.shell.send(bytes(data))
-            if b"\r" in data or b"\n" in data:   # 명령을 쳤으면 (cd 였을지 모르니) 곧 셸의 폴더를 확인
+    def _term_input(self, tab: "TermTab", data: bytes) -> None:
+        if tab.shell is not None:
+            tab.shell.send(bytes(data))
+            if tab is self.tab and (b"\r" in data or b"\n" in data):   # 명령을 쳤으면 (cd 였을지 모르니) 곧 셸의 폴더를 확인
                 if self._follow_timer.isActive():
                     self._follow_soon.start()
         elif self.conn is not None:         # 셸이 끝난 뒤(exit) 키를 치면 다시 연다
-            self.open_terminal()
+            self.open_terminal(tab)
 
-    def _term_resized(self, cols: int, rows: int) -> None:
-        if self.shell is not None:
-            self.shell.resize(cols, rows)
+    def _term_resized(self, tab: "TermTab", cols: int, rows: int) -> None:
+        if tab.shell is not None:
+            tab.shell.resize(cols, rows)
 
-    def _term_closed(self) -> None:
+    def _term_closed(self, tab: "TermTab") -> None:
         """셸이 끝났을 때 (exit 를 쳤거나 끊김). 읽기 스레드의 신호라 화면 스레드에서 받는다."""
-        if self.shell is None:
+        if tab.shell is None:
             return
-        self.shell = None
-        self._set_terminal(False, "셸이 끝났습니다. 아무 키나 누르면 다시 엽니다.")
+        tab.shell = None
+        if tab in self.tabs:
+            self._set_terminal(False, "셸이 끝났습니다. 아무 키나 누르면 다시 엽니다.", tab=tab)
 
     def open_in_terminal(self, path: Optional[str] = None) -> None:
         """[터미널에서 열기]: 터미널이 그 폴더(기본은 왼쪽 목록의 폴더)로 이동한다 (cd 를 보낸다)."""
@@ -589,18 +714,24 @@ class ServerPage(QWidget):
         if not profile.log_file:
             self.ctx.dialogs.toast("프로젝트 설정의 [서버 연결]에서 이 서버의 로그 파일을 적어 두세요.", "warning")
             return
-        if self.shell is None:                         # 셸이 끝나 있으면(exit) 새로 열고 나서
-            self._pending_log = True
-            self.open_terminal()
+        tab = self._log_tab()                          # '로그' 탭에서 돈다 (명령 치는 탭을 막지 않게). 없으면 만든다
+        if tab is None:
+            tab = self._add_tab("log", "로그")
+        self.term_tabs.setCurrentWidget(tab)
+        if tab.shell is None:                          # 셸이 끝나 있으면(exit) 새로 열고 나서
+            tab.pending_log = True
+            self.open_terminal(tab)
             return
-        self._send_log_tail()
+        self._send_log_tail(tab)
 
-    def _send_log_tail(self) -> None:
-        if self.shell is None or self.profile is None or not self.profile.log_file:
+    def _send_log_tail(self, tab: Optional["TermTab"] = None) -> None:
+        tab = tab or self._log_tab() or self.tab
+        if tab.shell is None or self.profile is None or not self.profile.log_file:
             return
         # 앞서 돌던 tail 이 있으면 끊고(Ctrl+C) 새로 시작한다
-        self.shell.send(b"\x03" + (remote.tail_command(self.profile) + "\r").encode("utf-8"))
-        self.term.setFocus()
+        tab.shell.send(b"\x03" + (remote.tail_command(self.profile) + "\r").encode("utf-8"))
+        self.term_tabs.setTabText(self.tabs.index(tab), f"로그 · {self.profile.log_file.rsplit('/', 1)[-1]}")
+        tab.term.setFocus()
 
     # ------------------------------------------------------------------ 백그라운드 작업
     def _run(self, what: str, fn: Callable[[], Any], done: Callable[[Any], None],
@@ -957,3 +1088,26 @@ class ServerPage(QWidget):
             self.navigate(folder)
 
         self._run("지우는", work, done)
+
+
+class TermTab(QWidget):
+    """터미널 탭 하나: 터미널 화면과 안내 줄, 그리고 셸·따라가기 상태 (kind: shell / log)."""
+
+    def __init__(self, kind: str = "shell", title: str = ""):
+        super().__init__()
+        self.kind = kind
+        self.title = title
+        self.shell: Optional[Any] = None       # 셸 채널 (remote.Shell)
+        self.opening = False                   # 셸을 여는 중 (두 번 열지 않게)
+        self.pending_log = False               # 셸이 열리면 로그 tail 을 보낸다 (로그 탭)
+        self.tag = ""                          # 터미널 따라가기: 셸에 심은 표식, 찾아낸 PID, 마지막으로 본 폴더(None 이면 기준 없음)
+        self.pid = 0
+        self.cwd: Optional[str] = None
+        self.misses = 0
+        box = QVBoxLayout(self)
+        box.setContentsMargins(0, 0, 0, 0)
+        box.setSpacing(8)
+        self.term = TerminalView()
+        box.addWidget(self.term, 1)
+        self.hint = label("접속하면 서버의 셸이 열립니다. 이 화면에서 한 일은 배포의 백업·되돌리기 대상이 아닙니다.", "muted")
+        box.addWidget(self.hint)

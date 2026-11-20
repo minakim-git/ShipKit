@@ -1541,14 +1541,20 @@ def test_server_page_files(qapp, tmp_path, maven_project, monkeypatch, sshd):
     for ch in "echo hi":
         s.term.keyPressEvent(QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_A, Qt.KeyboardModifier.NoModifier, ch))
     s.term.keyPressEvent(QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_Return, Qt.KeyboardModifier.NoModifier, "\r"))
-    assert wait_for("\nhi\n"), s.term.text()
-    assert "echo hi" in sshd.commands[-2:] and sshd.pty_sizes[-1] == (s.term.cols, s.term.rows)   # 창이 보인 뒤 크기가 맞춰진다
-    # (Enter 직후의 따라가기 확인 명령이 출력보다 먼저 올 수 있어 마지막 둘 중에서 찾는다)
-    def next_command(timeout=5.0):
-        """서버가 다음 명령을 받기까지 기다려 돌려준다."""
-        n = len(sshd.commands)
+    deadline = time.monotonic() + 5                                               # 서버가 명령을 받아 실행할 때까지
+    while "echo hi" not in sshd.commands and time.monotonic() < deadline:
+        qapp.processEvents()
+        time.sleep(0.02)
+    assert "echo hi" in sshd.commands and wait_for("\nhi\n"), (sshd.commands, s.term.text())
+    assert sshd.pty_sizes[-1] == (s.term.cols, s.term.rows)                        # 창이 보인 뒤 크기가 맞춰진다
+    def next_command(timeout=5.0, since=None):
+        """서버가 다음 명령을 받기까지 기다려 돌려준다 (따라가기의 폴더 확인 명령은 건너뛴다)."""
+        n = len(sshd.commands) if since is None else since    # since: 부르기 전에 센 개수 (동기로 보낸 명령은 이미 기록돼 있을 수 있다)
         deadline = time.monotonic() + timeout
-        while len(sshd.commands) == n and time.monotonic() < deadline:
+        while time.monotonic() < deadline:
+            new = [c for c in sshd.commands[n:] if not c.startswith("# shipkit-cwd")]
+            if new:
+                return new[0]
             qapp.processEvents()
             time.sleep(0.02)
         return sshd.commands[-1]
@@ -1589,8 +1595,23 @@ def test_server_page_files(qapp, tmp_path, maven_project, monkeypatch, sshd):
     s.open_in_terminal(f"{home}/deploy/sub")                                      # 오른쪽 단추 메뉴: 고른 폴더로
     assert next_command() == f"cd {home}/deploy/sub"
     assert s.log_btn.isEnabled() and "/var/log/app.log" in s.log_btn.toolTip()
-    s.follow_log()                                                                # [로그 따라가기]: (Ctrl+C 뒤) tail -F 를 친다
-    assert next_command() == "tail -n 200 -F /var/log/app.log" and wait_for("(tail)")
+    n0 = len(sshd.commands)
+    s.follow_log()                                                                # [로그 따라가기]: '로그' 탭을 열어 거기서 tail -F
+    assert next_command(since=n0) == "tail -n 200 -F /var/log/app.log" and wait_for("(tail)")
+    assert len(s.tabs) == 2 and s.tab.kind == "log" and s.term_tabs.tabText(1) == "로그 · app.log"
+    s.term_tabs.setCurrentIndex(0)                                                # 명령 탭은 그대로 쓸 수 있다
+    assert s.tab.kind == "shell" and s.shell is not None and s.term_open_btn.isEnabled()
+    t3 = s.new_tab()                                                              # [+]: 셸 하나 더
+    assert len(s.tabs) == 3 and s.tab is t3 and t3.shell is not None and wait_for("fake$") and s.term_tabs.tabText(2) == "터미널 2"
+    s.close_tab(2)                                                                # 탭 닫기: 셸을 끝내고 탭이 사라진다
+    assert len(s.tabs) == 2 and t3.shell is None and s.tab.kind == "log"
+    n0 = len(sshd.commands)
+    s.follow_log()                                                                # 다시 누르면 같은 로그 탭에서 (Ctrl+C 뒤) 새로
+    assert len(s.tabs) == 2 and next_command(since=n0) == "tail -n 200 -F /var/log/app.log"
+    s.close_tab(0)                                                                # 마지막 하나가 아니면 명령 탭도 닫힌다
+    assert len(s.tabs) == 1 and s.tab.kind == "log"
+    s.close_tab(0)                                                                # 마지막 탭은 남고 셸만 닫힌다
+    assert len(s.tabs) == 1 and s.shell is None and "아무 키나 누르면" in s.term_hint.text()
     s.close_terminal()
     assert s.shell is None and not s.term_open_btn.isEnabled() and s.term.isEnabled()   # 접속은 그대로
     s.open_terminal()
@@ -1617,9 +1638,10 @@ def test_server_page_files(qapp, tmp_path, maven_project, monkeypatch, sshd):
     s.disconnect()
     assert not s.log_btn.isEnabled()
     w.go(PAGE_DEPLOY)
+    n0 = len(sshd.commands)
     w.follow_log("운영")                                                          # 완료 화면의 [로그 보기]: 접속해 셸이 열리는 대로 tail
-    assert w.stack.currentWidget() is s and s.conn is not None and s.shell is not None
-    assert next_command() == "tail -n 200 -F /var/log/app.log"
+    assert w.stack.currentWidget() is s and s.conn is not None and s.shell is not None and s.tab.kind == "log"
+    assert next_command(since=n0) == "tail -n 200 -F /var/log/app.log"
     s.disconnect()
 
 

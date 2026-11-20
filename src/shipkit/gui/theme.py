@@ -630,6 +630,9 @@ QTabBar::tab:last {{ border-top-right-radius: 6px; border-bottom-right-radius: 6
 QTabBar::tab:only-one {{ border-radius: 6px; }}
 QTabBar::tab:hover {{ color: {TEXT}; }}
 QTabBar::tab:selected {{ background: {SURFACE}; color: {PRIMARY}; border: 1px solid {BORDER_STRONG}; font-weight: 600; }}
+QTabBar::close-button {{ image: url("{asset('close.svg')}"); width: 12px; height: 12px; margin-left: 4px; subcontrol-position: right; }}
+QTabBar::close-button:hover {{ background: {HOVER}; border-radius: 6px; }}
+QTabWidget#termTabs::pane {{ border: none; top: 6px; }}
 
 /* ---------- 표 ---------- */
 QTableWidget {{
