@@ -1864,3 +1864,85 @@ def test_remote_panel_warns_when_package_branch_differs(qapp, tmp_path, maven_pr
     assert dialogs.messages[-1][:2] == ("ask", "브랜치 확인") and panel.stage == "ready"
     panel.server_combo.setCurrentIndex(1)                              # 개발 (develop) 은 맞음
     assert not panel.branch_chip.isVisibleTo(panel)
+
+
+def test_code_editor(qapp, tmp_path, maven_project):
+    """편집기 보강: 파일 종류 판별, 구문 강조 서식, 줄 번호 여백, 찾기/바꾸기(개수·순번·대소문자·끝에서 처음으로·모두 바꾸기)."""
+    from PySide6.QtGui import QTextCursor
+    from shipkit.gui import code_editor, theme
+    from shipkit.gui.file_editor import FileEditorDialog
+
+    assert [code_editor.kind_of(n) for n in ("a/config.properties", "server.xml", "index.jsp", "run.sh", ".bashrc", "x.yml",
+                                             "q.sql", "p.json", "t.py", "App.java", "notes.txt", "Makefile")] == \
+        ["properties", "xml", "xml", "shell", "shell", "yaml", "sql", "json", "python", "js", "", ""]
+
+    theme.apply(qapp, "light")
+    w = make_window(_config(tmp_path, maven_project), FakeDialogs())
+    data = "# 주석\nserver.port=8080\nname=\"a b\"\nName=${X}\n".encode("utf-8")
+    dlg = FileEditorDialog(w.ctx, "/etc/app/app.properties", data, ["utf-8"], w)
+    assert dlg.kind == "properties" and dlg.kind_chip.text() == "설정(key=value)" and dlg.highlighter is not None
+    doc = dlg.editor.document()
+    qapp.processEvents()
+
+    def color_at(line, col):
+        block = doc.findBlockByNumber(line)
+        for r in block.layout().formats():
+            if r.start <= col < r.start + r.length:
+                return r.format.foreground().color().name().upper()
+        return ""
+    assert color_at(0, 2) == theme.MUTED.upper()                    # 주석
+    assert color_at(1, 3) == theme.PRIMARY.upper()                  # 키
+    assert color_at(2, 6) == theme.TONES["success"][0].upper()      # 문자열
+    assert color_at(3, 6) == theme.TONES["warning"][0].upper()      # ${변수}
+    assert color_at(1, 14) == ""                                    # 값은 그대로
+    assert dlg.editor.gutter_width() > 0 and dlg.editor.viewportMargins().left() == dlg.editor.gutter_width()
+    assert dlg.position_label.text() == "줄 1, 칸 1"
+
+    bar, ed = dlg.find_bar, dlg.editor
+    assert not bar.isVisibleTo(dlg)
+    dlg.show()
+    bar.open()                                                       # Ctrl+F: 열리고 찾을 글에 초점
+    assert bar.isVisibleTo(dlg) and dlg.focusWidget() is bar.find_edit and bar.count_label.text() == ""
+    bar.find_edit.setText("name")
+    assert bar.count_label.text() == "2개" and bar.next_btn.isEnabled() and len(ed._match_selections) == 2   # 대소문자 무시
+    bar.next()
+    assert ed.textCursor().selectedText() == "name" and bar.count_label.text() == "1/2"
+    bar.next()
+    assert ed.textCursor().selectedText() == "Name" and bar.count_label.text() == "2/2"
+    bar.next()                                                       # 끝에 닿으면 처음부터
+    assert bar.count_label.text() == "1/2" and ed.textCursor().blockNumber() == 2
+    bar.prev()
+    assert bar.count_label.text() == "2/2"
+    bar.case_check.setChecked(True)
+    assert bar.count_label.text() == "1개" or bar.count_label.text() == "1/1"
+    bar.find_edit.setText("없는글")
+    assert bar.count_label.text() == "없음" and not bar.next_btn.isEnabled() and bar.find_edit.property("invalid") is True
+    bar.case_check.setChecked(False)
+    bar.find_edit.setText("8080")
+    bar.replace_edit.setText("9090")
+    bar.next()
+    bar.replace()                                                    # 고른 것을 바꾸고 다음으로
+    assert "server.port=9090" in ed.toPlainText() and dlg.dirty and dlg.state_chip.text() == "수정됨"
+    bar.find_edit.setText("name")
+    bar.replace_edit.setText("id")
+    assert bar.replace_all() == 2 and ed.toPlainText().count("id=") == 2 and bar.count_label.text() == "없음"
+    cur = ed.textCursor()
+    cur.movePosition(QTextCursor.MoveOperation.End)
+    ed.setTextCursor(cur)
+    assert dlg.position_label.text() == "줄 5, 칸 1"
+    bar.hide_bar()
+    assert not bar.isVisibleTo(dlg) and dlg.focusWidget() is ed and ed._match_selections == []
+    dlg.saving = True                                                # 저장 중에는 바꾸기 못 함
+    dlg._set_state()
+    bar.find_edit.setText("id")
+    assert bar.next_btn.isEnabled() and not bar.replace_btn.isEnabled()
+    dlg.saving = False
+    dlg._set_state()
+    assert bar.replace_btn.isEnabled()
+    theme.apply(qapp, "dark")                                        # 테마가 바뀌면 강조 색도
+    qapp.processEvents()
+    assert color_at(0, 2) == theme.MUTED.upper()
+    theme.apply(qapp, "system")
+    dlg.text = ed.toPlainText()
+    dlg.close()
+    w.close()

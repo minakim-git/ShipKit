@@ -8,10 +8,11 @@ from __future__ import annotations
 from typing import Optional
 
 from PySide6.QtCore import QSettings, Qt, Signal
-from PySide6.QtGui import QFontDatabase, QKeySequence, QShortcut
-from PySide6.QtWidgets import QCheckBox, QDialog, QHBoxLayout, QPlainTextEdit, QVBoxLayout, QWidget
+from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtWidgets import QCheckBox, QDialog, QHBoxLayout, QVBoxLayout, QWidget
 
 from shipkit import remote
+from shipkit.gui.code_editor import KIND_NAMES, CodeEditor, FindBar, Highlighter, kind_of
 from shipkit.gui.context import AppContext
 from shipkit.gui.widgets import Chip, button, label
 
@@ -44,17 +45,23 @@ class FileEditorDialog(QDialog):
         self.format_chip = Chip(self._format_text(), "neutral")
         self.format_chip.setToolTip("읽을 때 알아낸 인코딩과 줄 끝. 저장할 때 그대로 씁니다.")
         self.state_chip = Chip("", "neutral")
+        self.kind = kind_of(path)
+        if self.kind:
+            self.kind_chip = Chip(KIND_NAMES[self.kind], "neutral")
+            self.kind_chip.setToolTip("파일 종류에 맞춰 주석·키·값을 색으로 구분합니다 (보기 편하게 할 뿐 검사는 아님)")
+            head.addWidget(self.kind_chip)
         head.addWidget(self.format_chip)
         head.addWidget(self.state_chip)
         layout.addLayout(head)
 
-        self.editor = QPlainTextEdit()
-        self.editor.setObjectName("codeEditor")
-        self.editor.setFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont))
-        self.editor.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        self.editor = CodeEditor()
         self.editor.setTabStopDistance(4 * self.editor.fontMetrics().horizontalAdvance(" "))
         self.editor.setPlainText(self.text)
+        self.highlighter = Highlighter(self.editor.document(), self.kind) if self.kind else None
         self.editor.textChanged.connect(self._changed)
+        self.editor.cursorPositionChanged.connect(self._update_position)
+        self.find_bar = FindBar(self.editor, self)
+        layout.addWidget(self.find_bar)
         layout.addWidget(self.editor, 1)
 
         foot = QHBoxLayout()
@@ -64,6 +71,13 @@ class FileEditorDialog(QDialog):
         self.backup_check.toggled.connect(lambda on: QSettings().setValue(BACKUP_KEY, "true" if on else "false"))
         foot.addWidget(self.backup_check)
         foot.addStretch(1)
+        self.position_label = label("", "muted")
+        self.position_label.setToolTip("커서 위치 (줄, 칸)")
+        foot.addWidget(self.position_label)
+        self.find_btn = button("찾기", "ghost")
+        self.find_btn.setToolTip("Ctrl+F (바꾸기는 Ctrl+H)")
+        self.find_btn.clicked.connect(lambda: self.find_bar.open())
+        foot.addWidget(self.find_btn)
         self.reload_btn = button("다시 읽기", "ghost")
         self.reload_btn.setToolTip("서버의 지금 내용을 다시 읽습니다 (고친 것은 버림)")
         self.reload_btn.clicked.connect(self.reload)
@@ -77,8 +91,39 @@ class FileEditorDialog(QDialog):
         foot.addWidget(self.close_btn)
         layout.addLayout(foot)
         QShortcut(QKeySequence("Ctrl+S"), self, activated=self.save)
+        QShortcut(QKeySequence("Ctrl+F"), self, activated=lambda: self.find_bar.open())
+        QShortcut(QKeySequence("Ctrl+H"), self, activated=lambda: self.find_bar.open(replace=True))
+        QShortcut(QKeySequence("F3"), self, activated=self._find_next)
+        QShortcut(QKeySequence("Shift+F3"), self, activated=self._find_prev)
         self._set_state()
+        self._update_position()
         self.editor.setFocus()
+
+    def changeEvent(self, event) -> None:  # noqa: N802
+        super().changeEvent(event)
+        if event.type() in (event.Type.StyleChange, event.Type.PaletteChange):
+            self._theme_changed()        # 테마가 바뀌면 강조 색도
+
+    def _find_next(self) -> None:
+        if self.find_bar.text:
+            self.find_bar.next()
+        else:
+            self.find_bar.open()
+
+    def _find_prev(self) -> None:
+        if self.find_bar.text:
+            self.find_bar.prev()
+        else:
+            self.find_bar.open()
+
+    def _theme_changed(self) -> None:
+        if self.highlighter is not None:
+            self.highlighter.refresh()
+        self.editor.viewport().update()
+
+    def _update_position(self) -> None:
+        cur = self.editor.textCursor()
+        self.position_label.setText(f"줄 {cur.blockNumber() + 1}, 칸 {cur.positionInBlock() + 1}")
 
     # ------------------------------------------------------------------ 상태
     def _format_text(self) -> str:
@@ -102,6 +147,7 @@ class FileEditorDialog(QDialog):
         self.save_btn.setEnabled(self.dirty and not self.saving)
         self.reload_btn.setEnabled(not self.saving)
         self.editor.setReadOnly(self.saving)
+        self.find_bar._changed()         # 저장 중에는 바꾸기 막기
 
     def content(self) -> bytes:
         """지금 글을 읽을 때의 인코딩·줄 끝으로 되돌린 바이트."""
