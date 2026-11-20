@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Callable, List, Optional
 
 from PySide6.QtCore import QSettings, Qt, QTimer, Signal
+from PySide6.QtGui import QFontDatabase
 from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QFileDialog, QHBoxLayout, QHeaderView, QInputDialog, QLineEdit, QMenu, QProgressBar,
     QSplitter, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
@@ -196,7 +197,7 @@ class ServerPage(QWidget):
 
         self.tree = FileTree()
         self.tree.setObjectName("serverFiles")
-        self.tree.setHeaderLabels(["이름", "크기", "수정한 때"])
+        self.tree.setHeaderLabels(["이름", "크기", "수정한 때", "권한", "소유자"])
         self.tree.setRootIsDecorated(False)
         self.tree.setAlternatingRowColors(False)
         self.tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -204,6 +205,10 @@ class ServerPage(QWidget):
         self.tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         self.tree.header().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.tree.header().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self.tree.header().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        self.tree.headerItem().setToolTip(3, "ls -l 과 같은 권한 글자. 마우스를 올리면 숫자(755 등)가 보입니다.")
+        self.tree.headerItem().setToolTip(4, "소유자:그룹")
         self.tree.itemActivated.connect(self._activated)
         self.tree.itemSelectionChanged.connect(self._update_buttons)
         self.tree.dropped.connect(self.upload_paths)
@@ -719,13 +724,18 @@ class ServerPage(QWidget):
         self.tree.clear()
         shown = 0
         folder_icon, file_icon = theme.svg_icon("folder.svg", "PRIMARY", 16), theme.svg_icon("file.svg", "MUTED", 16)
+        mono = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
         for e in self.entries:
             if text and text not in e.name.lower():
                 continue
             when = datetime.fromtimestamp(e.mtime).strftime("%Y-%m-%d %H:%M") if e.mtime else ""
-            item = QTreeWidgetItem([e.name + ("  →" if e.link else ""), "" if e.is_dir else format_size(e.size), when])
+            item = QTreeWidgetItem([e.name + ("  →" if e.link else ""), "" if e.is_dir else format_size(e.size), when,
+                                    e.perm, e.owner_text])
             item.setIcon(0, folder_icon if e.is_dir else file_icon)
             item.setTextAlignment(1, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            item.setFont(3, mono)
+            item.setToolTip(3, f"{e.octal} ({e.perm})" if e.mode else "")
+            item.setToolTip(4, e.owner_text)
             item.setData(0, ENTRY_ROLE, e)
             item.setToolTip(0, e.path)
             self.tree.addTopLevelItem(item)

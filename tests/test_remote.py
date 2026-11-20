@@ -265,6 +265,20 @@ def test_missing_run_password_fails_fast(sshd, tmp_path, maven_project):
 
 
 # ---------------------------------------------------------------------- 실제 접속 (테스트용 서버)
+def test_entry_perm_owner():
+    """목록 항목의 권한 글자·숫자와 소유자: longname(ls -l 식)이 있으면 이름, 없으면 uid·gid 숫자, 아무것도 모르면 빈 칸."""
+    from types import SimpleNamespace
+    e = remote.RemoteEntry("a.sh", "/x/a.sh", False, mode=0o100755, owner="app", group="web")
+    assert (e.perm, e.octal, e.owner_text) == ("-rwxr-xr-x", "755", "app:web")
+    d = remote.RemoteEntry("d", "/x/d", True, mode=0o040750, owner="root", group="")
+    assert (d.perm, d.octal, d.owner_text) == ("drwxr-x---", "750", "root:")
+    assert remote.RemoteEntry("?", "/?", False).perm == "" and remote.RemoteEntry("?", "/?", False).owner_text == ""
+    named = SimpleNamespace(longname="-rw-r--r--    1 app      web          1234 Nov 20 10:00 a.sh", st_uid=1001, st_gid=1002)
+    assert remote._owner_group(named) == ("app", "web")
+    assert remote._owner_group(SimpleNamespace(longname="", st_uid=1001, st_gid=1002)) == ("1001", "1002")
+    assert remote._owner_group(SimpleNamespace(st_uid=None, st_gid=None)) == ("", "")
+
+
 def test_read_write_file_and_text_codec(sshd, tmp_path):
     """편집기용 파일 읽기·쓰기: 크기 한도·이진 파일 거부, 저장 전 .bak, 인코딩·줄 끝 알아내고 되돌리기."""
     from sshd import LOGIN_PW

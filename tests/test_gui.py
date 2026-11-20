@@ -1380,6 +1380,8 @@ def test_server_page_files(qapp, tmp_path, maven_project, monkeypatch, sshd):
     assert names() == ["local", "c.txt"] and (tmp_path / "home/deploy/local/sub/b.txt").read_text(encoding="utf-8") == "BB"
     assert dialogs.messages[-1] == ("toast", "success", f"파일 3개를 {home}/deploy 에 올렸습니다.")
     assert s.tree.topLevelItem(1).text(1) == "3 B" and s.tree.topLevelItem(0).text(1) == ""
+    assert s.tree.topLevelItem(0).text(3).startswith("d") and s.tree.topLevelItem(1).text(3).startswith("-rw")   # 권한·소유자 열
+    assert s.tree.topLevelItem(1).text(4) == s.entries[1].owner_text != "" and s.tree.topLevelItem(1).toolTip(3).startswith("6")
     s.filter_edit.setText("C.")                                 # 이름으로 거르기 (대소문자 무시)
     assert names() == ["c.txt"] and s.count_label.text() == "1개 보임 · 폴더 1개 · 파일 1개"
     s.filter_edit.clear()

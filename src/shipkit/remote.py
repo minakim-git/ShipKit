@@ -156,6 +156,33 @@ class RemoteEntry:
     size: int = 0
     mtime: float = 0.0  # epoch 초 (모르면 0)
     link: bool = False  # 심볼릭 링크
+    mode: int = 0       # st_mode (모르면 0). 권한 글자는 perm / octal
+    owner: str = ""     # 소유자 이름 (서버가 이름을 안 주면 uid 숫자, 모르면 빈 칸)
+    group: str = ""
+
+    @property
+    def perm(self) -> str:
+        """ls -l 식 권한 글자 (예: -rwxr-xr-x). 모르면 빈 칸."""
+        return stat.filemode(self.mode) if self.mode else ""
+
+    @property
+    def octal(self) -> str:
+        """권한 숫자 (예: 755). 모르면 빈 칸."""
+        return f"{stat.S_IMODE(self.mode):03o}" if self.mode else ""
+
+    @property
+    def owner_text(self) -> str:
+        """'소유자:그룹' (둘 다 모르면 빈 칸)."""
+        return f"{self.owner}:{self.group}" if self.owner or self.group else ""
+
+
+def _owner_group(attrs) -> Tuple[str, str]:
+    """SFTP 항목의 소유자·그룹 이름. 서버(OpenSSH)가 주는 ls -l 식 longname 의 3·4번째 칸에서 읽고, 없으면 uid·gid 숫자."""
+    fields = str(getattr(attrs, "longname", "") or "").split()
+    if len(fields) >= 5:
+        return fields[2], fields[3]
+    uid, gid = getattr(attrs, "st_uid", None), getattr(attrs, "st_gid", None)
+    return ("" if uid is None else str(uid)), ("" if gid is None else str(gid))
 
 
 SHELL_TAG_VAR = "LC_SHIPKIT_SESSION"   # 셸을 열 때 심는 표식 (sshd 기본 AcceptEnv 가 LC_* 를 받는다. RHEL 계열은 XMODIFIERS 로)
@@ -554,7 +581,9 @@ class SSHConnection:
                     is_dir = stat.S_ISDIR(self.sftp.stat(full).st_mode or 0)
                 except (IOError, OSError):
                     is_dir = False
-            entries.append(RemoteEntry(a.filename, full, is_dir, int(a.st_size or 0), float(a.st_mtime or 0), link))
+            owner, group = _owner_group(a)
+            entries.append(RemoteEntry(a.filename, full, is_dir, int(a.st_size or 0), float(a.st_mtime or 0), link,
+                                       mode, owner, group))
         entries.sort(key=lambda e: (not e.is_dir, e.name.lower()))
         return entries
 
