@@ -196,6 +196,7 @@ _ACCOUNT_RE = re.compile(r"^[A-Za-z0-9._][A-Za-z0-9._-]*$")
 NOTIFY_FORMATS = {"slack": "text", "mattermost": "text", "teams": "text", "jandi": "body", "discord": "content"}
 NOTIFY_LABELS = {"slack": "Slack", "mattermost": "Mattermost", "teams": "Teams", "jandi": "잔디", "discord": "Discord",
                  "custom": "직접 입력"}
+NOTIFY_DETAILS = {"none": "한 줄만", "requests": "MR·PR 제목 붙이기", "files": "MR·PR 제목과 파일 목록 붙이기"}
 _JSON_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
@@ -205,6 +206,7 @@ class NotifyConfig:
     url: str
     format: str = "slack"     # NOTIFY_FORMATS 의 키 또는 custom
     key: str = ""             # custom 일 때 메시지 글을 담을 JSON 키
+    detail: str = "none"      # 반영 알림에 붙일 변경 내역: none(한 줄만) / requests(MR·PR 제목) / files(제목 + 파일 목록)
 
     @property
     def field(self) -> str:
@@ -777,7 +779,10 @@ def _parse_notify(raw: Any, where: str) -> Optional[NotifyConfig]:
     key = str(raw.get("key") or "").strip()
     if fmt == "custom" and not _JSON_KEY_RE.match(key):
         raise ConfigError(f"{where}.notify.key (메시지를 담을 JSON 키, 예: text)가 필요합니다. 영문·숫자·_ 만 쓸 수 있습니다.")
-    return NotifyConfig(url=url, format=fmt, key=key if fmt == "custom" else "")
+    detail = str(raw.get("detail") or "none").strip().lower()
+    if detail not in NOTIFY_DETAILS:
+        raise ConfigError(f"{where}.notify.detail 은 {', '.join(NOTIFY_DETAILS)} 중 하나여야 합니다: {detail}")
+    return NotifyConfig(url=url, format=fmt, key=key if fmt == "custom" else "", detail=detail)
 
 
 def _parse_server_path(value: Any, where: str, server_os: str = "linux") -> str:

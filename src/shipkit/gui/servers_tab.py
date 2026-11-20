@@ -13,7 +13,7 @@ from PySide6.QtCore import QTimer, Signal
 from PySide6.QtWidgets import QCheckBox, QComboBox, QHBoxLayout, QLineEdit, QListWidget, QSpinBox, QVBoxLayout, QWidget
 
 from shipkit import notify, remote
-from shipkit.config import NOTIFY_LABELS, ConfigError, ServerProfile, parse_servers
+from shipkit.config import NOTIFY_DETAILS, NOTIFY_LABELS, ConfigError, ServerProfile, parse_servers
 from shipkit.gui.context import AppContext
 from shipkit.gui.project_widgets import form_layout as _form
 from shipkit.gui.remote_panel import RemoteClient
@@ -129,13 +129,19 @@ class ServersTab(QWidget):
         self.srv_notify_key = QLineEdit()
         self.srv_notify_key.setPlaceholderText("메시지 글을 담을 JSON 키 (예: text)")
         self.srv_notify_key.setMaximumWidth(260)
+        self.srv_notify_detail = QComboBox()          # 반영 알림 아래에 붙일 변경 내역
+        for key, text in NOTIFY_DETAILS.items():
+            self.srv_notify_detail.addItem(text, key)
+        self.srv_notify_detail.setToolTip("반영 알림 아래에 무엇을 올렸는지 붙입니다. MR·PR 제목은 '• !612 제목 (작성자)' 한 줄씩\n"
+                                          "(MR 없이 만든 패키지는 패키지 이름), 파일 목록은 '파일: a, b, …' 한 줄 (15개까지).\n"
+                                          "되돌리기 알림에는 붙지 않습니다.")
         for text, widget in (("이름", self.srv_name), ("호스트", self.srv_host), ("포트", self.srv_port),
                              ("접속 계정", self.srv_user), ("인증", self.srv_auth), ("키 파일", self.srv_key),
                              ("올릴 위치", self.srv_upload), ("실행 계정", self.srv_mode), ("계정 이름", self.srv_run_as),
                              ("전환 방법", self.srv_run_with), ("", self.srv_run_password), ("", self.srv_chown),
                              ("서버 배포 경로", self.srv_path), ("배포 브랜치", self.srv_branch), ("로그 파일", self.srv_log),
                              ("메신저 알림", self.srv_notify), ("웹훅 URL", self.srv_webhook),
-                             ("JSON 키", self.srv_notify_key)):
+                             ("JSON 키", self.srv_notify_key), ("알림 내용", self.srv_notify_detail)):
             form.addRow(label(text, "fieldLabel", wrap=False), widget)
         right.addLayout(form)
         buttons = QHBoxLayout()
@@ -171,7 +177,7 @@ class ServersTab(QWidget):
         for edit in (self.srv_name, self.srv_host, self.srv_user, self.srv_upload, self.srv_run_as, self.srv_path, self.srv_branch,
                      self.srv_log, self.srv_key.edit, self.srv_webhook, self.srv_notify_key):
             edit.textChanged.connect(self._server_edited)
-        for combo in (self.srv_auth, self.srv_mode, self.srv_run_with, self.srv_notify):
+        for combo in (self.srv_auth, self.srv_mode, self.srv_run_with, self.srv_notify, self.srv_notify_detail):
             combo.currentIndexChanged.connect(self._server_edited)
         self.srv_port.valueChanged.connect(self._server_edited)
         self.srv_run_password.toggled.connect(self._server_edited)
@@ -219,6 +225,7 @@ class ServersTab(QWidget):
         self._select(self.srv_notify, (notify_cfg.get("format") or "slack") if notify_cfg else "")
         self.srv_webhook.setText(str(notify_cfg.get("url", "")))
         self.srv_notify_key.setText(str(notify_cfg.get("key", "")))
+        self._select(self.srv_notify_detail, notify_cfg.get("detail") or "none")
         self._loading = was
         self._server_rows()
 
@@ -244,6 +251,7 @@ class ServersTab(QWidget):
         fmt = self.srv_notify.currentData()
         form.setRowVisible(self.srv_webhook, bool(fmt))
         form.setRowVisible(self.srv_notify_key, fmt == "custom")
+        form.setRowVisible(self.srv_notify_detail, bool(fmt))
         self.notify_test_btn.setVisible(bool(fmt))
 
     def _server_form_dict(self) -> Dict[str, Any]:
@@ -275,6 +283,8 @@ class ServersTab(QWidget):
             d["notify"] = {"url": self.srv_webhook.text().strip(), "format": fmt}
             if fmt == "custom":
                 d["notify"]["key"] = self.srv_notify_key.text().strip()
+            if self.srv_notify_detail.currentData() and self.srv_notify_detail.currentData() != "none":
+                d["notify"]["detail"] = self.srv_notify_detail.currentData()
         return d
 
     def _server_edited(self, *_args) -> None:

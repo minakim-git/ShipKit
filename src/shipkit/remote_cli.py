@@ -136,12 +136,13 @@ def _notify(project: ProjectConfig, profile: ServerProfile, package: Path, res: 
     cfg = profile.notify
     if cfg is None or not enabled:
         return
-    files = None
+    files, details = None, []
     if res.action != "rollback":
         record = history.read_record(package)
         if record is not None:
             files = len(record.applied) + len(record.deletes)
-    text = notify.compose(project.name, profile.name, res.action, package.name, res.ok, res.code, files)
+            details = notify.detail_lines(record, cfg.detail)
+    text = notify.compose(project.name, profile.name, res.action, package.name, res.ok, res.code, files, details=details)
     try:
         notify.send(cfg, text)
     except notify.NotifyError as e:

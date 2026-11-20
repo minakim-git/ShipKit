@@ -6,11 +6,13 @@
 from __future__ import annotations
 
 import getpass
-from typing import Optional
+from typing import List, Optional, Sequence
 
 from shipkit.config import NotifyConfig
 
 TIMEOUT = 5.0   # 초. 메신저가 느려도 반영 결과 표시를 오래 막지 않게
+MAX_REQUESTS = 20   # 변경 내역에 붙일 MR·PR 최대 개수 (넘으면 '외 N개')
+MAX_FILES = 15      # 변경 내역에 붙일 파일 최대 개수
 
 ACTION_TEXT = {"apply": "반영", "rollback": "되돌리기", "check": "확인", "backup": "백업"}
 
@@ -28,10 +30,11 @@ def who() -> str:
 
 
 def compose(project: str, server: str, action: str, package: str, ok: bool, code: int = 0,
-            files: Optional[int] = None, sender: Optional[str] = None) -> str:
-    """메신저에 보낼 한 줄. 예: '✅ erp 운영에 2026-11-04-1430 반영, 파일 12개 (minakim)'.
+            files: Optional[int] = None, sender: Optional[str] = None, details: Sequence[str] = ()) -> str:
+    """메신저에 보낼 글. 첫 줄 예: '✅ erp 운영에 2026-11-04-1430 반영, 파일 12개 (minakim)'.
 
-    action 은 마지막으로 실행한 단계(apply / rollback, 실패했을 때는 backup 일 수도)."""
+    action 은 마지막으로 실행한 단계(apply / rollback, 실패했을 때는 backup 일 수도). details(detail_lines) 가 있으면
+    반영(되돌리기 말고) 알림의 아래 줄로 붙는다."""
     sender = who() if sender is None else sender
     suffix = f" ({sender})" if sender else ""
     if action == "rollback":
@@ -40,9 +43,36 @@ def compose(project: str, server: str, action: str, package: str, ok: bool, code
         return f"❌ {project} {server} 되돌리기 실패 (종료 코드 {code}): {package}{suffix}"
     if ok:
         count = f", 파일 {files}개" if files is not None else ""
-        return f"✅ {project} {server}에 {package} 반영{count}{suffix}"
-    step = ACTION_TEXT.get(action, action)
-    return f"❌ {project} {server} 반영 실패 ({step}, 종료 코드 {code}): {package}{suffix}"
+        head = f"✅ {project} {server}에 {package} 반영{count}{suffix}"
+    else:
+        step = ACTION_TEXT.get(action, action)
+        head = f"❌ {project} {server} 반영 실패 ({step}, 종료 코드 {code}): {package}{suffix}"
+    return "\n".join([head] + list(details))
+
+
+def detail_lines(record, detail: str) -> List[str]:
+    """알림 아래에 붙일 변경 내역 (설정 notify.detail). record 는 history.PackageRecord (없으면 빈 목록).
+
+    requests: MR·PR 한 줄씩 '• !612 제목 (작성자)'. MR 없이 만든 패키지면 패키지 이름(설명) 한 줄.
+    files: 거기에 '파일: a, b, … 외 N개' 한 줄 더 (지울 파일은 '삭제 ' 를 앞에)."""
+    if record is None or detail not in ("requests", "files"):
+        return []
+    lines: List[str] = []
+    requests = list(record.requests or [])
+    if requests:
+        for r in requests[:MAX_REQUESTS]:
+            author = str(r.get("author") or "").strip()
+            lines.append(f"• {r.get('ref', '')} {str(r.get('title') or '').strip()}".rstrip() + (f" ({author})" if author else ""))
+        if len(requests) > MAX_REQUESTS:
+            lines.append(f"• … 외 {len(requests) - MAX_REQUESTS}개")
+    elif record.label or record.description:
+        lines.append(f"• {record.label or record.description}")
+    if detail == "files":
+        names = list(record.applied or []) + [f"삭제 {d}" for d in (record.deletes or [])]
+        if names:
+            more = f" … 외 {len(names) - MAX_FILES}개" if len(names) > MAX_FILES else ""
+            lines.append("파일: " + ", ".join(names[:MAX_FILES]) + more)
+    return lines
 
 
 def test_message(project: str, server: str, sender: Optional[str] = None) -> str:

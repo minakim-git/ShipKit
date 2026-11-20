@@ -11,6 +11,7 @@ import shlex
 import threading
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from PySide6.QtCore import Qt, Signal
@@ -33,17 +34,25 @@ _secret_slots = remote.secret_slots   # 어떤 비밀번호가 필요한지는 �
 
 
 def notify_messenger(ctx: AppContext, profile: ServerProfile, project: str, package: str, res: remote.StepResult,
-                     append: Callable[[str], None], files: Optional[int] = None) -> None:
-    """반영·되돌리기가 끝났을 때 서버 연결에 메신저 웹훅이 있으면 결과를 한 줄 보낸다.
+                     append: Callable[[str], None], files: Optional[int] = None, package_dir: Optional[Path] = None) -> None:
+    """반영·되돌리기가 끝났을 때 서버 연결에 메신저 웹훅이 있으면 결과를 보낸다 (한 줄, 설정에 따라 변경 내역을 아래에).
 
+    package_dir 을 주면 그 패키지 기록(MR·PR 제목, 파일 목록)으로 변경 내역을 만든다 (되돌리기에는 붙이지 않는다).
     백그라운드에서 보내고(메신저가 느려도 화면이 멈추지 않게) 결과는 로그에 한 줄 남긴다. 실패해도 반영 결과는 그대로다."""
     cfg = profile.notify
     if cfg is None:
         return
-    text = notify.compose(project, profile.name, res.action, package, res.ok, res.code, files)
+    details: List[str] = []
+    if package_dir is not None and res.action != "rollback" and cfg.detail != "none":
+        try:
+            details = notify.detail_lines(history.read_record(package_dir), cfg.detail)
+        except OSError:
+            details = []
+    text = notify.compose(project, profile.name, res.action, package, res.ok, res.code, files, details=details)
 
     def done(_result) -> None:
-        append(f"📣 {cfg.label} 알림을 보냈습니다: {text}\n")
+        append(f"📣 {cfg.label} 알림을 보냈습니다: {text.splitlines()[0]}"
+               + (f" (+{len(details)}줄)" if details else "") + "\n")
 
     def failed(message: str) -> None:
         append(f"[경고] {message}\n")
@@ -730,7 +739,7 @@ class RemotePanel(Section):
             self._notify_background(f"{self.project.name} → {p.name} 반영 " + ("완료" if res.ok else f"실패 ({res.action})"),
                                     f"패키지 {self.result.out_dir.name}")
             notify_messenger(self.ctx, p, self.project.name, self.result.out_dir.name, res, self._append,
-                             files=len(self.result.manifest) + len(self.result.deletes))
+                             files=len(self.result.manifest) + len(self.result.deletes), package_dir=self.result.out_dir)
 
         self._run(lambda secrets: lambda conn, output, progress: remote.backup_and_apply(
             conn, p, secrets, remote_dir, output, run_hooks), done)

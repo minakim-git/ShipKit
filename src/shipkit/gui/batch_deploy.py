@@ -251,7 +251,8 @@ class BatchDeployDialog(QDialog):
                 self._set_state(p.name, "rolled_back" if res.ok else "apply_failed",
                                 f"되돌림 {when}" if res.ok else f"rollback 실패 (종료 코드 {res.code})")
             files = len(self.result.manifest) + len(self.result.deletes) if action == "apply" else None
-            notify_messenger(self.ctx, p, self.project.name, self.result.out_dir.name, res, self.log.append, files=files)
+            notify_messenger(self.ctx, p, self.project.name, self.result.out_dir.name, res, self.log.append, files=files,
+                             package_dir=self.result.out_dir)
             if res.ok:
                 self._next()
             else:

@@ -94,9 +94,29 @@ def test_notify_config_compose_and_send(monkeypatch):
     for bad, msg in [({"format": "slack"}, "notify.url"), ({"url": "hooks.slack.com/x"}, "notify.url"),
                      ({"url": "https://h/x", "format": "kakao"}, "notify.format"),
                      ({"url": "https://h/x", "format": "custom"}, "notify.key"),
-                     ({"url": "https://h/x", "format": "custom", "key": "my-key"}, "notify.key")]:
+                     ({"url": "https://h/x", "format": "custom", "key": "my-key"}, "notify.key"),
+                     ({"url": "https://h/x", "detail": "all"}, "notify.detail")]:
         with pytest.raises(ConfigError, match=msg):
             server(**bad)
+    assert slack.detail == "none" and server(url="https://h/x", detail="Files").notify.detail == "files"
+
+    # 변경 내역: MR·PR 제목 한 줄씩(작성자), 파일 목록 한 줄, 많으면 '외 N개'. MR 없는 패키지는 이름(설명). 되돌리기에는 안 붙음
+    from shipkit.history import PackageRecord
+    rec = PackageRecord(Path("p"), datetime(2026, 11, 20), "gitlab-mr", "MR 2개", applied=["a.jsp", "b.jsp"], deletes=["c.jsp"],
+                        requests=[{"iid": 612, "ref": "!612", "title": "에디터 호환성", "author": "kim"},
+                                  {"iid": 615, "ref": "!615", "title": "첨부 크기 제한", "author": ""}])
+    assert notify.detail_lines(rec, "none") == [] and notify.detail_lines(None, "files") == []
+    assert notify.detail_lines(rec, "requests") == ["• !612 에디터 호환성 (kim)", "• !615 첨부 크기 제한"]
+    assert notify.detail_lines(rec, "files") == ["• !612 에디터 호환성 (kim)", "• !615 첨부 크기 제한", "파일: a.jsp, b.jsp, 삭제 c.jsp"]
+    plain_rec = PackageRecord(Path("p"), datetime(2026, 11, 20), "git-diff", "git 범위 v1..HEAD", applied=[f"f{i}" for i in range(17)],
+                              label="핫픽스")
+    assert notify.detail_lines(plain_rec, "files") == ["• 핫픽스", "파일: " + ", ".join(f"f{i}" for i in range(15)) + " … 외 2개"]
+    many = PackageRecord(Path("p"), datetime(2026, 11, 20), "gitlab-mr", "", requests=[{"ref": f"!{i}", "title": "t"} for i in range(25)])
+    lines = notify.detail_lines(many, "requests")
+    assert len(lines) == 21 and lines[-1] == "• … 외 5개"
+    assert notify.compose("erp", "운영", "apply", "p", True, files=3, sender="", details=["• !1 x", "파일: a"]) == \
+        "✅ erp 운영에 p 반영, 파일 3개\n• !1 x\n파일: a"
+    assert notify.compose("erp", "운영", "rollback", "p", True, sender="", details=["• !1 x"]) == "↩️ erp 운영 되돌리기: p (반영 전 상태로)"
 
     assert notify.compose("erp", "운영", "apply", "2026-11-04-1430", True, files=12, sender="mina") == \
         "✅ erp 운영에 2026-11-04-1430 반영, 파일 12개 (mina)"

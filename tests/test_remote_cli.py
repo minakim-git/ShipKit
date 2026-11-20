@@ -70,7 +70,7 @@ def test_deploy_changed_host_key_and_forget(tmp_path, maven_project, sshd, monke
 def test_deploy_check_apply_rollback_and_status(tmp_path, maven_project, sshd, monkeypatch, capsys):
     from conftest import FakeResponse
     cfg, server, keyring = _setup(tmp_path, maven_project, sshd, monkeypatch,
-                                  notify={"url": "https://hooks.example/jandi", "format": "jandi"})
+                                  notify={"url": "https://hooks.example/jandi", "format": "jandi", "detail": "requests"})
     posts, responses = [], []                                   # 메신저 알림(웹훅)은 가짜 requests.post 로 받는다
     monkeypatch.setattr("requests.post", lambda url, json=None, timeout=None: (posts.append(json), responses.pop(0))[1])
     jsp = "src/main/webapp/WEB-INF/views/user/list.jsp"
@@ -94,6 +94,7 @@ def test_deploy_check_apply_rollback_and_status(tmp_path, maven_project, sshd, m
     out = capsys.readouterr().out
     assert "반영했습니다" in out and "[알림] 잔디 채널에 알렸습니다" in out
     assert len(posts) == 1 and posts[0]["body"].startswith("✅ erp 개발에 ") and ", 파일 1개" in posts[0]["body"]
+    assert posts[0]["body"].count("\n") == 1 and posts[0]["body"].splitlines()[1].startswith("• ")   # 변경 내역(패키지 설명) 한 줄
     assert (server / "WEB-INF/views/user/list.jsp").read_text(encoding="utf-8") == "<%-- jsp --%>"
 
     assert cli.main(["server-status", "-c", str(cfg), "-p", "erp"]) == 0
